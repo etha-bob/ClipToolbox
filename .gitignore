@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
+outputs/
+*.log
+*.tmp
+ffmpeg/bin/*.exe

@@ -1,0 +1,17 @@
+Put these three files in this folder:
+
+- ffmpeg.exe
+- ffprobe.exe
+- ffplay.exe
+
+Required layout:
+
+ClipToolbox/
+  ClipToolbox.py
+  ffmpeg/
+    bin/
+      ffmpeg.exe
+      ffprobe.exe
+      ffplay.exe
+
+For Discord compression, the FFmpeg build must include hevc_nvenc support.
