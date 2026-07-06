@@ -1,13 +1,9 @@
-import ctypes
-import json
-import os
-import shutil
 import subprocess
 import sys
 import tempfile
-from io import BytesIO
 import threading
 import time
+from io import BytesIO
 from pathlib import Path
 
 import tkinter as tk
@@ -21,475 +17,52 @@ except Exception:
     ImageTk = None
     PIL_AVAILABLE = False
 
-
-# ============================================================
-# App constants / runtime helpers
-# ============================================================
-
-APP_NAME = "ClipToolbox"
-APP_VERSION = ""
-
-# ============================================================
-# USER EDIT ME: window / layout sizing
-# ============================================================
-# These are the main dimensions to tweak while testing the app layout.
-# Start by changing WINDOW_START_WIDTH. If the window will not get as
-# narrow as you want, lower WINDOW_MIN_WIDTH too.
-WINDOW_START_WIDTH = 740
-WINDOW_START_HEIGHT = 900
-WINDOW_MIN_WIDTH = 700
-WINDOW_MIN_HEIGHT = 760
-
-# When audio tracks load, the app recalculates height. This keeps that
-# auto-height behavior while still respecting your chosen window width.
-WINDOW_AUTO_HEIGHT_BASE = 760
-
-# Preview frame sizing.
-# Larger inset = narrower preview inside the same app window.
-# Height scale lets you fine-tune the preview box aspect ratio.
-# 1.05 means 5% taller than strict 16:9.
-PREVIEW_WIDTH_INSET = 64
-PREVIEW_HEIGHT_SCALE = 1.042
-
-# These can also limit how narrow the app feels. Lower them only if the
-# audio slider area is forcing the window wider than you want.
-AUDIO_SLIDER_MIN_WIDTH = 360
-AUDIO_SLIDER_PIXEL_LENGTH = 420
-
-DEFAULT_WINDOW_WIDTH = WINDOW_START_WIDTH
-DEFAULT_WINDOW_HEIGHT = WINDOW_START_HEIGHT
-MIN_WINDOW_WIDTH = WINDOW_MIN_WIDTH
-MIN_WINDOW_HEIGHT = WINDOW_MIN_HEIGHT
-
-PREVIEW_WIDTH = max(320, WINDOW_START_WIDTH - PREVIEW_WIDTH_INSET)
-PREVIEW_HEIGHT = int(PREVIEW_WIDTH * 9 / 16 * PREVIEW_HEIGHT_SCALE)
-
-DEFAULT_COMPRESSION_TARGET_MB = 9.99
-# Treat the compression target like Windows Explorer / Discord-visible MB.
-# Windows labels MiB as MB, so 9.99 MB here means 9.99 * 1024 * 1024 bytes by default.
-WINDOWS_MB_BYTES = 1024 * 1024
-DECIMAL_MB_BYTES = 1000 * 1000
-COMPRESSION_RETRY_STEP_MB = 0.3
-MIN_COMPRESSION_BUDGET_MB = 1.0
-COMPRESSION_MAX_ATTEMPTS = 8
-COMPRESSION_TARGET_FILL_RATIO = 0.995
-COMPRESSION_BUDGET_EPSILON_MB = 0.05
-COMPRESSION_DEFAULT_AUDIO_KBPS = 64
-DEFAULT_COMPRESSION_RESOLUTION = "1080p"
-COMPRESSION_RESOLUTION_PRESETS = {
-    "1080p": (1920, 1080),
-    "720p": (1280, 720),
-    "600p": (1066, 600),
-}
-
-
-def format_windows_discord_size(size_bytes: int | float | None) -> str:
-    """Return filesize using Windows/Discord-style MB first, plus decimal MB for sanity checks."""
-    try:
-        size_bytes = max(0, int(size_bytes or 0))
-    except Exception:
-        size_bytes = 0
-
-    windows_mb = size_bytes / WINDOWS_MB_BYTES
-    decimal_mb = size_bytes / DECIMAL_MB_BYTES
-    return f"{windows_mb:.2f} MB in Windows/Discord ({decimal_mb:.2f} decimal MB)"
-
-IS_WINDOWS = sys.platform == "win32"
-CREATE_NO_WINDOW = subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0
-
-
-def get_base_dir() -> Path:
-    """
-    Development layout:
-        project/
-          app.py
-          ffmpeg/
-            bin/
-              ffmpeg.exe
-              ffprobe.exe
-              ffplay.exe
-
-    PyInstaller onedir layout:
-        AudioTrackMerger/
-          AudioTrackMerger.exe
-          _internal/
-          ffmpeg/
-            bin/
-              ffmpeg.exe
-              ffprobe.exe
-              ffplay.exe
-          outputs/
-    """
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-
-    return Path(__file__).resolve().parent
-
-
-BASE_DIR = get_base_dir()
-INTERNAL_DIR = BASE_DIR / "_internal"
-
-
-def get_resource_dir() -> Path:
-    """
-    Runtime resource layout:
-
-    Development:
-        resources live next to app.py
-
-    PyInstaller --onefile:
-        bundled resources are extracted to sys._MEIPASS at runtime
-    """
-    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
-        return Path(sys._MEIPASS)
-
-    return BASE_DIR
-
-
-RESOURCE_DIR = get_resource_dir()
-
-FFMPEG_BIN_DIR = RESOURCE_DIR / "ffmpeg" / "bin"
-OUTPUTS_DIR = BASE_DIR / "outputs"
-
-
-def exe_name(name: str) -> str:
-    return f"{name}.exe" if IS_WINDOWS else name
-
-
-def find_tool(name: str) -> str | None:
-    local_tool = FFMPEG_BIN_DIR / exe_name(name)
-
-    if local_tool.exists():
-        return str(local_tool)
-
-    found = shutil.which(name)
-    if found:
-        return found
-
-    return None
-
-
-def ffplay_start_env() -> dict:
-    """
-    Start FFplay's SDL window offscreen so Windows does not show the temporary
-    white SDL window in the middle of the desktop before we re-parent it.
-    """
-    env = os.environ.copy()
-    env["SDL_VIDEO_WINDOW_POS"] = "-32000,-32000"
-    env["SDL_VIDEO_CENTERED"] = "0"
-    return env
-
-
-if FFMPEG_BIN_DIR.exists():
-    os.environ["PATH"] = str(FFMPEG_BIN_DIR) + os.pathsep + os.environ.get("PATH", "")
-
-FFMPEG = find_tool("ffmpeg")
-FFPROBE = find_tool("ffprobe")
-FFPLAY = find_tool("ffplay")
-
-
-# ============================================================
-# tkinterdnd2 setup
-# ============================================================
-
-TKDND_CANDIDATE_DIRS = [
-    RESOURCE_DIR / "tkdnd2.8",
-    RESOURCE_DIR / "tkinterdnd2" / "tkdnd",
-    RESOURCE_DIR / "tkinterdnd2" / "tkdnd2.8",
-    BASE_DIR / "tkdnd2.8",
-    INTERNAL_DIR / "tkinterdnd2" / "tkdnd",
-    INTERNAL_DIR / "tkinterdnd2" / "tkdnd2.8",
-    INTERNAL_DIR / "tkdnd2.8",
-]
-
-for possible_tkdnd_dir in TKDND_CANDIDATE_DIRS:
-    if possible_tkdnd_dir.exists():
-        os.environ["TKDND_LIBRARY"] = str(possible_tkdnd_dir)
-        break
-
-try:
-    from tkinterdnd2 import TkinterDnD, DND_FILES
-
-    DND_AVAILABLE = True
-except Exception:
-    TkinterDnD = None
-    DND_FILES = None
-    DND_AVAILABLE = False
-
-
-# ============================================================
-# Windows native window helpers
-# ============================================================
-
-if IS_WINDOWS:
-    user32 = ctypes.windll.user32
-
-    EnumWindows = user32.EnumWindows
-    EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
-
-    IsWindow = user32.IsWindow
-    IsWindowVisible = user32.IsWindowVisible
-    GetWindowThreadProcessId = user32.GetWindowThreadProcessId
-    GetParent = user32.GetParent
-    GetWindowTextLengthW = user32.GetWindowTextLengthW
-    GetWindowTextW = user32.GetWindowTextW
-    GetClassNameW = user32.GetClassNameW
-
-    SetParent = user32.SetParent
-    MoveWindow = user32.MoveWindow
-    ShowWindow = user32.ShowWindow
-    BringWindowToTop = user32.BringWindowToTop
-    UpdateWindow = user32.UpdateWindow
-    SetFocus = user32.SetFocus
-
-    if hasattr(user32, "GetWindowLongPtrW"):
-        GetWindowLongPtrW = user32.GetWindowLongPtrW
-        SetWindowLongPtrW = user32.SetWindowLongPtrW
-    else:
-        GetWindowLongPtrW = user32.GetWindowLongW
-        SetWindowLongPtrW = user32.SetWindowLongW
-
-    SetWindowPos = user32.SetWindowPos
-    PostMessageW = user32.PostMessageW
-
-    GWL_STYLE = -16
-    GWL_EXSTYLE = -20
-
-    WS_CHILD = 0x40000000
-    WS_VISIBLE = 0x10000000
-    WS_CAPTION = 0x00C00000
-    WS_THICKFRAME = 0x00040000
-    WS_MINIMIZEBOX = 0x00020000
-    WS_MAXIMIZEBOX = 0x00010000
-    WS_SYSMENU = 0x00080000
-    WS_POPUP = 0x80000000
-    WS_CLIPSIBLINGS = 0x04000000
-    WS_CLIPCHILDREN = 0x02000000
-
-    WS_EX_APPWINDOW = 0x00040000
-    WS_EX_TOOLWINDOW = 0x00000080
-
-    SW_HIDE = 0
-    SW_SHOW = 5
-    SW_RESTORE = 9
-
-    SWP_NOZORDER = 0x0004
-    SWP_NOACTIVATE = 0x0010
-    SWP_FRAMECHANGED = 0x0020
-    SWP_SHOWWINDOW = 0x0040
-
-    WM_KEYDOWN = 0x0100
-    WM_KEYUP = 0x0101
-    VK_SPACE = 0x20
-
-    kernel32 = ctypes.windll.kernel32
-    ntdll = ctypes.windll.ntdll
-
-    PROCESS_SUSPEND_RESUME = 0x0800
-    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-
-    OpenProcess = kernel32.OpenProcess
-    OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_bool, ctypes.c_ulong]
-    OpenProcess.restype = ctypes.c_void_p
-
-    CloseHandle = kernel32.CloseHandle
-    CloseHandle.argtypes = [ctypes.c_void_p]
-    CloseHandle.restype = ctypes.c_bool
-
-    NtSuspendProcess = ntdll.NtSuspendProcess
-    NtSuspendProcess.argtypes = [ctypes.c_void_p]
-    NtSuspendProcess.restype = ctypes.c_long
-
-    NtResumeProcess = ntdll.NtResumeProcess
-    NtResumeProcess.argtypes = [ctypes.c_void_p]
-    NtResumeProcess.restype = ctypes.c_long
-
-
-def _window_text(hwnd: int) -> str:
-    if not IS_WINDOWS:
-        return ""
-
-    length = GetWindowTextLengthW(hwnd)
-    if length <= 0:
-        return ""
-
-    buf = ctypes.create_unicode_buffer(length + 1)
-    GetWindowTextW(hwnd, buf, length + 1)
-    return buf.value
-
-
-def _window_class(hwnd: int) -> str:
-    if not IS_WINDOWS:
-        return ""
-
-    buf = ctypes.create_unicode_buffer(256)
-    GetClassNameW(hwnd, buf, 256)
-    return buf.value
-
-
-def find_main_window_for_pid(pid: int) -> int | None:
-    """
-    Finds the top-level SDL/FFplay window owned by a process ID.
-
-    This avoids fragile title matching and fixes the issue where FFplay opens
-    as a separate window instead of being embedded into the Tk preview frame.
-    """
-    if not IS_WINDOWS:
-        return None
-
-    candidates: list[tuple[int, str, str]] = []
-
-    def callback(hwnd, _):
-        if not IsWindow(hwnd):
-            return True
-
-        found_pid = ctypes.c_ulong()
-        GetWindowThreadProcessId(hwnd, ctypes.byref(found_pid))
-
-        if found_pid.value != pid:
-            return True
-
-        # Only top-level windows.
-        if GetParent(hwnd):
-            return True
-
-        class_name = _window_class(hwnd)
-        title = _window_text(hwnd)
-        visible = bool(IsWindowVisible(hwnd))
-
-        # FFplay uses SDL windows. Prefer visible SDL windows, but collect any
-        # top-level pid-owned window so we can still embed if the window is not
-        # marked visible yet.
-        if visible or "SDL" in class_name or title:
-            candidates.append((hwnd, class_name, title))
-
-        return True
-
-    EnumWindows(EnumWindowsProc(callback), 0)
-
-    if not candidates:
-        return None
-
-    # Prefer SDL windows first.
-    for hwnd, class_name, title in candidates:
-        if "SDL" in class_name:
-            return hwnd
-
-    return candidates[0][0]
-
-
-def embed_external_window(child_hwnd: int, parent_hwnd: int, width: int, height: int):
-    """
-    Re-parents an external native window into a Tkinter frame.
-
-    Important: this uses GetWindowLongPtr/SetWindowLongPtr instead of
-    GetWindowLong/SetWindowLong. On 64-bit Windows the old functions can fail
-    to update styles correctly, which is a common reason FFplay stays outside
-    the app.
-    """
-    if not IS_WINDOWS or not child_hwnd or not parent_hwnd:
-        return False
-
-    if not IsWindow(child_hwnd):
-        return False
-
-    width = max(1, int(width))
-    height = max(1, int(height))
-
-    ShowWindow(child_hwnd, SW_HIDE)
-
-    style = GetWindowLongPtrW(child_hwnd, GWL_STYLE)
-    ex_style = GetWindowLongPtrW(child_hwnd, GWL_EXSTYLE)
-
-    style &= ~WS_POPUP
-    style &= ~WS_CAPTION
-    style &= ~WS_THICKFRAME
-    style &= ~WS_MINIMIZEBOX
-    style &= ~WS_MAXIMIZEBOX
-    style &= ~WS_SYSMENU
-
-    style |= WS_CHILD
-    style |= WS_VISIBLE
-    style |= WS_CLIPSIBLINGS
-    style |= WS_CLIPCHILDREN
-
-    ex_style &= ~WS_EX_APPWINDOW
-    ex_style |= WS_EX_TOOLWINDOW
-
-    SetWindowLongPtrW(child_hwnd, GWL_STYLE, style)
-    SetWindowLongPtrW(child_hwnd, GWL_EXSTYLE, ex_style)
-
-    old_parent = SetParent(child_hwnd, parent_hwnd)
-
-    SetWindowPos(
-        child_hwnd,
-        0,
-        0,
-        0,
-        width,
-        height,
-        SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW,
-    )
-
-    MoveWindow(child_hwnd, 0, 0, width, height, True)
-    ShowWindow(child_hwnd, SW_SHOW)
-    BringWindowToTop(child_hwnd)
-    UpdateWindow(child_hwnd)
-
-    return True
-
-
-def send_space_to_window(hwnd: int):
-    """
-    Toggles FFplay pause/play by sending Space to its embedded SDL window.
-
-    This is kept as a fallback only. Some SDL/FFplay builds ignore posted
-    keyboard messages after the window has been re-parented into Tk.
-    """
-    if not IS_WINDOWS or not hwnd:
-        return
-
-    try:
-        SetFocus(hwnd)
-        PostMessageW(hwnd, WM_KEYDOWN, VK_SPACE, 0)
-        PostMessageW(hwnd, WM_KEYUP, VK_SPACE, 0)
-    except Exception:
-        pass
-
-
-def set_process_suspended(process: subprocess.Popen | None, suspended: bool) -> bool:
-    """Pause/resume FFplay by suspending/resuming its process on Windows."""
-    if not IS_WINDOWS or process is None or process.poll() is not None:
-        return False
-
-    access = PROCESS_SUSPEND_RESUME | PROCESS_QUERY_LIMITED_INFORMATION
-    handle = OpenProcess(access, False, process.pid)
-
-    if not handle:
-        return False
-
-    try:
-        result = NtSuspendProcess(handle) if suspended else NtResumeProcess(handle)
-        return result == 0
-    except Exception:
-        return False
-    finally:
-        try:
-            CloseHandle(handle)
-        except Exception:
-            pass
-
-
-def hide_native_window(hwnd: int | None):
-    if not IS_WINDOWS or not hwnd:
-        return
-
-    try:
-        if IsWindow(hwnd):
-            ShowWindow(hwnd, SW_HIDE)
-    except Exception:
-        pass
-
+# Core logic (probing, ffmpeg command building, export/compression tuning,
+# preview pipelines, Win32 helpers) lives in the cliptoolbox package so the
+# UI can be reworked without touching it.
+from cliptoolbox.constants import (
+    APP_NAME,
+    APP_VERSION,
+    AUDIO_SLIDER_MIN_WIDTH,
+    AUDIO_SLIDER_PIXEL_LENGTH,
+    COMPRESSION_RESOLUTION_PRESETS,
+    CREATE_NO_WINDOW,
+    DEFAULT_COMPRESSION_RESOLUTION,
+    DEFAULT_COMPRESSION_TARGET_MB,
+    DEFAULT_WINDOW_HEIGHT,
+    DEFAULT_WINDOW_WIDTH,
+    IS_WINDOWS,
+    MIN_WINDOW_HEIGHT,
+    MIN_WINDOW_WIDTH,
+    PREVIEW_HEIGHT,
+    PREVIEW_WIDTH,
+    WINDOW_AUTO_HEIGHT_BASE,
+    format_seconds as core_format_seconds,
+    format_windows_discord_size,
+)
+from cliptoolbox.core import commands as core_commands
+from cliptoolbox.core import export as core_export
+from cliptoolbox.core import filters as core_filters
+from cliptoolbox.core import preview as core_preview
+from cliptoolbox.core import probe as core_probe
+from cliptoolbox.core.paths import (
+    FFMPEG,
+    FFMPEG_BIN_DIR,
+    FFPLAY,
+    FFPROBE,
+    OUTPUTS_DIR,
+    exe_name,
+    reveal_file as core_reveal_file,
+)
+from cliptoolbox.core.win32 import (
+    IsWindow,
+    MoveWindow,
+    UpdateWindow,
+    embed_external_window,
+    find_main_window_for_pid,
+    hide_native_window,
+)
+from cliptoolbox.dnd import DND_AVAILABLE, DND_FILES, TkinterDnD
 
 # ============================================================
 # Main app
@@ -1237,110 +810,18 @@ class AudioTrackMergerApp:
     # ========================================================
 
     def get_audio_streams(self, filepath: str) -> list[dict]:
-        cmd = [
-            FFPROBE,
-            "-v",
-            "error",
-            "-select_streams",
-            "a",
-            "-show_entries",
-            "stream=index,codec_name,channels:stream_tags=language,title,handler_name",
-            "-of",
-            "json",
-            filepath,
-        ]
-
         try:
-            result = subprocess.run(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=True,
-                creationflags=CREATE_NO_WINDOW,
-            )
-
-            data = json.loads(result.stdout)
-
-        except Exception as exc:
+            return core_probe.probe_audio_streams(filepath)
+        except core_probe.ProbeError as exc:
             self.ui(
                 messagebox.showerror,
                 "FFprobe Error",
-                f"ffprobe failed:\n\n{exc}",
+                str(exc),
             )
             return []
 
-        streams = data.get("streams", [])
-        output = []
-
-        for display_index, stream in enumerate(streams):
-            tags = stream.get("tags", {}) or {}
-
-            stream_index = stream.get("index")
-            codec = stream.get("codec_name", "unknown")
-            channels = stream.get("channels")
-
-            language = tags.get("language")
-            title = tags.get("title")
-            handler = tags.get("handler_name")
-
-            details = []
-
-            if language:
-                details.append(language)
-
-            if title:
-                details.append(title)
-            elif handler:
-                details.append(handler)
-
-            if codec:
-                details.append(codec.upper())
-
-            if channels:
-                details.append(f"{channels} ch")
-
-            if details:
-                label = f"Track {display_index + 1} - " + " / ".join(details)
-            else:
-                label = f"Track {display_index + 1}"
-
-            if stream_index is not None:
-                output.append(
-                    {
-                        "index": stream_index,
-                        "label": label,
-                    }
-                )
-
-        return output
-
     def get_media_duration(self, filepath: str) -> float | None:
-        cmd = [
-            FFPROBE,
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            filepath,
-        ]
-
-        try:
-            result = subprocess.run(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=True,
-                creationflags=CREATE_NO_WINDOW,
-            )
-
-            return float(result.stdout.strip())
-
-        except Exception:
-            return None
+        return core_probe.probe_duration(filepath)
 
     # ========================================================
     # Seekbar
@@ -1511,29 +992,11 @@ class AudioTrackMergerApp:
             self.compression_resolution_var.set(selected)
         return selected
 
-    def get_compression_resolution_limit(self, resolution_label: str | None = None) -> tuple[int, int, str]:
-        label = resolution_label or self.get_compression_resolution_label()
-        if label not in COMPRESSION_RESOLUTION_PRESETS:
-            label = DEFAULT_COMPRESSION_RESOLUTION
-        width, height = COMPRESSION_RESOLUTION_PRESETS[label]
-        return width, height, label
-
     def get_compression_target_mb(self) -> float | None:
         if not self.compress_enabled_var.get():
             return None
 
-        raw_value = self.compression_target_var.get().strip().lower().replace("mb", "").strip()
-        raw_value = raw_value.replace(",", ".")
-
-        try:
-            target_mb = float(raw_value)
-        except Exception as exc:
-            raise ValueError("Compression target must be a number, like 9.99.") from exc
-
-        if target_mb <= 0:
-            raise ValueError("Compression target must be larger than 0 MB.")
-
-        return target_mb
+        return core_commands.parse_target_mb(self.compression_target_var.get())
 
     def current_seek_seconds(self) -> float:
         try:
@@ -1592,20 +1055,11 @@ class AudioTrackMergerApp:
         if not self.trim_enabled_var.get():
             return None, None
 
-        start = self.trim_start_seconds
-        end = self.trim_end_seconds
-        duration = self.total_duration_seconds
-
-        if duration:
-            if start is not None:
-                start = min(max(0.0, start), duration)
-            if end is not None:
-                end = min(max(0.0, end), duration)
-
-        if start is not None and end is not None and end <= start:
-            return None, None
-
-        return start, end
+        return core_commands.clamp_trim_points(
+            self.trim_start_seconds,
+            self.trim_end_seconds,
+            self.total_duration_seconds,
+        )
 
     def update_trim_info(self):
         if not hasattr(self, "trim_info_var"):
@@ -1769,28 +1223,7 @@ class AudioTrackMergerApp:
         return selected
 
     def build_audio_filter(self) -> str:
-        selected = self.selected_tracks()
-
-        if not selected:
-            raise ValueError("Please select at least one audio track.")
-
-        filters = []
-        maps = []
-
-        for i, (stream_index, volume) in enumerate(selected):
-            volume_text = f"{volume:.3f}"
-            filters.append(f"[0:{stream_index}]volume={volume_text}[a{i}]")
-            maps.append(f"[a{i}]")
-
-        amix_inputs = len(maps)
-
-        amix = (
-            f"{''.join(maps)}"
-            f"amix=inputs={amix_inputs}:duration=longest:"
-            f"dropout_transition=0:normalize=0[aout]"
-        )
-
-        return ";".join(filters + [amix])
+        return core_filters.build_audio_filter(self.selected_tracks())
 
     def invalidate_preview(self):
         preview_is_active = (
@@ -1983,27 +1416,7 @@ class AudioTrackMergerApp:
 
         def worker():
             try:
-                cmd = [
-                    FFMPEG,
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    "-ss",
-                    f"{seconds:.3f}",
-                    "-i",
-                    self.video_path,
-                    "-map",
-                    "0:v:0",
-                    "-frames:v",
-                    "1",
-                    "-an",
-                    "-sn",
-                    "-dn",
-                    "-q:v",
-                    "2",
-                    "-y",
-                    frame_path,
-                ]
+                cmd = core_preview.build_frame_extract_cmd(self.video_path, seconds, frame_path)
 
                 process = subprocess.Popen(
                     cmd,
@@ -2232,72 +1645,18 @@ class AudioTrackMergerApp:
         width = max(320, int(getattr(self, "preview_width", 960)))
         height = max(180, int(getattr(self, "preview_height", 540)))
 
-        ffmpeg_cmd = [
-            FFMPEG,
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-ss",
-            f"{start_seconds:.3f}",
-            "-i",
+        ffmpeg_cmd, ffplay_cmd = core_preview.build_preview_stream_cmds(
             self.video_path,
-            "-filter_complex",
             filter_complex,
-            "-map",
-            "0:v:0?",
-            "-map",
-            "[aout]",
-            "-c:v",
-            "copy",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "192k",
-            "-f",
-            "matroska",
-            "pipe:1",
-        ]
+            start_seconds,
+            width,
+            height,
+        )
 
-        ffplay_cmd = [
-            FFPLAY,
-            "-autoexit",
-            "-loglevel",
-            "error",
-            "-x",
-            str(width),
-            "-y",
-            str(height),
-            "-left",
-            "-32000",
-            "-top",
-            "-32000",
-            "-i",
-            "pipe:0",
-        ]
-
-        ffmpeg_process = subprocess.Popen(
+        ffmpeg_process, ffplay_process = core_preview.spawn_preview_pipeline(
             ffmpeg_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            creationflags=CREATE_NO_WINDOW,
-        )
-
-        ffplay_process = subprocess.Popen(
             ffplay_cmd,
-            stdin=ffmpeg_process.stdout,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=CREATE_NO_WINDOW,
-            env=ffplay_start_env(),
         )
-
-        # Let ffplay own the pipe endpoint. This helps ffmpeg receive broken
-        # pipe correctly if ffplay is stopped.
-        if ffmpeg_process.stdout:
-            try:
-                ffmpeg_process.stdout.close()
-            except Exception:
-                pass
 
         self.preview_generation_process = ffmpeg_process
         self.preview_process = ffplay_process
@@ -2737,565 +2096,71 @@ class AudioTrackMergerApp:
         self.log(f"Output path: {output_path_obj}")
 
         self.export_thread = threading.Thread(
-            target=self.export_worker,
-            args=(filter_complex, str(output_path_obj), trim_start, trim_end, compression_target_mb, compression_resolution_label),
+            target=core_export.run_export_job,
+            args=(
+                self.video_path,
+                filter_complex,
+                str(output_path_obj),
+                trim_start,
+                trim_end,
+                compression_target_mb,
+                compression_resolution_label,
+                self.total_duration_seconds,
+                self.make_export_callbacks(),
+                lambda: not self.is_exporting,
+                self.register_export_process,
+            ),
             daemon=True,
         )
         self.export_thread.start()
 
-    def export_progress_duration(
-        self,
-        trim_start: float | None = None,
-        trim_end: float | None = None,
-    ) -> float:
-        full_duration = self.total_duration_seconds or 0
+    # ========================================================
+    # Export execution (core) bridge
+    # ========================================================
 
-        if trim_start is not None or trim_end is not None:
-            effective_start = trim_start or 0
-            effective_end = trim_end or full_duration
-            return max(0.0, effective_end - effective_start)
+    def make_export_callbacks(self):
+        """Bridges core export events onto the Tk thread with the same
+        messages/dialogs the app has always shown."""
+        app = self
 
-        return max(0.0, full_duration)
+        class TkExportCallbacks:
+            def on_status(self, text: str) -> None:
+                app.ui(app.set_status, text)
 
-    def add_export_input_args(
-        self,
-        cmd: list[str],
-        trim_start: float | None = None,
-        trim_end: float | None = None,
-    ):
-        # Fast stream-copy video trimming. Putting -ss before -i avoids
-        # re-encoding in normal exports. Compression exports re-encode video,
-        # but this still keeps seeking responsive on long files.
-        if trim_start is not None and trim_start > 0:
-            cmd.extend(["-ss", f"{trim_start:.3f}"])
+            def on_log(self, text: str) -> None:
+                app.ui(app.log, text)
 
-        cmd.extend(["-i", self.video_path])
+            def on_seek_to(self, seconds: float) -> None:
+                app.ui(app.set_seek_position, seconds)
 
-        if trim_end is not None:
-            if trim_start is not None and trim_start > 0:
-                trim_duration = max(0.001, trim_end - trim_start)
-                cmd.extend(["-t", f"{trim_duration:.3f}"])
-            else:
-                cmd.extend(["-to", f"{trim_end:.3f}"])
+            def on_error(self, title: str, message: str) -> None:
+                app.ui(messagebox.showerror, title, message)
 
-    def build_standard_export_command(
-        self,
-        filter_complex: str,
-        output_path: str,
-        trim_start: float | None = None,
-        trim_end: float | None = None,
-    ) -> list[str]:
-        cmd = [
-            FFMPEG,
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-        ]
-
-        self.add_export_input_args(cmd, trim_start, trim_end)
-
-        cmd.extend(
-            [
-                "-filter_complex",
-                filter_complex,
-
-                "-map",
-                "0:v:0?",
-                "-map",
-                "[aout]",
-
-                "-c:v",
-                "copy",
-
-                "-c:a",
-                "aac",
-                "-b:a",
-                "192k",
-            ]
-        )
-
-        if Path(output_path).suffix.lower() in {".mp4", ".mov", ".m4v"}:
-            cmd.extend(["-movflags", "+faststart"])
-
-        cmd.extend(
-            [
-                "-nostats",
-                "-progress",
-                "pipe:1",
-                output_path,
-            ]
-        )
-
-        return cmd
-
-    def compression_bitrates_for_budget(
-        self,
-        budget_mb: float,
-        duration_seconds: float,
-    ) -> tuple[int, int, float]:
-        if duration_seconds <= 0:
-            raise ValueError("Cannot compress to a target size because the video duration is unknown.")
-
-        budget_bytes = max(1, int(budget_mb * WINDOWS_MB_BYTES))
-        total_kbps = (budget_bytes * 8) / duration_seconds / 1000
-
-        # Reserve a little room for the MP4/MKV container and bitrate overshoot.
-        overhead_kbps = max(10, int(total_kbps * 0.04))
-
-        # Discord-sized exports need the bits more on video than audio. Keep
-        # compressed audio fixed and predictable at 64 kbps so the remaining
-        # target budget can be spent on video.
-        audio_kbps = COMPRESSION_DEFAULT_AUDIO_KBPS
-
-        video_kbps = int(total_kbps - audio_kbps - overhead_kbps)
-
-        if video_kbps < 50:
-            raise ValueError(
-                "This target is too small for the clip length. Try a larger MB limit, "
-                "a shorter trim, or a smaller source clip."
-            )
-
-        return video_kbps, audio_kbps, total_kbps
-
-    def build_compressed_export_command(
-        self,
-        filter_complex: str,
-        output_path: str,
-        trim_start: float | None,
-        trim_end: float | None,
-        budget_mb: float,
-        duration_seconds: float,
-        compression_resolution_label: str | None,
-    ) -> tuple[list[str], int, int, float]:
-        video_kbps, audio_kbps, total_kbps = self.compression_bitrates_for_budget(
-            budget_mb,
-            duration_seconds,
-        )
-        max_width, max_height, _ = self.get_compression_resolution_limit(compression_resolution_label)
-
-        cmd = [
-            FFMPEG,
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-        ]
-
-        self.add_export_input_args(cmd, trim_start, trim_end)
-
-        cmd.extend(
-            [
-                "-filter_complex",
-                filter_complex,
-
-                "-map",
-                "0:v:0?",
-                "-map",
-                "[aout]",
-
-                "-vf",
-                (
-                    f"scale=w='min({max_width},iw)':"
-                    f"h='min({max_height},ih)':"
-                    "force_original_aspect_ratio=decrease:"
-                    "force_divisible_by=2,setsar=1"
-                ),
-
-                "-c:v",
-                "hevc_nvenc",
-                "-preset",
-                "slow",
-                "-rc",
-                "cbr",
-                "-b:v",
-                f"{video_kbps}k",
-                "-maxrate",
-                f"{video_kbps}k",
-                "-bufsize",
-                f"{max(video_kbps, 100)}k",
-                "-pix_fmt",
-                "yuv420p",
-
-                "-c:a",
-                "aac",
-                "-b:a",
-                f"{audio_kbps}k",
-                "-ac",
-                "2",
-            ]
-        )
-
-        if Path(output_path).suffix.lower() in {".mp4", ".mov", ".m4v"}:
-            cmd.extend(["-tag:v", "hvc1", "-movflags", "+faststart"])
-
-        cmd.extend(
-            [
-                "-nostats",
-                "-progress",
-                "pipe:1",
-                output_path,
-            ]
-        )
-
-        return cmd, video_kbps, audio_kbps, total_kbps
-
-    def run_export_command(
-        self,
-        cmd: list[str],
-        progress_duration: float,
-        progress_label: str,
-    ) -> tuple[int, str]:
-        self.export_process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            creationflags=CREATE_NO_WINDOW,
-        )
-
-        last_percentage = -1
-
-        if self.export_process.stdout:
-            for line in self.export_process.stdout:
-                line = line.strip()
-
-                if line.startswith("out_time_ms=") and progress_duration > 0:
-                    try:
-                        out_time_ms = int(line.split("=", 1)[1])
-                        current_seconds = out_time_ms / 1_000_000
-                        percentage = int((current_seconds / progress_duration) * 100)
-                        percentage = max(0, min(100, percentage))
-
-                        if percentage != last_percentage:
-                            last_percentage = percentage
-                            self.ui(self.set_status, f"{progress_label} {percentage}%")
-                    except Exception:
-                        pass
-
-                elif line == "progress=end":
-                    full_duration = self.total_duration_seconds or 0
-                    if full_duration:
-                        self.ui(self.set_seek_position, full_duration)
-
-        return_code = self.export_process.wait()
-
-        stderr_text = ""
-        if self.export_process.stderr:
-            stderr_text = self.export_process.stderr.read()
-
-        self.export_process = None
-        return return_code, stderr_text
-
-    def export_worker(
-        self,
-        filter_complex: str,
-        output_path: str,
-        trim_start: float | None = None,
-        trim_end: float | None = None,
-        compression_target_mb: float | None = None,
-        compression_resolution_label: str | None = None,
-    ):
-        try:
-            progress_duration = self.export_progress_duration(trim_start, trim_end)
-            full_duration = self.total_duration_seconds or 0
-
-            if compression_target_mb is None:
-                cmd = self.build_standard_export_command(
-                    filter_complex,
-                    output_path,
-                    trim_start,
-                    trim_end,
-                )
-
-                self.ui(self.log, "Starting standard export: video copy + AAC mixed audio.")
-                return_code, stderr_text = self.run_export_command(
-                    cmd,
-                    progress_duration,
-                    "Exporting...",
-                )
-
-                if return_code != 0:
-                    if self.is_exporting:
-                        self.ui(
-                            messagebox.showerror,
-                            "Export Error",
-                            "FFmpeg export failed.\n\n"
-                            + (stderr_text[-3000:] if stderr_text else "No FFmpeg error output."),
-                        )
-                    return
-
-                if full_duration:
-                    self.ui(self.set_seek_position, trim_end or full_duration)
-
-                self.ui(self.set_status, f"Export complete: {output_path}")
-                self.ui(self.log, f"Export complete: {output_path}")
-                self.ui(
-                    messagebox.showinfo,
-                    "Export complete",
-                    f"Saved:\n\n{output_path}",
-                )
-                self.ui(self.reveal_file, output_path)
-                return
-
-            if progress_duration <= 0:
-                raise ValueError("Cannot compress to a target size because the video duration is unknown.")
-
-            _, _, compression_resolution_label = self.get_compression_resolution_limit(compression_resolution_label)
-
-            target_limit_bytes = int(compression_target_mb * WINDOWS_MB_BYTES)
-            target_fill_bytes = int(target_limit_bytes * COMPRESSION_TARGET_FILL_RATIO)
-            target_limit_mb = target_limit_bytes / WINDOWS_MB_BYTES
-
-            budget_mb = float(compression_target_mb)
-            lower_budget_mb: float | None = None
-            upper_budget_mb: float | None = None
-
-            last_error = ""
-            stop_reason = ""
-            final_size_bytes = 0
-            best_size_bytes = 0
-            best_temp_path: str | None = None
-            temp_paths: list[str] = []
-
-            self.ui(
-                self.log,
-                (
-                    f"Compression tuning target: keep the best file under {target_limit_mb:.2f} MB in Windows/Discord "
-                    f"and retry if it lands below {target_fill_bytes / WINDOWS_MB_BYTES:.2f} MB in Windows/Discord."
-                ),
-            )
-
-            try:
-                for attempt in range(1, COMPRESSION_MAX_ATTEMPTS + 1):
-                    if not self.is_exporting:
-                        self.ui(self.log, "Export cancelled.")
-                        return
-
-                    if budget_mb < MIN_COMPRESSION_BUDGET_MB:
-                        stop_reason = "The bitrate budget became too small to continue."
-                        self.ui(self.log, f"Compression stopped: {stop_reason}")
-                        break
-
-                    suffix = Path(output_path).suffix or ".mp4"
-                    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-                    temp_output_path = temp_file.name
-                    temp_file.close()
-                    temp_paths.append(temp_output_path)
-
-                    try:
-                        cmd, video_kbps, audio_kbps, total_kbps = self.build_compressed_export_command(
-                            filter_complex,
-                            temp_output_path,
-                            trim_start,
-                            trim_end,
-                            budget_mb,
-                            progress_duration,
-                            compression_resolution_label,
-                        )
-                    except ValueError as exc:
-                        stop_reason = str(exc)
-                        self.ui(self.log, f"Compression stopped: {stop_reason}")
-                        break
-
-                    self.ui(
-                        self.log,
-                        (
-                            f"Compression attempt {attempt}/{COMPRESSION_MAX_ATTEMPTS}: "
-                            f"encode budget {budget_mb:.2f} MB internal, video {video_kbps} kbps, "
-                            f"audio {audio_kbps} kbps. Video is capped to {compression_resolution_label} if needed; FPS is preserved."
-                        ),
+            def on_complete(self, output_path: str, size_bytes: int | None) -> None:
+                if size_bytes is None:
+                    app.ui(
+                        messagebox.showinfo,
+                        "Export complete",
+                        f"Saved:\n\n{output_path}",
                     )
-
-                    return_code, stderr_text = self.run_export_command(
-                        cmd,
-                        progress_duration,
-                        f"Compressing attempt {attempt}...",
-                    )
-
-                    if not self.is_exporting:
-                        self.ui(self.log, "Export cancelled.")
-                        return
-
-                    if return_code != 0:
-                        last_error = stderr_text[-3000:] if stderr_text else "No FFmpeg error output."
-                        break
-
-                    try:
-                        final_size_bytes = Path(temp_output_path).stat().st_size
-                    except Exception:
-                        final_size_bytes = 0
-
-                    final_size_mb = final_size_bytes / WINDOWS_MB_BYTES if final_size_bytes else 0
-                    final_size_text = format_windows_discord_size(final_size_bytes)
-
-                    self.ui(
-                        self.log,
-                        f"Compression attempt {attempt} finished at {final_size_text}. Limit is {target_limit_mb:.2f} MB in Windows/Discord.",
-                    )
-
-                    if final_size_bytes and final_size_bytes <= target_limit_bytes:
-                        lower_budget_mb = budget_mb
-
-                        if final_size_bytes > best_size_bytes:
-                            if best_temp_path and best_temp_path != temp_output_path:
-                                try:
-                                    Path(best_temp_path).unlink(missing_ok=True)
-                                except Exception:
-                                    pass
-                            best_size_bytes = final_size_bytes
-                            best_temp_path = temp_output_path
-                        else:
-                            try:
-                                Path(temp_output_path).unlink(missing_ok=True)
-                            except Exception:
-                                pass
-
-                        if final_size_bytes >= target_fill_bytes:
-                            shutil.copy2(best_temp_path, output_path)
-
-                            if full_duration:
-                                self.ui(self.set_seek_position, trim_end or full_duration)
-
-                            best_size_text = format_windows_discord_size(best_size_bytes)
-                            self.ui(
-                                self.set_status,
-                                f"Export complete: {output_path} ({best_size_text})",
-                            )
-                            self.ui(
-                                self.log,
-                                (
-                                    f"Compression succeeded at {best_size_text} after {attempt} attempt(s), "
-                                    f"using the closest successful file under {target_limit_mb:.2f} MB in Windows/Discord."
-                                ),
-                            )
-                            self.ui(
-                                messagebox.showinfo,
-                                "Export complete",
-                                f"Saved:\n\n{output_path}\n\nSize: {best_size_text}",
-                            )
-                            self.ui(self.reveal_file, output_path)
-                            return
-
-                        if upper_budget_mb is not None:
-                            next_budget_mb = (budget_mb + upper_budget_mb) / 2
-                        else:
-                            desired_bytes = max(target_fill_bytes, int(target_limit_bytes * 0.99))
-                            ratio = desired_bytes / final_size_bytes if final_size_bytes else 1.0
-                            next_budget_mb = budget_mb * ratio
-
-                        next_budget_mb = max(budget_mb + COMPRESSION_BUDGET_EPSILON_MB, next_budget_mb)
-                        self.ui(
-                            self.log,
-                            (
-                                f"File is under the limit but leaves room unused. "
-                                f"Retrying with a {next_budget_mb:.2f} MB internal encode budget."
-                            ),
-                        )
-
-                    else:
-                        upper_budget_mb = budget_mb
-
-                        if lower_budget_mb is not None:
-                            next_budget_mb = (lower_budget_mb + budget_mb) / 2
-                        else:
-                            if final_size_bytes:
-                                ratio = target_fill_bytes / final_size_bytes
-                                next_budget_mb = budget_mb * ratio
-                            else:
-                                next_budget_mb = budget_mb - COMPRESSION_RETRY_STEP_MB
-
-                            next_budget_mb = min(next_budget_mb, budget_mb - COMPRESSION_BUDGET_EPSILON_MB)
-
-                        self.ui(
-                            self.log,
-                            (
-                                f"File is too large. Retrying with a {next_budget_mb:.2f} MB internal encode budget "
-                                f"while keeping the best previous under-limit file."
-                            ),
-                        )
-
-                    if abs(next_budget_mb - budget_mb) < COMPRESSION_BUDGET_EPSILON_MB:
-                        stop_reason = "Further bitrate tuning would barely change the result."
-                        self.ui(self.log, f"Compression stopped: {stop_reason}")
-                        break
-
-                    budget_mb = next_budget_mb
-
-                if best_temp_path and best_size_bytes:
-                    shutil.copy2(best_temp_path, output_path)
-
-                    if full_duration:
-                        self.ui(self.set_seek_position, trim_end or full_duration)
-
-                    best_size_text = format_windows_discord_size(best_size_bytes)
-                    self.ui(
-                        self.set_status,
-                        f"Export complete: {output_path} ({best_size_text})",
-                    )
-                    self.ui(
-                        self.log,
-                        (
-                            f"Compression finished using the best successful attempt: {best_size_text} "
-                            f"under the {target_limit_mb:.2f} MB in Windows/Discord limit."
-                        ),
-                    )
-                    self.ui(
+                else:
+                    best_size_text = format_windows_discord_size(size_bytes)
+                    app.ui(
                         messagebox.showinfo,
                         "Export complete",
                         f"Saved:\n\n{output_path}\n\nSize: {best_size_text}",
                     )
-                    self.ui(self.reveal_file, output_path)
-                    return
+                app.ui(app.reveal_file, output_path)
 
-            finally:
-                for temp_path in temp_paths:
-                    if temp_path != best_temp_path:
-                        try:
-                            Path(temp_path).unlink(missing_ok=True)
-                        except Exception:
-                            pass
-                if best_temp_path:
-                    try:
-                        Path(best_temp_path).unlink(missing_ok=True)
-                    except Exception:
-                        pass
+            def on_finished(self) -> None:
+                app.is_exporting = False
+                app.ui(app.stop_export_button.config, state=tk.DISABLED)
+                app.ui(app.set_busy, False)
 
-            if last_error:
-                self.ui(
-                    messagebox.showerror,
-                    "Compression Error",
-                    "FFmpeg compression failed.\n\n"
-                    "This usually means hevc_nvenc is unavailable, the NVIDIA driver/GPU does not support it, "
-                    "or FFmpeg rejected the NVENC settings.\n\n"
-                    + last_error,
-                )
-            else:
-                final_size_text = format_windows_discord_size(final_size_bytes)
-                extra_reason = f"\n\nReason: {stop_reason}" if stop_reason else ""
-                self.ui(
-                    messagebox.showerror,
-                    "Compression Target Not Reached",
-                    f"The output could not be compressed below {compression_target_mb:g} MB in Windows/Discord.\n\n"
-                    f"Last size: {final_size_text}"
-                    f"{extra_reason}\n\n"
-                    "Try trimming the clip shorter or using a larger MB target.",
-                )
+        return TkExportCallbacks()
 
-        except Exception as exc:
-            self.ui(
-                messagebox.showerror,
-                "Export Error",
-                f"Export failed:\n\n{exc}",
-            )
-            self.ui(self.log, f"Export failed: {exc}")
-
-        finally:
-            self.export_process = None
-            self.is_exporting = False
-            self.ui(self.stop_export_button.config, state=tk.DISABLED)
-            self.ui(self.set_busy, False)
-
+    def register_export_process(self, process: subprocess.Popen | None):
+        self.export_process = process
     def cancel_export(self):
         if self.export_process is not None:
             try:
@@ -3308,18 +2173,7 @@ class AudioTrackMergerApp:
         self.set_status("Export cancelled.")
 
     def reveal_file(self, path: str):
-        try:
-            if IS_WINDOWS:
-                subprocess.run(
-                    ["explorer", "/select,", path],
-                    creationflags=CREATE_NO_WINDOW,
-                )
-            elif sys.platform == "darwin":
-                subprocess.run(["open", "-R", path])
-            else:
-                subprocess.run(["xdg-open", str(Path(path).parent)])
-        except Exception:
-            pass
+        core_reveal_file(path)
 
     # ========================================================
     # Closing
@@ -3350,20 +2204,7 @@ class AudioTrackMergerApp:
     # Utility
     # ========================================================
 
-    @staticmethod
-    def format_seconds(seconds: float | None) -> str:
-        if seconds is None:
-            return "0:00"
-
-        seconds = int(max(0, seconds))
-        hours = seconds // 3600
-        minutes = (seconds % 3600) // 60
-        secs = seconds % 60
-
-        if hours:
-            return f"{hours}:{minutes:02d}:{secs:02d}"
-
-        return f"{minutes}:{secs:02d}"
+    format_seconds = staticmethod(core_format_seconds)
 
 
 # ============================================================
