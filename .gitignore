@@ -8,3 +8,6 @@ outputs/
 *.log
 *.tmp
 ffmpeg/bin/*.exe
+
+# Per-user app state
+config.json

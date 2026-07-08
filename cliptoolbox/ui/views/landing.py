@@ -24,7 +24,13 @@ DETAILS = {
         "You can also drop a file anywhere in this window.",
     ),
     "recent": ("RECENT CLIPS", ""),  # body built dynamically
-    "settings": ("SETTINGS", "Defaults and preferences."),
+    "settings": (
+        "SETTINGS",
+        "Window chrome, library shortcuts, and info.\n\n"
+        "Compression target, resolution and the rest of\n"
+        "your workspace state are remembered\n"
+        "automatically between sessions.",
+    ),
     "quit": ("QUIT", "Exit ClipToolbox."),
 }
 
@@ -90,7 +96,7 @@ def build(app):
     items = [
         ("LOAD CLIP", app.load_video_dialog, "load"),
         ("RECENT CLIPS", lambda: show_detail("recent"), "recent"),
-        ("SETTINGS", lambda: show_detail("settings"), "settings"),
+        ("SETTINGS", app.open_settings, "settings"),
         ("QUIT", app.on_close, "quit"),
     ]
 

@@ -61,15 +61,18 @@ from cliptoolbox.core.win32 import (
     hide_native_window,
 )
 from cliptoolbox.dnd import DND_AVAILABLE, DND_FILES, TkinterDnD
+from cliptoolbox import settings as app_settings
 from cliptoolbox.ui import chrome, dialogs, dpi, fonts, theme
 from cliptoolbox.ui import dialogs as messagebox  # ported call sites unchanged
 from cliptoolbox.ui.theme import px
 from cliptoolbox.ui.views import landing, shell, workspace
+from cliptoolbox.ui.views.settings import SettingsOverlay
 
 
 class HaloApp:
     def __init__(self, root: tk.Tk):
         self.root = root
+        self.settings = app_settings.load()
 
         self.video_path: str | None = None
         self.audio_metadata: list[dict] = []
@@ -81,9 +84,11 @@ class HaloApp:
         self.trim_start_seconds: float | None = None
         self.trim_end_seconds: float | None = None
 
-        self.compress_enabled_var = tk.BooleanVar(value=False)
-        self.compression_target_var = tk.StringVar(value=f"{DEFAULT_COMPRESSION_TARGET_MB:g}")
-        self.compression_resolution_var = tk.StringVar(value=DEFAULT_COMPRESSION_RESOLUTION)
+        self.compress_enabled_var = tk.BooleanVar(value=bool(self.settings.compress_enabled))
+        self.compression_target_var = tk.StringVar(
+            value=self.settings.compression_target_mb or f"{DEFAULT_COMPRESSION_TARGET_MB:g}")
+        self.compression_resolution_var = tk.StringVar(
+            value=self.settings.compression_resolution or DEFAULT_COMPRESSION_RESOLUTION)
         self.volume_log_after_ids: dict[int, str] = {}
 
         self.preview_thread: threading.Thread | None = None
@@ -124,7 +129,8 @@ class HaloApp:
         self.preview_width = px(PREVIEW_WIDTH)
         self.preview_height = px(PREVIEW_HEIGHT)
 
-        self.recent_clips: list[str] = []
+        self.recent_clips: list[str] = list(self.settings.recent_clips)
+        self.last_open_dir: str | None = self.settings.last_open_dir
         self.active_screen = "landing"
 
         self.build_ui()
@@ -140,10 +146,15 @@ class HaloApp:
         self.root.configure(bg=theme.BG_DEEP)
         self.root.geometry(f"{px(1150)}x{px(780)}")
         self.root.minsize(px(980), px(700))
+        self.restore_geometry()
 
-        self.chrome_borderless = chrome.apply_borderless(self.root)
-        if not self.chrome_borderless:
+        if self.settings.native_titlebar:
+            self.chrome_borderless = False
             chrome.apply_dark_titlebar(self.root)
+        else:
+            self.chrome_borderless = chrome.apply_borderless(self.root)
+            if not self.chrome_borderless:
+                chrome.apply_dark_titlebar(self.root)
 
         dialogs.attach(self.root)
 
@@ -156,8 +167,56 @@ class HaloApp:
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.bind_shortcuts()
         self.refresh_playback_button_state()
+
+        # Restore persisted compression state without the toggle log lines.
+        if self.compress_enabled_var.get() and hasattr(self, "compression_options_frame"):
+            self.compression_options_frame.pack(side=tk.LEFT, padx=(px(10), 0))
+
         self.update_compression_estimate()
         self.show_landing()
+
+    # ========================================================
+    # Settings persistence
+    # ========================================================
+
+    def restore_geometry(self):
+        if not self.settings.remember_geometry or not self.settings.window_geometry:
+            return
+        try:
+            geometry = self.settings.window_geometry
+            # Clamp the saved position back onto the virtual screen so the
+            # window never restores fully off-screen.
+            size, _, rest = geometry.partition("+")
+            if rest:
+                x_str, _, y_str = rest.partition("+")
+                x = min(max(-px(40), int(x_str)), max(0, self.root.winfo_screenwidth() - px(200)))
+                y = min(max(0, int(y_str)), max(0, self.root.winfo_screenheight() - px(200)))
+                geometry = f"{size}+{x}+{y}"
+            self.root.geometry(geometry)
+            if self.settings.window_maximized:
+                self.root.state("zoomed")
+        except Exception:
+            pass
+
+    def save_settings(self):
+        s = self.settings
+        try:
+            if chrome.is_maximized(self.root):
+                s.window_maximized = True
+            else:
+                s.window_maximized = False
+                s.window_geometry = self.root.winfo_geometry()
+        except Exception:
+            pass
+        s.compress_enabled = bool(self.compress_enabled_var.get())
+        s.compression_target_mb = self.compression_target_var.get().strip() or s.compression_target_mb
+        s.compression_resolution = self.get_compression_resolution_label()
+        s.recent_clips = list(self.recent_clips)
+        s.last_open_dir = self.last_open_dir
+        app_settings.save(s)
+
+    def open_settings(self):
+        SettingsOverlay(self)
 
     # ========================================================
     # Screen routing
@@ -280,6 +339,7 @@ class HaloApp:
         del self.recent_clips[8:]
         if hasattr(self, "refresh_landing_detail"):
             self.refresh_landing_detail()
+        self.save_settings()
 
     def enable_drag_and_drop(self):
         if not DND_AVAILABLE:
@@ -473,6 +533,7 @@ class HaloApp:
     def load_video_dialog(self):
         path = filedialog.askopenfilename(
             title="Select video file",
+            initialdir=self.last_open_dir or None,
             filetypes=[
                 ("Video files", "*.mp4 *.mov *.mkv *.avi *.webm *.m4v"),
                 ("All files", "*.*"),
@@ -480,6 +541,7 @@ class HaloApp:
         )
 
         if path:
+            self.last_open_dir = str(Path(path).parent)
             self.load_video(path)
 
     def drop_video(self, event):
@@ -1980,6 +2042,7 @@ class HaloApp:
             except Exception:
                 pass
 
+        self.save_settings()
         self.cleanup_preview_temp_file()
         self.root.destroy()
 
