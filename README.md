@@ -1,18 +1,23 @@
 # ClipToolbox
 
-ClipToolbox is a small Windows desktop tool for previewing, mixing, trimming, exporting, and Discord-size-compressing video clips.
+ClipToolbox is a small Windows desktop tool for previewing, mixing, trimming, exporting, and Discord-size-compressing video clips — wearing a Halo 2 (2004) menu interface.
+
+![UI style: deep navy panels, chamfered corners, slanted gradient bars, Rajdhani type]()
 
 ## Features
 
-- Load a video file
-- Detect audio tracks
-- Enable/disable tracks and adjust track volume
-- Live preview with mixed audio
-- Trim start/end before export
-- Export video with merged audio
-- Optional Discord-size compression using NVIDIA HEVC NVENC
-- Optional max compression resolution: 1080p, 720p, or 600p
+- Halo 2 styled interface: main-menu landing screen, pregame-lobby workspace, custom borderless window chrome (native snap/resize still work)
+- Load a video file (dialog, drag-and-drop anywhere, Windows "Open With", or recent-clips list)
+- Detect audio tracks; enable/disable tracks and adjust per-track volume (0–200%)
+- Live preview with mixed audio, embedded in the window; pause shows a still frame; scrubbing while paused shows live frames
+- Trim start/end before export, with green/red trim brackets on the timeline
+- Export video with merged audio (video stream copy, AAC mix)
+- Optional Discord-size compression using NVIDIA HEVC NVENC with automatic bitrate tuning (keeps the best file under your MB target)
+- Optional max compression resolution: 1080p, 720p, or 600p, plus a live bitrate estimate
+- Keyboard shortcuts with a contextual legend bar: `Space` play/pause, `←`/`→` seek (Shift = fine), `[` `]` set trim, `Ctrl+O` load, `Ctrl+E` export, `Esc` back/cancel
+- Export-complete toast with an OPEN FOLDER button; in-window Halo dialogs instead of native message boxes
 - Activity log inside the app
+- Settings persist between sessions (window position, compression defaults, recent clips) in a portable `config.json`
 
 ## Requirements
 
@@ -21,7 +26,7 @@ ClipToolbox is a small Windows desktop tool for previewing, mixing, trimming, ex
 - FFmpeg, FFprobe, and FFplay executables
 - NVIDIA GPU and NVIDIA driver if you want Discord compression mode
 
-Python packages are listed in `requirements.txt`:
+Python packages are listed in `requirements.txt` (unchanged — the UI is rendered with Pillow):
 
 ```txt
 pillow
@@ -36,20 +41,25 @@ pyinstaller
 
 ## Folder layout
 
-The app expects FFmpeg tools here:
-
 ```txt
 ClipToolbox/
-  ClipToolbox.py
-  requirements.txt
+  ClipToolbox.py          entry point (thin shim)
+  cliptoolbox/
+    core/                 probing, ffmpeg command building, export/compression
+                          tuning, preview pipelines — UI-free logic
+    ui/                   Halo 2 interface (theme, Pillow skin, widgets, views)
+    app.py                controller wiring core and UI together
+    settings.py           config.json persistence
+  assets/
+    fonts/                Rajdhani (OFL) — loaded privately, never installed
   ffmpeg/
-    bin/
-      ffmpeg.exe
-      ffprobe.exe
-      ffplay.exe
+    bin/                  put ffmpeg.exe, ffprobe.exe, ffplay.exe here
+  outputs/                default export folder (auto-created)
 ```
 
-This source package includes the folder structure, but not the FFmpeg executable files. Put your own FFmpeg files into `ffmpeg/bin/`.
+The UI/logic split is deliberate: everything that touches FFmpeg lives under `cliptoolbox/core/` and does not import tkinter, so diffs to the interface never touch trimming/compression logic. `tools/dump_commands.py` prints the exact FFmpeg commands the core generates for fixed inputs, to verify parity across refactors.
+
+This source package includes the folder structure, but not the FFmpeg executable files. Put your own FFmpeg files into `ffmpeg/bin/` (with them missing, the app also looks on PATH).
 
 ## First-time setup from source
 
@@ -75,6 +85,12 @@ Run the app:
 python ClipToolbox.py
 ```
 
+To iterate on the interface there is also a widget gallery:
+
+```bat
+python -m cliptoolbox.ui.gallery
+```
+
 ## Build an EXE manually
 
 First install the runtime and build dependencies:
@@ -84,10 +100,10 @@ python -m pip install -r requirements.txt
 python -m pip install -r requirements-build.txt
 ```
 
-Then build the app:
+Then build the app (note the added `--add-data` for the bundled fonts):
 
 ```bat
-python -m PyInstaller --onedir --noconsole --name ClipToolbox --collect-all tkinterdnd2 ClipToolbox.py
+python -m PyInstaller --onedir --noconsole --name ClipToolbox --collect-all tkinterdnd2 --add-data "assets;assets" ClipToolbox.py
 ```
 
 After the build finishes, copy the local `ffmpeg` folder next to the EXE:
@@ -131,3 +147,6 @@ If `hevc_nvenc` is missing, normal merging/export can still work, but Discord co
 - Default compression target is 9.99 MB.
 - Compressed audio is encoded at 64 kbps AAC.
 - Compression keeps the largest successful output under the selected limit.
+- Settings are stored in `config.json` next to the app (or `%APPDATA%\ClipToolbox` if that folder is not writable). Delete it to reset.
+- The custom borderless chrome can be swapped for the native title bar in SETTINGS (applies on next launch).
+- Rajdhani is bundled under the SIL Open Font License (see `assets/fonts/OFL.txt`) and is registered process-private at runtime — nothing is installed system-wide.
