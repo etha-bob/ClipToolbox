@@ -154,6 +154,7 @@ class HaloApp:
         dialogs.set_toast_offset(px(theme.FOOTER_H + 16))
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.bind_shortcuts()
         self.refresh_playback_button_state()
         self.update_compression_estimate()
         self.show_landing()
@@ -169,10 +170,105 @@ class HaloApp:
         self.set_status("Ready.")
         if hasattr(self, "refresh_landing_detail"):
             self.refresh_landing_detail()
+        self.update_legend()
 
     def show_workspace(self):
         self.workspace_frame.lift()
         self.active_screen = "workspace"
+        self.update_legend()
+
+    def update_legend(self):
+        if not hasattr(self, "legend"):
+            return
+
+        if self.is_exporting:
+            hints = [("ESC", "CANCEL EXPORT")]
+        elif self.active_screen == "landing":
+            hints = [("CTRL+O", "OPEN CLIP"), ("DROP", "LOAD FILE")]
+        elif self.video_path:
+            hints = [
+                ("SPACE", "PLAY/PAUSE"),
+                ("← →", "SEEK"),
+                ("[ ]", "TRIM"),
+                ("CTRL+E", "EXPORT"),
+                ("ESC", "MENU"),
+            ]
+        else:
+            hints = [("CTRL+O", "OPEN CLIP"), ("ESC", "MENU")]
+
+        self.legend.set_hints(hints)
+
+    # ========================================================
+    # Keyboard shortcuts
+    # ========================================================
+
+    def bind_shortcuts(self):
+        root = self.root
+        root.bind("<space>", lambda e: self.shortcut(self.toggle_preview))
+        root.bind("<Key-bracketleft>", lambda e: self.shortcut(self.set_trim_start))
+        root.bind("<Key-bracketright>", lambda e: self.shortcut(self.set_trim_end))
+        root.bind("<Left>", lambda e: self.shortcut(lambda: self.seek_relative(-5.0)))
+        root.bind("<Right>", lambda e: self.shortcut(lambda: self.seek_relative(5.0)))
+        root.bind("<Shift-Left>", lambda e: self.shortcut(lambda: self.seek_relative(-1.0)))
+        root.bind("<Shift-Right>", lambda e: self.shortcut(lambda: self.seek_relative(1.0)))
+        root.bind("<Home>", lambda e: self.shortcut(lambda: self.seek_absolute(0.0)))
+        root.bind("<End>", lambda e: self.shortcut(
+            lambda: self.seek_absolute(self.total_duration_seconds or 0.0)))
+        root.bind("<Control-o>", lambda e: self.shortcut_load())
+        root.bind("<Control-e>", lambda e: self.shortcut(self.export_video_dialog))
+        root.bind("<Escape>", lambda e: self.shortcut_escape())
+
+    def _typing_in_entry(self) -> bool:
+        try:
+            focus = self.root.focus_get()
+        except Exception:
+            focus = None
+        return isinstance(focus, (tk.Entry, tk.Text))
+
+    def shortcut(self, action):
+        """Workspace shortcut with the standard guards."""
+        if self.active_screen != "workspace" or self.is_exporting:
+            return "break" if self.is_exporting else None
+        if self._typing_in_entry():
+            return None
+        if not self.video_path:
+            return None
+        action()
+        return "break"
+
+    def shortcut_load(self):
+        if self.is_exporting or self._typing_in_entry():
+            return "break"
+        self.load_video_dialog()
+        return "break"
+
+    def shortcut_escape(self):
+        if self.is_exporting:
+            self.cancel_export()
+            return "break"
+        if self._typing_in_entry():
+            self.root.focus_set()
+            return "break"
+        if self.active_screen == "workspace":
+            self.show_landing()
+            return "break"
+        return None
+
+    def seek_relative(self, delta: float):
+        duration = self.total_duration_seconds or 0
+        target = self.current_seek_seconds() + delta
+        if duration:
+            target = min(max(0.0, target), duration)
+        else:
+            target = max(0.0, target)
+        self.seek_absolute(target)
+
+    def seek_absolute(self, seconds: float):
+        # Route through the same press/release path as a mouse seek so
+        # play/pause semantics match exactly.
+        self.on_seek_press()
+        self.seek_var.set(seconds)
+        self.on_seek_release()
 
     def remember_recent_clip(self, path: str | None):
         if not path:
@@ -289,6 +385,7 @@ class HaloApp:
             slider.config(state=slider_state)
 
         self.update_export_actions()
+        self.update_legend()
 
     def update_export_actions(self):
         """Show the maroon CANCEL EXPORT button only while exporting."""
@@ -454,6 +551,7 @@ class HaloApp:
 
         self.update_track_area_height(len(streams))
         self.remember_recent_clip(self.video_path)
+        self.update_legend()
 
         duration_text = self.format_seconds(duration) if duration else "unknown duration"
         self.preview_placeholder_var.set("Starting preview...")
@@ -1820,20 +1918,22 @@ class HaloApp:
                 app.ui(messagebox.showerror, title, message)
 
             def on_complete(self, output_path: str, size_bytes: int | None) -> None:
+                # Success is a toast with an action, not a modal — and the
+                # folder opens on request instead of automatically.
+                name = Path(output_path).name
                 if size_bytes is None:
-                    app.ui(
-                        messagebox.showinfo,
-                        "Export complete",
-                        f"Saved:\n\n{output_path}",
-                    )
+                    message = name
                 else:
-                    best_size_text = format_windows_discord_size(size_bytes)
-                    app.ui(
-                        messagebox.showinfo,
-                        "Export complete",
-                        f"Saved:\n\n{output_path}\n\nSize: {best_size_text}",
-                    )
-                app.ui(app.reveal_file, output_path)
+                    message = f"{name}\n{format_windows_discord_size(size_bytes)}"
+                app.ui(
+                    dialogs.toast,
+                    "Export complete",
+                    message,
+                    "success",
+                    "OPEN FOLDER",
+                    lambda: app.reveal_file(output_path),
+                    12000,
+                )
 
             def on_finished(self) -> None:
                 app.is_exporting = False
