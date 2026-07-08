@@ -29,9 +29,12 @@ PREVIEW_BEZEL_FILL = "#0A1626"
 
 
 def build(app):
-    frame = tk.Frame(app.screen_container, bg=theme.BG_DEEP)
+    # Screens stack in the container; show_landing/show_workspace lift them.
+    app.workspace_frame = tk.Frame(app.screen_container, bg=theme.BG_DEEP)
+    app.workspace_frame.place(x=0, y=0, relwidth=1.0, relheight=1.0)
+
+    frame = tk.Frame(app.workspace_frame, bg=theme.BG_DEEP)
     frame.pack(fill=tk.BOTH, expand=True, padx=px(14), pady=px(8))
-    app.workspace_frame = frame
 
     frame.columnconfigure(0, weight=3)
     frame.columnconfigure(1, weight=2, minsize=px(360))
@@ -62,10 +65,15 @@ def build(app):
     )
     # Packed by update_export_actions() only while an export runs.
 
+    app.back_button = HaloButton(
+        actions, text="◂ MENU", command=app.show_landing,
+    )
+    app.back_button.pack(side=tk.RIGHT)
+
     app.load_button = HaloButton(
         actions, text="LOAD CLIP", command=app.load_video_dialog,
     )
-    app.load_button.pack(side=tk.RIGHT)
+    app.load_button.pack(side=tk.RIGHT, padx=(0, px(8)))
 
     # ------------------------------------------------------------------
     # Left: preview bezel with the real embed target frame

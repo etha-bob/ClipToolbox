@@ -64,7 +64,7 @@ from cliptoolbox.dnd import DND_AVAILABLE, DND_FILES, TkinterDnD
 from cliptoolbox.ui import chrome, dialogs, dpi, fonts, theme
 from cliptoolbox.ui import dialogs as messagebox  # ported call sites unchanged
 from cliptoolbox.ui.theme import px
-from cliptoolbox.ui.views import shell, workspace
+from cliptoolbox.ui.views import landing, shell, workspace
 
 
 class HaloApp:
@@ -124,6 +124,9 @@ class HaloApp:
         self.preview_width = px(PREVIEW_WIDTH)
         self.preview_height = px(PREVIEW_HEIGHT)
 
+        self.recent_clips: list[str] = []
+        self.active_screen = "landing"
+
         self.build_ui()
         self.enable_drag_and_drop()
         self.startup_checks()
@@ -145,13 +148,42 @@ class HaloApp:
         dialogs.attach(self.root)
 
         shell.build(self)      # header, status strip, legend, screen container
-        workspace.build(self)  # the lobby screen inside the container
+        workspace.build(self)  # the lobby screen
+        landing.build(self)    # the main-menu screen
 
         dialogs.set_toast_offset(px(theme.FOOTER_H + 16))
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.refresh_playback_button_state()
         self.update_compression_estimate()
+        self.show_landing()
+
+    # ========================================================
+    # Screen routing
+    # ========================================================
+
+    def show_landing(self):
+        self.stop_preview()
+        self.landing_frame.lift()
+        self.active_screen = "landing"
+        self.set_status("Ready.")
+        if hasattr(self, "refresh_landing_detail"):
+            self.refresh_landing_detail()
+
+    def show_workspace(self):
+        self.workspace_frame.lift()
+        self.active_screen = "workspace"
+
+    def remember_recent_clip(self, path: str | None):
+        if not path:
+            return
+        path = str(path)
+        if path in self.recent_clips:
+            self.recent_clips.remove(path)
+        self.recent_clips.insert(0, path)
+        del self.recent_clips[8:]
+        if hasattr(self, "refresh_landing_detail"):
+            self.refresh_landing_detail()
 
     def enable_drag_and_drop(self):
         if not DND_AVAILABLE:
@@ -211,6 +243,8 @@ class HaloApp:
         state = tk.DISABLED if busy else tk.NORMAL
 
         self.load_button.config(state=state)
+        if hasattr(self, "back_button"):
+            self.back_button.config(state=tk.DISABLED if self.is_exporting else tk.NORMAL)
 
         # Compression settings only affect export, so keep them editable during
         # preview/playback. Lock them only while an export is actually running.
@@ -372,6 +406,8 @@ class HaloApp:
             messagebox.showerror("File not found", str(path_obj))
             return
 
+        self.show_workspace()
+
         self.stop_preview()
         self.cleanup_preview_temp_file()
 
@@ -417,6 +453,7 @@ class HaloApp:
             self.add_track_row(row_number, info)
 
         self.update_track_area_height(len(streams))
+        self.remember_recent_clip(self.video_path)
 
         duration_text = self.format_seconds(duration) if duration else "unknown duration"
         self.preview_placeholder_var.set("Starting preview...")

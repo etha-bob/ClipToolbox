@@ -559,9 +559,11 @@ class LegendBar(tk.Canvas):
 class HaloMenuItem(tk.Canvas):
     """Big landing-menu item: dim idle, bright + fill bar + brackets on hover."""
 
-    def __init__(self, parent, text, command=None, width=None, behind=theme.BG_DEEP):
+    def __init__(self, parent, text, command=None, width=None, behind=theme.BG_DEEP,
+                 hover_command=None):
         self._text = text
         self._command = command
+        self._hover_command = hover_command
         self._hover = False
         self._state = NORMAL
         self.behind = behind
@@ -584,6 +586,8 @@ class HaloMenuItem(tk.Canvas):
     def _set_hover(self, value):
         self._hover = value and self._state == NORMAL
         self._redraw()
+        if self._hover and self._hover_command is not None:
+            self._hover_command()
 
     def set_state(self, state):
         self._state = state
