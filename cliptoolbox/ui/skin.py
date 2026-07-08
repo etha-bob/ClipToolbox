@@ -330,9 +330,14 @@ def render_background(w: int, h: int) -> Image.Image:
     """
     h = max(1, h)
     img = Image.new("RGB", (w, h), rgb(theme.BG_DEEP))
-    draw = ImageDraw.Draw(img, "RGBA")
+    draw = ImageDraw.Draw(img)
 
     rng = random.Random(2552)  # fixed seed: no shimmer across re-renders
+
+    # Pre-mixed solid colors: PIL's alpha-ink text blending is unreliable, so
+    # texture colors are computed against BG_DEEP directly.
+    tick_color = mix(theme.BG_DEEP, theme.ACCENT, 0.06)
+    glyph_color = mix(theme.BG_DEEP, theme.ACCENT, 0.05)
 
     # Horizontal tick rows (the faint dashed strips in the H2 background).
     row_gap = px(46)
@@ -342,7 +347,7 @@ def render_background(w: int, h: int) -> Image.Image:
         while x < w:
             seg = rng.randint(6, 26)
             if rng.random() < 0.62:
-                draw.line([(x, y), (x + seg, y)], fill=(127, 196, 238, 8))
+                draw.line([(x, y), (x + seg, y)], fill=tick_color)
             x += seg + rng.randint(4, 14)
         y += row_gap
 
@@ -357,7 +362,7 @@ def render_background(w: int, h: int) -> Image.Image:
                     "".join(rng.choice(_GLYPHS) for _ in range(rng.randint(2, 6)))
                     for _ in range(max(8, w // 60))
                 )
-                draw.text((-rng.randint(0, 40), by), text, font=gfont, fill=(127, 196, 238, 7))
+                draw.text((-rng.randint(0, 40), by), text, font=gfont, fill=glyph_color)
         except Exception:
             pass
 
@@ -397,15 +402,15 @@ class Skin:
         self.capacity = capacity
         self._cache: OrderedDict[tuple, ImageTk.PhotoImage] = OrderedDict()
 
-    def get(self, kind: str, **params) -> ImageTk.PhotoImage:
-        key = (kind, tuple(sorted(params.items())))
+    def get(self, renderer: str, **params) -> ImageTk.PhotoImage:
+        key = (renderer, tuple(sorted(params.items())))
 
         cached = self._cache.get(key)
         if cached is not None:
             self._cache.move_to_end(key)
             return cached
 
-        image = _RENDERERS[kind](**params)
+        image = _RENDERERS[renderer](**params)
         photo = ImageTk.PhotoImage(image)
 
         self._cache[key] = photo
