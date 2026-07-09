@@ -68,6 +68,27 @@ from cliptoolbox.ui.views import landing, shell, workspace
 from cliptoolbox.ui.views.settings import SettingsOverlay
 
 
+def get_app_icon_path() -> str | None:
+    """Return the app icon path for development and bundled builds."""
+    candidates = []
+
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        candidates.append(Path(sys._MEIPASS) / "assets" / "ClipToolbox.ico")
+
+    candidates.extend(
+        [
+            Path(__file__).resolve().parent.parent / "assets" / "ClipToolbox.ico",
+            Path(__file__).resolve().parent / "assets" / "ClipToolbox.ico",
+        ]
+    )
+
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+
+    return None
+
+
 class HaloApp:
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -2364,28 +2385,56 @@ def create_root_window():
     global DND_AVAILABLE
 
     if not DND_AVAILABLE:
-        return tk.Tk()
-
-    try:
-        return TkinterDnD.Tk()
-
-    except Exception as exc:
-        DND_AVAILABLE = False
-
         root = tk.Tk()
-        root.withdraw()
+    else:
+        try:
+            root = TkinterDnD.Tk()
+        except Exception as exc:
+            DND_AVAILABLE = False
 
-        tk_messagebox.showerror(
-            "Drag and drop failed",
-            "Drag and drop could not start because the tkdnd library could not be loaded.\n\n"
-            "This usually means tkinterdnd2 was not packaged correctly.\n\n"
-            "Rebuild with:\n"
-            "pyinstaller --collect-all tkinterdnd2 ...\n\n"
-            f"Details:\n{exc}",
-        )
+            root = tk.Tk()
+            root.withdraw()
 
-        root.deiconify()
-        return root
+            tk_messagebox.showerror(
+                "Drag and drop failed",
+                "Drag and drop could not start because the tkdnd library could not be loaded.\n\n"
+                "This usually means tkinterdnd2 was not packaged correctly.\n\n"
+                "Rebuild with:\n"
+                "pyinstaller --collect-all tkinterdnd2 ...\n\n"
+                f"Details:\n{exc}",
+            )
+
+            root.deiconify()
+
+    icon_path = get_app_icon_path()
+    if icon_path and IS_WINDOWS:
+        try:
+            root.iconbitmap(default=icon_path)
+        except Exception:
+            pass
+
+    return root
+
+
+def main():
+    startup_file = get_startup_file_from_args()
+
+    dpi.init()
+    fonts.load_private_fonts()
+
+    root = create_root_window()
+    fonts.verify_with_tk(root)
+
+    app = HaloApp(root)
+
+    if startup_file:
+        root.after(250, lambda: app.load_video(startup_file))
+
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
 
 
 def main():

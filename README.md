@@ -104,25 +104,29 @@ python -m pip install -r requirements.txt
 python -m pip install -r requirements-build.txt
 ```
 
-Then build the app (note the added `--add-data` for the bundled fonts):
+### Single-file EXE with bundled assets and FFmpeg
+
+This build keeps the app self-contained in one EXE, including the icon, bundled fonts, and the local `ffmpeg` tree:
 
 ```bat
-python -m PyInstaller --onedir --noconsole --name ClipToolbox --collect-all tkinterdnd2 --add-data "assets;assets" ClipToolbox.py
+python -m PyInstaller --onefile --noconsole --name ClipToolbox --icon "assets\ClipToolbox.ico" --collect-all tkinterdnd2 --add-data "assets;assets" --add-data "ffmpeg;ffmpeg" ClipToolbox.py
 ```
 
-After the build finishes, copy the local `ffmpeg` folder next to the EXE:
+The finished file is written to:
 
 ```txt
-dist\ClipToolbox\
-  ClipToolbox.exe
-  ffmpeg\
-    bin\
-      ffmpeg.exe
-      ffprobe.exe
-      ffplay.exe
+dist\ClipToolbox.exe
 ```
 
-Run the built app from:
+### Folder-based EXE
+
+If you prefer a folder-based build instead of a single EXE, use:
+
+```bat
+python -m PyInstaller --onedir --noconsole --name ClipToolbox --icon "assets\ClipToolbox.ico" --collect-all tkinterdnd2 --add-data "assets;assets" --add-data "ffmpeg;ffmpeg" ClipToolbox.py
+```
+
+After the build finishes, the app can be run from:
 
 ```txt
 dist\ClipToolbox\ClipToolbox.exe
