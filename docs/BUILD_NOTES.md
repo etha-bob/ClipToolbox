@@ -23,12 +23,19 @@ python ClipToolbox.py
 python -m pip install -r requirements-build.txt
 ```
 
-7. Build with PyInstaller:
+7. Build with PyInstaller (`--add-data` bundles the Rajdhani fonts the UI loads):
 
 ```bat
-python -m PyInstaller --onedir --noconsole --name ClipToolbox --collect-all tkinterdnd2 ClipToolbox.py
+python -m PyInstaller --onedir --noconsole --name ClipToolbox --collect-all tkinterdnd2 --add-data "assets;assets" ClipToolbox.py
 ```
 
 8. Copy the local `ffmpeg` folder into `dist\ClipToolbox\` so it sits next to `ClipToolbox.exe`.
 
-The app supports PyInstaller onedir layout. The `ffmpeg` folder should live next to the EXE after building.
+The app supports PyInstaller onedir layout. The `ffmpeg` folder should live next to the EXE after building; the `assets` folder is looked up both next to the EXE and inside `_internal\` (PyInstaller 5/6 differ).
+
+Development extras:
+
+- `python -m cliptoolbox.ui.gallery` shows every themed widget/state for UI work.
+- `python tools\dump_commands.py` prints the exact FFmpeg commands the core produces for fixed inputs — run before/after refactors to prove the trim/compression logic is unchanged.
+- Core logic (`cliptoolbox\core\`) never imports tkinter; UI changes should leave it untouched in diffs.
+- `cliptoolbox\core\playback.py` owns the preview pipeline (FFmpeg → pre-scaled rawvideo/PCM over a NUT pipe → embedded FFplay). Pause/resume post FFplay's own pause key; track volumes go through FFmpeg runtime filter commands on stdin. Two hard-won rules: never suspend the FFplay process (a suspended window freezes Tk on the next activation/z-order change), and never show the SDL window before `SetParent` (that is the white-flash race).
