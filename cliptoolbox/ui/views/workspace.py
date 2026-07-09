@@ -244,9 +244,18 @@ def build(app):
     roster = HaloPanel(right)
     roster.grid(row=0, column=0, sticky="new")
 
+    roster_header = tk.Frame(roster.body, bg=theme.PANEL_FILL)
+    roster_header.pack(fill=tk.X, pady=(0, px(6)))
+
     app.roster_title_var = tk.StringVar(value="0 TRACK(S) IN MIX")
-    tk.Label(roster.body, textvariable=app.roster_title_var, font=theme.font_title(13),
-             bg=theme.PANEL_FILL, fg=theme.ACCENT, anchor="w").pack(fill=tk.X, pady=(0, px(6)))
+    tk.Label(roster_header, textvariable=app.roster_title_var, font=theme.font_title(13),
+             bg=theme.PANEL_FILL, fg=theme.ACCENT, anchor="w").pack(side=tk.LEFT)
+
+    app.reset_volumes_button = HaloButton(
+        roster_header, text="RESET", command=app.reset_all_volumes,
+        behind=theme.PANEL_FILL, height=px(24), font=theme.font_small(11),
+    )
+    app.reset_volumes_button.pack(side=tk.RIGHT)
 
     roster_grid = tk.Frame(roster.body, bg=theme.PANEL_FILL)
     roster_grid.pack(fill=tk.BOTH, expand=True)

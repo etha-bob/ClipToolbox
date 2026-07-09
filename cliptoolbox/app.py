@@ -81,6 +81,10 @@ class HaloApp:
         self.loop_enabled_var = tk.BooleanVar(value=False)
         self.show_remaining = False
 
+        self.preview_muted = False
+        self.solo_row: int | None = None
+        self.track_state_strips: dict[int, tk.Frame] = {}
+
         self.compress_enabled_var = tk.BooleanVar(value=bool(self.settings.compress_enabled))
         self.compression_target_var = tk.StringVar(
             value=self.settings.compression_target_mb or f"{DEFAULT_COMPRESSION_TARGET_MB:g}")
@@ -268,6 +272,8 @@ class HaloApp:
             lambda: self.seek_absolute(self.total_duration_seconds or 0.0)))
         root.bind("<comma>", lambda e: self.shortcut(lambda: self.step_frame(-1)))
         root.bind("<period>", lambda e: self.shortcut(lambda: self.step_frame(1)))
+        root.bind("<Key-m>", lambda e: self.shortcut(self.toggle_mute_preview))
+        root.bind("<Key-M>", lambda e: self.shortcut(self.toggle_mute_preview))
         for digit in range(10):
             root.bind(f"<Key-{digit}>",
                       lambda e, n=digit: self.shortcut(lambda: self.seek_to_fraction(n / 10.0)))
@@ -709,6 +715,9 @@ class HaloApp:
 
     def clear_tracks(self):
         self.track_controls.clear()
+        self.track_state_strips.clear()
+        self.preview_muted = False
+        self.solo_row = None
 
         for widget in self.track_frame.winfo_children():
             self.wheel.unregister(widget)
@@ -755,6 +764,11 @@ class HaloApp:
         name_bar = tk.Frame(row, bg=theme.MAROON)
         name_bar.grid(row=0, column=0, sticky="ew")
 
+        # Left indicator strip — tinted for solo (accent) / silenced (dim).
+        state_strip = tk.Frame(name_bar, bg=theme.MAROON, width=px(4))
+        state_strip.pack(side=tk.LEFT, fill=tk.Y)
+        self.track_state_strips[row_number] = state_strip
+
         checkbox = HaloCheckbox(
             name_bar, text=info["label"], variable=var,
             behind=theme.MAROON, text_color=theme.TEXT_BRIGHT,
@@ -786,6 +800,22 @@ class HaloApp:
 
         slider.config(command=on_volume_change)
         slider.grid(row=1, column=0, sticky="ew", pady=(px(2), 0))
+
+        # Double-click the slider snaps it back to 100%.
+        def reset_volume(_event=None, row=row_number):
+            slider.set(1.0)
+            on_volume_change(1.0)
+            return "break"
+
+        slider.bind("<Double-Button-1>", reset_volume)
+
+        # Right-click anywhere on the row toggles solo for this track.
+        def solo(_event=None, row=row_number):
+            self.toggle_solo(row)
+            return "break"
+
+        for widget in (row, name_bar, checkbox):
+            widget.bind("<Button-3>", solo)
 
         def on_wheel(steps, fine):
             # Wheel anywhere over the row adjusts this track: ±5% per notch,
@@ -1183,31 +1213,107 @@ class HaloApp:
     def build_audio_filter(self) -> str:
         return core_filters.build_audio_filter(self.selected_tracks())
 
+    def effective_volume(self, row: int) -> float:
+        """The volume a track actually contributes to the preview, folding in
+        its slider, its enable checkbox, the global mute, and any solo. A
+        single source of truth for the live mix, the preview graph, and every
+        live update."""
+        if not (0 <= row < len(self.track_controls)):
+            return 0.0
+        _, var, slider = self.track_controls[row]
+        if self.preview_muted:
+            return 0.0
+        if self.solo_row is not None and self.solo_row != row:
+            return 0.0
+        if not var.get():
+            return 0.0
+        return float(slider.get())
+
     def superset_tracks(self) -> list[tuple[int, float]]:
         """
-        Every track in row order for the preview graph, with disabled rows at
-        volume 0.0. With amix normalize=0 this sounds identical to omitting
-        them, and it lets checkbox toggles and slider drags apply to the
-        running pipeline live instead of restarting it. Export still uses
-        selected_tracks() with only the enabled rows.
+        Every track in row order for the preview graph, disabled/muted/
+        non-soloed rows at volume 0.0. With amix normalize=0 this sounds
+        identical to omitting them, and it lets checkbox toggles and slider
+        drags apply to the running pipeline live instead of restarting it.
+        Export still uses selected_tracks() with only the enabled rows.
         """
         return [
-            (stream_index, float(slider.get()) if var.get() else 0.0)
-            for stream_index, var, slider in self.track_controls
+            (stream_index, self.effective_volume(row))
+            for row, (stream_index, _, _) in enumerate(self.track_controls)
         ]
 
     def apply_track_volume(self, row: int):
-        """Push one row's effective volume (0 when disabled) to the engine."""
+        """Push one row's effective volume to the engine."""
         if not (0 <= row < len(self.track_controls)):
             return
 
-        stream_index, var, slider = self.track_controls[row]
-        volume = float(slider.get()) if var.get() else 0.0
-
-        if not self.playback.set_track_volume(row, volume):
+        if not self.playback.set_track_volume(row, self.effective_volume(row)):
             # The live command channel failed; fall back to one seamless
             # respawn that bakes the current mix into a fresh pipeline.
             self.schedule_live_mix_fallback()
+
+    def apply_all_track_volumes(self):
+        """Re-push every row's effective volume (mute/solo/reset changes)."""
+        for row in range(len(self.track_controls)):
+            if not self.playback.set_track_volume(row, self.effective_volume(row)):
+                self.schedule_live_mix_fallback()
+                return
+
+    # ------------------------------------------------------------------
+    # Mute / solo / reset
+    # ------------------------------------------------------------------
+
+    def toggle_mute_preview(self):
+        if not self.track_controls or self.is_exporting:
+            return
+        self.preview_muted = not self.preview_muted
+        self.apply_all_track_volumes()
+        self.update_track_row_styles()
+        self.set_status("Preview muted." if self.preview_muted else "Preview unmuted.")
+        self.log("Preview muted." if self.preview_muted else "Preview unmuted.")
+
+    def toggle_solo(self, row: int):
+        if self.is_exporting or not (0 <= row < len(self.track_controls)):
+            return
+        self.solo_row = None if self.solo_row == row else row
+        self.apply_all_track_volumes()
+        self.update_track_row_styles()
+        if self.solo_row is None:
+            self.log("Solo cleared.")
+        else:
+            _, _, _ = self.track_controls[row]
+            self.log(f"Soloed track {row + 1}.")
+
+    def reset_all_volumes(self):
+        if not self.track_controls or self.is_exporting:
+            return
+        self.preview_muted = False
+        self.solo_row = None
+        for _, var, slider in self.track_controls:
+            var.set(True)
+            slider.set(1.0)
+        self.apply_all_track_volumes()
+        self.update_track_row_styles()
+        self.set_status("All track volumes reset to 100%.")
+        self.log("All track volumes reset to 100%.")
+
+    def update_track_row_styles(self):
+        """Recolor each row's left indicator strip: accent when soloed, dim
+        when silenced (muted, or not the soloed row), maroon otherwise."""
+        for row in range(len(self.track_controls)):
+            strip = self.track_state_strips.get(row)
+            if strip is None:
+                continue
+            if self.solo_row == row:
+                color = theme.ACCENT
+            elif self.effective_volume(row) <= 0.0:
+                color = theme.TEXT_DIM
+            else:
+                color = theme.MAROON
+            try:
+                strip.configure(bg=color)
+            except Exception:
+                pass
 
     def schedule_live_mix_fallback(self, delay_ms: int = 400):
         if self.live_mix_fallback_after_id is not None:
