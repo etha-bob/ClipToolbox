@@ -8,14 +8,17 @@ ClipToolbox is a small Windows desktop tool for previewing, mixing, trimming, ex
 
 - Halo 2 styled interface: main-menu landing screen, pregame-lobby workspace, custom borderless window chrome (native snap/resize still work)
 - Load a video file (dialog, drag-and-drop anywhere, Windows "Open With", or recent-clips list)
-- Detect audio tracks; enable/disable tracks and adjust per-track volume (0–200%)
+- Detect audio tracks; enable/disable tracks and adjust per-track volume (0–200%), with mute-all (`M`), right-click solo, a RESET button, and double-click a slider to reset it to 100%
 - Live preview with mixed audio, embedded in the window; pause/resume are instant and frame-exact, track toggles and volume changes apply to the running preview without interrupting it, and scrubbing shows frames as you drag
-- Trim start/end before export, with green/red trim brackets on the timeline
+- Frame-step (`,` / `.`), number-key seeking (`0`–`9` → 0–90%), and a LOOP toggle that loops the trim region (or the whole clip)
+- Trim start/end before export, with green/red trim brackets on the timeline you can drag directly, plus editable IN/OUT timecode fields and jump-to-trim (`Shift+Home`/`Shift+End`)
+- Save the current frame as a PNG, or copy it straight to the clipboard
 - Export video with merged audio (video stream copy, AAC mix)
 - Optional Discord-size compression using NVIDIA HEVC NVENC with automatic bitrate tuning (keeps the best file under your MB target)
 - Optional max compression resolution: 1080p, 720p, or 600p, plus a live bitrate estimate
 - Keyboard shortcuts with a contextual legend bar: `Space` play/pause, `←`/`→` seek (Shift = fine), `[` `]` set trim, `Ctrl+O` load, `Ctrl+E` export, `Esc` back/cancel
 - Scroll wheel: seek over the timeline (±5 s per notch, `Shift` = ±1 s) and adjust a track's volume over its roster row (±5%, `Shift` = ±1%); the roster and activity log scroll under the wheel too
+- Recent clips show thumbnails on the landing screen (right-click to reveal or remove); right-click the header to reveal the loaded clip; `Ctrl+,` opens Settings; `Ctrl+Shift+C` copies the current timestamp; hover tooltips on the less-obvious controls
 - Export-complete toast with an OPEN FOLDER button; in-window Halo dialogs instead of native message boxes
 - Activity log inside the app
 - Settings persist between sessions (window position, compression defaults, recent clips) in a portable `config.json`

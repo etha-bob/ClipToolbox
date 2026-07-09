@@ -32,6 +32,7 @@ class AppSettings:
     compress_enabled: bool = False
     compression_target_mb: str = "9.99"
     compression_resolution: str = "1080p"
+    auto_preview_after_load: bool = True
     recent_clips: list[str] = field(default_factory=list)
     last_open_dir: str | None = None
 

@@ -55,6 +55,14 @@ class SettingsOverlay:
             variable=self.remember_var, behind=theme.PANEL_FILL,
         ).pack(anchor="w")
 
+        # --- playback ----------------------------------------------------
+        section("Playback")
+        self.autoplay_var = tk.BooleanVar(value=app.auto_preview_after_load)
+        widgets.HaloCheckbox(
+            body, text="Play the preview automatically when a clip loads",
+            variable=self.autoplay_var, behind=theme.PANEL_FILL,
+        ).pack(anchor="w")
+
         # --- library -----------------------------------------------------
         section("Library")
         row = tk.Frame(body, bg=theme.PANEL_FILL)
@@ -128,6 +136,7 @@ class SettingsOverlay:
     def close(self):
         self.app.settings.native_titlebar = bool(self.native_var.get())
         self.app.settings.remember_geometry = bool(self.remember_var.get())
+        self.app.auto_preview_after_load = bool(self.autoplay_var.get())
         self.app.save_settings()
 
         try:

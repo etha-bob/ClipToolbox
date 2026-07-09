@@ -14,6 +14,67 @@ from cliptoolbox.ui.widgets import HaloMenuItem
 
 SUPPORTED_LINE = "MP4 · MOV · MKV · AVI · WebM · M4V"
 
+
+def _add_recent_row(app, parent, path):
+    """One recent-clip entry: thumbnail (lazy) + name, clickable to load, with
+    a right-click menu to reveal or remove."""
+    name = Path(path).name
+    exists = Path(path).exists()
+
+    row = tk.Frame(parent, bg=theme.PANEL_FILL, cursor="hand2" if exists else "arrow")
+    row.pack(fill=tk.X, pady=px(2))
+
+    # Fixed 16:9 holder so the row height is stable before the thumb loads.
+    thumb_h = px(app.THUMBNAIL_HEIGHT)
+    thumb_holder = tk.Frame(row, bg="#0A1626", width=round(thumb_h * 16 / 9), height=thumb_h)
+    thumb_holder.pack(side=tk.LEFT, padx=(0, px(8)))
+    thumb_holder.pack_propagate(False)
+    thumb = tk.Label(thumb_holder, bg="#0A1626", bd=0)
+    thumb.pack(fill=tk.BOTH, expand=True)
+
+    name_label = tk.Label(
+        row, text=("▸ " if exists else "✕ ") + name,
+        font=theme.font_body(13), bg=theme.PANEL_FILL,
+        fg=theme.TEXT if exists else theme.TEXT_DIM, anchor="w",
+    )
+    name_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+    hover_widgets = (row, thumb_holder, thumb, name_label)
+
+    def set_bg(color, fg):
+        for w in (row, name_label):
+            w.configure(bg=color)
+        name_label.configure(fg=fg)
+
+    if exists:
+        for w in hover_widgets:
+            w.bind("<Enter>", lambda e: set_bg(theme.SELECT_FILL, theme.TEXT_BRIGHT))
+            w.bind("<Leave>", lambda e: set_bg(theme.PANEL_FILL, theme.TEXT))
+            w.bind("<ButtonRelease-1>", lambda e, p=path: app.load_video(p))
+
+        def on_ready(photo, lbl=thumb):
+            if photo is not None:
+                try:
+                    lbl.configure(image=photo)
+                    lbl.image = photo
+                except Exception:
+                    pass
+
+        app.get_recent_thumbnail(path, on_ready)
+
+    def show_menu(event, p=path):
+        menu = tk.Menu(app.root, tearoff=0)
+        if exists:
+            menu.add_command(label="Reveal in folder", command=lambda: app.reveal_file(p))
+        menu.add_command(label="Remove from list", command=lambda: app.remove_recent_clip(p))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    for w in hover_widgets:
+        w.bind("<Button-3>", show_menu)
+
 DETAILS = {
     "load": (
         "LOAD CLIP",
@@ -69,26 +130,15 @@ def build(app):
                 tk.Label(detail_body, text="No recent clips yet.",
                          font=theme.font_body(), bg=theme.PANEL_FILL,
                          fg=theme.TEXT_DIM, anchor="w", justify=tk.LEFT).pack(fill=tk.X)
-            for path in recents[:8]:
-                name = Path(path).name
-                exists = Path(path).exists()
-                label = tk.Label(
-                    detail_body, text=("▸ " if exists else "✕ ") + name,
-                    font=theme.font_body(13), bg=theme.PANEL_FILL,
-                    fg=theme.TEXT if exists else theme.TEXT_DIM,
-                    anchor="w", cursor="hand2" if exists else "arrow",
-                )
-                label.pack(fill=tk.X, pady=px(1))
-                if exists:
-                    label.bind("<Enter>", lambda e, l=label: l.configure(fg=theme.TEXT_BRIGHT, bg=theme.SELECT_FILL))
-                    label.bind("<Leave>", lambda e, l=label: l.configure(fg=theme.TEXT, bg=theme.PANEL_FILL))
-                    label.bind("<ButtonRelease-1>", lambda e, p=path: app.load_video(p))
+            for path in recents[:6]:
+                _add_recent_row(app, detail_body, path)
         else:
             tk.Label(detail_body, text=body, font=theme.font_body(),
                      bg=theme.PANEL_FILL, fg=theme.TEXT,
                      anchor="nw", justify=tk.LEFT).pack(fill=tk.BOTH, expand=True)
 
     app.refresh_landing_detail = lambda: show_detail(state["detail_key"])
+    app.show_landing_detail = show_detail
 
     # --- menu ----------------------------------------------------------
     menu = tk.Frame(canvas, bg=theme.BG_DEEP)
@@ -124,7 +174,7 @@ def build(app):
         menu_x = round(width * 0.30)
         canvas.create_window(menu_x, round(height * 0.56), window=menu, anchor="center")
 
-        panel_w, panel_h = px(360), px(230)
+        panel_w, panel_h = px(360), px(300)
         panel_x = round(width * 0.66)
         panel_y = round(height * 0.56) - panel_h // 2
         canvas.create_image(panel_x - px(12), panel_y - px(12), anchor="nw", image=sk.get(

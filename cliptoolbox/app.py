@@ -6,6 +6,8 @@ intact — the Halo widgets deliberately keep the tk/ttk .config()/get/set
 surface the old code drives. Core media logic lives in cliptoolbox.core and
 is not defined here.
 """
+import hashlib
+import os
 import subprocess
 import sys
 import tempfile
@@ -29,6 +31,7 @@ except Exception:
 from cliptoolbox.constants import (
     APP_NAME,
     APP_VERSION,
+    CREATE_NO_WINDOW,
     DEFAULT_COMPRESSION_RESOLUTION,
     DEFAULT_COMPRESSION_TARGET_MB,
     IS_WINDOWS,
@@ -113,12 +116,13 @@ class HaloApp:
 
         self.user_is_seeking = False
         self.is_exporting = False
-        self.auto_preview_after_load = True
+        self.auto_preview_after_load = bool(self.settings.auto_preview_after_load)
         self.preview_width = px(PREVIEW_WIDTH)
         self.preview_height = px(PREVIEW_HEIGHT)
 
         self.recent_clips: list[str] = list(self.settings.recent_clips)
         self.last_open_dir: str | None = self.settings.last_open_dir
+        self.thumbnail_cache: dict = {}  # cache-path -> ImageTk.PhotoImage (ref holder)
         self.active_screen = "landing"
 
         self.build_ui()
@@ -208,6 +212,7 @@ class HaloApp:
         s.compress_enabled = bool(self.compress_enabled_var.get())
         s.compression_target_mb = self.compression_target_var.get().strip() or s.compression_target_mb
         s.compression_resolution = self.get_compression_resolution_label()
+        s.auto_preview_after_load = bool(self.auto_preview_after_load)
         s.recent_clips = list(self.recent_clips)
         s.last_open_dir = self.last_open_dir
         app_settings.save(s)
@@ -282,6 +287,8 @@ class HaloApp:
                       lambda e, n=digit: self.shortcut(lambda: self.seek_to_fraction(n / 10.0)))
         root.bind("<Control-o>", lambda e: self.shortcut_load())
         root.bind("<Control-e>", lambda e: self.shortcut(self.export_video_dialog))
+        root.bind("<Control-comma>", lambda e: self.shortcut_settings())
+        root.bind("<Control-C>", lambda e: self.shortcut(self.copy_timestamp))
         root.bind("<Escape>", lambda e: self.shortcut_escape())
 
     def _typing_in_entry(self) -> bool:
@@ -307,6 +314,22 @@ class HaloApp:
             return "break"
         self.load_video_dialog()
         return "break"
+
+    def shortcut_settings(self):
+        if self.is_exporting or self._typing_in_entry():
+            return "break"
+        self.open_settings()
+        return "break"
+
+    def copy_timestamp(self):
+        text = self.format_timecode(self.current_seek_seconds())
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+        except Exception:
+            return
+        self.set_status(f"Copied timestamp {text} to clipboard.")
+        self.log(f"Copied timestamp {text}.")
 
     def shortcut_escape(self):
         if self.is_exporting:
@@ -436,6 +459,86 @@ class HaloApp:
         if hasattr(self, "refresh_landing_detail"):
             self.refresh_landing_detail()
         self.save_settings()
+
+    def remove_recent_clip(self, path: str):
+        if path in self.recent_clips:
+            self.recent_clips.remove(path)
+            self.save_settings()
+            if hasattr(self, "refresh_landing_detail"):
+                self.refresh_landing_detail()
+
+    # ------------------------------------------------------------------
+    # Recent-clip thumbnails (cached beside the config)
+    # ------------------------------------------------------------------
+
+    def _thumb_dir(self) -> Path:
+        base = os.environ.get("APPDATA")
+        root = Path(base) / "ClipToolbox" if base else Path.home() / ".cliptoolbox"
+        return root / "thumbs"
+
+    THUMBNAIL_HEIGHT = 36  # logical px; landing sizes its holder to match
+
+    def _thumb_cache_path(self, path: str) -> Path:
+        try:
+            mtime = int(Path(path).stat().st_mtime)
+        except Exception:
+            mtime = 0
+        height = px(self.THUMBNAIL_HEIGHT)
+        key = hashlib.md5(f"{path}|{mtime}|{height}".encode("utf-8")).hexdigest()
+        return self._thumb_dir() / f"{key}.png"
+
+    def _load_thumbnail(self, cache_path: Path):
+        key = str(cache_path)
+        cached = self.thumbnail_cache.get(key)
+        if cached is not None:
+            return cached
+        if not PIL_AVAILABLE or not cache_path.exists():
+            return None
+        try:
+            image = Image.open(cache_path)
+            image.load()
+            photo = ImageTk.PhotoImage(image)
+            self.thumbnail_cache[key] = photo  # hold a reference
+            return photo
+        except Exception:
+            return None
+
+    def get_recent_thumbnail(self, path: str, on_ready):
+        """Deliver a cached PhotoImage for a recent clip (or None). Extraction
+        runs on a worker and calls on_ready on the Tk thread when done."""
+        if not PIL_AVAILABLE or not FFMPEG or not Path(path).exists():
+            on_ready(None)
+            return
+
+        cache_path = self._thumb_cache_path(path)
+        existing = self._load_thumbnail(cache_path)
+        if existing is not None:
+            on_ready(existing)
+            return
+
+        def worker():
+            try:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                cmd = [
+                    FFMPEG, "-hide_banner", "-loglevel", "error",
+                    "-ss", "1", "-i", path,
+                    "-vf", f"scale=-2:{px(self.THUMBNAIL_HEIGHT)}", "-frames:v", "1",
+                    "-y", str(cache_path),
+                ]
+                process = subprocess.Popen(
+                    cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    creationflags=CREATE_NO_WINDOW,
+                )
+                assign_process_to_cleanup_job(process)
+                try:
+                    process.wait(timeout=6)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+            except Exception:
+                pass
+            self.ui(lambda: on_ready(self._load_thumbnail(cache_path)))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def enable_drag_and_drop(self):
         if not DND_AVAILABLE:

@@ -21,6 +21,7 @@ from cliptoolbox.ui.widgets import (
     HaloPanel,
     HaloScrollbar,
     HaloSegmented,
+    Tooltip,
     make_log,
 )
 
@@ -346,6 +347,26 @@ def build(app):
 
     log_frame, app.log_text = make_log(log_panel.body)
     log_frame.pack(fill=tk.BOTH, expand=True)
+
+    # ------------------------------------------------------------------
+    # Hover tooltips on the less-obvious controls
+    # ------------------------------------------------------------------
+    for widget, tip in (
+        (app.loop_checkbox, "Loop the trim region (or whole clip) during preview"),
+        (app.trim_checkbox, "Enable trimming — set an in and out point"),
+        (app.trim_start_button, "Set trim start to the playhead ( [ )"),
+        (app.trim_end_button, "Set trim end to the playhead ( ] )"),
+        (app.trim_in_entry, "Type an exact in point (m:ss.cs)"),
+        (app.trim_out_entry, "Type an exact out point (m:ss.cs)"),
+        (app.clear_trim_button, "Clear both trim points"),
+        (app.frame_save_button, "Save the current frame as a PNG in outputs/"),
+        (app.frame_saveas_button, "Save the current frame to a chosen location"),
+        (app.frame_copy_button, "Copy the current frame to the clipboard"),
+        (app.reset_volumes_button, "Reset every track to 100% and clear mute/solo"),
+        (app.compression_target_entry, "Target size in MB (Windows/Discord MiB)"),
+        (app.compression_resolution_combo, "Cap the compressed video resolution"),
+    ):
+        Tooltip(widget, tip)
 
     # Misc compatibility vars.
     app.dnd_hint_var = tk.StringVar(value="")

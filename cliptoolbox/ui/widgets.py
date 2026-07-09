@@ -36,6 +36,66 @@ class _NullWidget:
         pass
 
 
+class Tooltip:
+    """Lightweight hover tooltip — a delayed borderless Toplevel under the
+    widget. Bindings use add="+" so they don't clobber a widget's own
+    hover/press handlers."""
+
+    def __init__(self, widget, text, delay=550):
+        self.widget = widget
+        self.text = text
+        self.delay = delay
+        self._after = None
+        self._tip = None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
+
+    def _schedule(self, _event=None):
+        self._cancel()
+        self._after = self.widget.after(self.delay, self._show)
+
+    def _show(self):
+        if self._tip is not None:
+            return
+        try:
+            x = self.widget.winfo_rootx() + self.widget.winfo_width() // 2
+            y = self.widget.winfo_rooty() + self.widget.winfo_height() + px(6)
+        except Exception:
+            return
+
+        self._tip = tk.Toplevel(self.widget)
+        self._tip.overrideredirect(True)
+        self._tip.configure(bg=theme.PANEL_BORDER)
+        try:
+            self._tip.attributes("-topmost", True)
+        except Exception:
+            pass
+        tk.Label(self._tip, text=self.text, bg=theme.PANEL_FILL_HI,
+                 fg=theme.TEXT_BRIGHT, font=theme.font_small(11),
+                 padx=px(8), pady=px(3)).pack(padx=1, pady=1)
+        self._tip.update_idletasks()
+        w = self._tip.winfo_reqwidth()
+        self._tip.geometry(f"+{max(0, x - w // 2)}+{y}")
+
+    def _hide(self, _event=None):
+        self._cancel()
+        if self._tip is not None:
+            try:
+                self._tip.destroy()
+            except Exception:
+                pass
+            self._tip = None
+
+    def _cancel(self):
+        if self._after is not None:
+            try:
+                self.widget.after_cancel(self._after)
+            except Exception:
+                pass
+            self._after = None
+
+
 def draw_corner_brackets(canvas: tk.Canvas, x0: int, y0: int, x1: int, y1: int,
                          color: str = theme.TEXT_BRIGHT, tag: str = "brackets"):
     """White corner-bracket focus frame, like the H2 selection reticle."""
