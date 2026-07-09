@@ -212,6 +212,33 @@ def build(app):
     app.trim_buttons_frame.pack_forget()
 
     # ------------------------------------------------------------------
+    # Left: frame snapshot actions
+    # ------------------------------------------------------------------
+    frame_row = tk.Frame(left, bg=theme.BG_DEEP)
+    frame_row.pack(fill=tk.X, pady=(px(6), 0))
+
+    tk.Label(frame_row, text="FRAME", font=theme.font_title(12),
+             bg=theme.BG_DEEP, fg=theme.TEXT_DIM).pack(side=tk.LEFT, padx=(0, px(8)))
+
+    app.frame_save_button = HaloButton(
+        frame_row, text="SAVE", command=lambda: app.snapshot_frame("save"),
+        height=px(26), font=theme.font_small(12),
+    )
+    app.frame_save_button.pack(side=tk.LEFT)
+
+    app.frame_saveas_button = HaloButton(
+        frame_row, text="SAVE AS…", command=lambda: app.snapshot_frame("saveas"),
+        height=px(26), font=theme.font_small(12),
+    )
+    app.frame_saveas_button.pack(side=tk.LEFT, padx=(px(6), 0))
+
+    app.frame_copy_button = HaloButton(
+        frame_row, text="COPY", command=lambda: app.snapshot_frame("copy"),
+        height=px(26), font=theme.font_small(12),
+    )
+    app.frame_copy_button.pack(side=tk.LEFT, padx=(px(6), 0))
+
+    # ------------------------------------------------------------------
     # Left: compression quick-options card
     # ------------------------------------------------------------------
     card = HaloPanel(left, title="Compression")

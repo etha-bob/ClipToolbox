@@ -8,6 +8,7 @@ is not defined here.
 """
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from io import BytesIO
@@ -51,7 +52,7 @@ from cliptoolbox.core.paths import (
     exe_name,
     reveal_file as core_reveal_file,
 )
-from cliptoolbox.core.win32 import assign_process_to_cleanup_job
+from cliptoolbox.core.win32 import assign_process_to_cleanup_job, set_clipboard_dib
 from cliptoolbox.dnd import DND_AVAILABLE, DND_FILES, TkinterDnD
 from cliptoolbox import settings as app_settings
 from cliptoolbox.ui import chrome, dialogs, dpi, fonts, theme
@@ -2052,6 +2053,94 @@ class HaloApp:
 
     def reveal_file(self, path: str):
         core_reveal_file(path)
+
+    def reveal_current_clip(self, _event=None):
+        if self.video_path and Path(self.video_path).exists():
+            self.reveal_file(self.video_path)
+
+    # ========================================================
+    # Frame snapshot (save / save as / copy)
+    # ========================================================
+
+    def filename_timecode(self, seconds: float) -> str:
+        seconds = max(0.0, float(seconds))
+        minutes = int(seconds // 60)
+        secs = int(seconds % 60)
+        centis = int(round((seconds - int(seconds)) * 100)) % 100
+        return f"{minutes:02d}m{secs:02d}s{centis:02d}"
+
+    def snapshot_frame(self, mode: str):
+        """mode: 'save' (outputs/ + toast), 'saveas' (dialog), 'copy' (clipboard)."""
+        if not self.video_path or not FFMPEG:
+            messagebox.showwarning("No clip", "Load a clip before saving a frame.")
+            return
+
+        seconds = self.current_seek_seconds()
+
+        if mode == "saveas":
+            stem = Path(self.video_path).stem
+            dest = filedialog.asksaveasfilename(
+                title="Save frame as",
+                initialdir=str(OUTPUTS_DIR),
+                initialfile=f"{stem}_frame_{self.filename_timecode(seconds)}.png",
+                defaultextension=".png",
+                filetypes=[("PNG image", "*.png"), ("JPEG image", "*.jpg"), ("All files", "*.*")],
+            )
+            if not dest:
+                return
+        elif mode == "save":
+            OUTPUTS_DIR.mkdir(exist_ok=True)
+            stem = Path(self.video_path).stem
+            dest = str(OUTPUTS_DIR / f"{stem}_frame_{self.filename_timecode(seconds)}.png")
+        else:  # copy
+            dest = tempfile.NamedTemporaryFile(delete=False, suffix=".png").name
+
+        self.set_status("Saving frame...")
+        self.playback.save_frame(
+            seconds, dest,
+            lambda ok, path, mode=mode: self.ui(self.on_snapshot_done, ok, path, mode),
+        )
+
+    def on_snapshot_done(self, ok: bool, path: str, mode: str):
+        if not ok:
+            self.set_status("Frame capture failed.")
+            messagebox.showerror("Frame capture failed",
+                                 "FFmpeg could not extract the current frame.")
+            return
+
+        if mode == "copy":
+            copied = self.copy_image_to_clipboard(path)
+            try:
+                Path(path).unlink(missing_ok=True)
+            except Exception:
+                pass
+            if copied:
+                self.set_status("Frame copied to clipboard.")
+                self.log("Frame copied to clipboard.")
+                dialogs.toast("Frame copied", "Paste it anywhere (e.g. Discord).", "success")
+            else:
+                self.set_status("Could not copy frame to clipboard.")
+                messagebox.showerror("Clipboard error", "Could not copy the frame to the clipboard.")
+            return
+
+        # save / saveas
+        name = Path(path).name
+        self.set_status(f"Frame saved: {name}")
+        self.log(f"Frame saved: {path}")
+        dialogs.toast("Frame saved", name, "success", "OPEN FOLDER",
+                      lambda p=path: self.reveal_file(p), 8000)
+
+    def copy_image_to_clipboard(self, image_path: str) -> bool:
+        if not PIL_AVAILABLE:
+            return False
+        try:
+            image = Image.open(image_path).convert("RGB")
+            buffer = BytesIO()
+            image.save(buffer, "BMP")
+            # Strip the 14-byte BITMAPFILEHEADER to get a CF_DIB payload.
+            return set_clipboard_dib(buffer.getvalue()[14:])
+        except Exception:
+            return False
 
     # ========================================================
     # Closing

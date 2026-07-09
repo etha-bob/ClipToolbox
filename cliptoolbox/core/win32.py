@@ -82,10 +82,27 @@ if IS_WINDOWS:
     SW_SHOW = 5
     SW_RESTORE = 9
 
+    HWND_TOP = 0
+
     SWP_NOZORDER = 0x0004
     SWP_NOACTIVATE = 0x0010
     SWP_FRAMECHANGED = 0x0020
     SWP_SHOWWINDOW = 0x0040
+    # Post the reposition to the target window's own thread instead of sending
+    # it synchronously, so a cross-process reposition never blocks the caller
+    # on the target's (FFplay's) message pump.
+    SWP_ASYNCWINDOWPOS = 0x4000
+
+    SetWindowPos.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_uint,
+    ]
+    SetWindowPos.restype = ctypes.c_bool
 
     PW_CLIENTONLY = 0x00000001
     PW_RENDERFULLCONTENT = 0x00000002
@@ -345,12 +362,25 @@ def embed_external_window_hidden(child_hwnd: int, parent_hwnd: int, width: int, 
     return True
 
 
-def anchor_child_window(hwnd: int | None, width: int, height: int):
+def anchor_child_window(hwnd: int | None, width: int, height: int, show: bool = True):
     """
-    Pins an embedded child window back to (0, 0) at the given size, showing it
-    if needed. FFplay's video_open() repositions/resizes its SDL window when
-    the first frame is ready, which can land after the embed; this snaps it
-    back. Never call while the owning process is suspended.
+    Pins an embedded child window back to (0, 0) at the given size. FFplay's
+    video_open() repositions/resizes its SDL window when the first frame is
+    ready, which can land after the embed; this snaps it back.
+
+    Uses SetWindowPos with SWP_ASYNCWINDOWPOS: the reposition is POSTED to
+    FFplay's own thread rather than sent synchronously, so this never blocks
+    the Tk thread on FFplay's message pump. That matters because this runs on
+    the resize path (on_preview_frame_resize -> apply_size), which Tk can
+    dispatch *inside* Windows' modal move/size loop — an edge-resize or a
+    header drag that Aero-snaps. A synchronous MoveWindow/UpdateWindow there
+    waits on FFplay and stalls the whole drag loop (the "freeze on resizing").
+    FFplay repaints itself on its next frame, so no forced UpdateWindow is
+    needed. Never call while the owning process is suspended.
+
+    show=True reveals the window and raises it to the top of the preview frame
+    (first-frame reveal); show=False keeps the current visibility and z-order
+    (live resize).
     """
     if not IS_WINDOWS or not hwnd:
         return
@@ -358,10 +388,9 @@ def anchor_child_window(hwnd: int | None, width: int, height: int):
     try:
         if not IsWindow(hwnd):
             return
-        MoveWindow(hwnd, 0, 0, max(1, int(width)), max(1, int(height)), True)
-        ShowWindow(hwnd, SW_SHOW)
-        BringWindowToTop(hwnd)
-        UpdateWindow(hwnd)
+        flags = SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS
+        flags |= SWP_SHOWWINDOW if show else SWP_NOZORDER
+        SetWindowPos(hwnd, HWND_TOP, 0, 0, max(1, int(width)), max(1, int(height)), flags)
     except Exception:
         pass
 
@@ -520,6 +549,58 @@ def assign_process_to_cleanup_job(process) -> bool:
         return bool(AssignProcessToJobObject(_cleanup_job, handle))
     except Exception:
         return False
+
+
+def set_clipboard_dib(dib_bytes: bytes) -> bool:
+    """Put a device-independent bitmap on the Windows clipboard as CF_DIB.
+
+    `dib_bytes` is a BMP file's contents with the 14-byte BITMAPFILEHEADER
+    stripped (i.e. starting at the BITMAPINFOHEADER) — the caller builds this
+    from PIL. Tk's own clipboard can't carry images, hence the raw Win32 path.
+    """
+    if not IS_WINDOWS or not dib_bytes:
+        return False
+
+    CF_DIB = 8
+    GMEM_MOVEABLE = 0x0002
+
+    GlobalAlloc = kernel32.GlobalAlloc
+    GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
+    GlobalAlloc.restype = ctypes.c_void_p
+    GlobalLock = kernel32.GlobalLock
+    GlobalLock.argtypes = [ctypes.c_void_p]
+    GlobalLock.restype = ctypes.c_void_p
+    GlobalUnlock = kernel32.GlobalUnlock
+    GlobalUnlock.argtypes = [ctypes.c_void_p]
+
+    OpenClipboard = user32.OpenClipboard
+    OpenClipboard.argtypes = [ctypes.c_void_p]
+    EmptyClipboard = user32.EmptyClipboard
+    SetClipboardData = user32.SetClipboardData
+    SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+    SetClipboardData.restype = ctypes.c_void_p
+    CloseClipboard = user32.CloseClipboard
+
+    handle = GlobalAlloc(GMEM_MOVEABLE, len(dib_bytes))
+    if not handle:
+        return False
+
+    locked = GlobalLock(handle)
+    if not locked:
+        return False
+    ctypes.memmove(locked, dib_bytes, len(dib_bytes))
+    GlobalUnlock(handle)
+
+    if not OpenClipboard(None):
+        return False
+    try:
+        EmptyClipboard()
+        if not SetClipboardData(CF_DIB, handle):
+            return False
+        # Ownership of the handle passed to the clipboard on success.
+        return True
+    finally:
+        CloseClipboard()
 
 
 def hide_native_window(hwnd: int | None):

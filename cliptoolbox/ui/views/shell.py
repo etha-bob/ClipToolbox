@@ -50,6 +50,8 @@ def build(app):
     # because WS_THICKFRAME is retained by the chrome).
     header.bind("<ButtonPress-1>", lambda e: chrome.begin_drag(root))
     header.bind("<Double-Button-1>", lambda e: chrome.toggle_maximize(root))
+    # Right-click the header (over the filename) reveals the loaded clip.
+    header.bind("<Button-3>", app.reveal_current_clip)
 
     # Window buttons.
     controls = tk.Frame(root, bg=theme.BG_DEEP)

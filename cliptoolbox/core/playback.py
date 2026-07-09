@@ -227,6 +227,30 @@ def build_frame_extract_cmd(
     ]
 
 
+def build_snapshot_cmd(input_path: str, seconds: float, dest_path: str) -> list[str]:
+    """Full-resolution single-frame extract. The output format follows the
+    destination extension (PNG for lossless snapshots)."""
+    return [
+        paths.FFMPEG,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-ss",
+        f"{seconds:.3f}",
+        "-i",
+        input_path,
+        "-map",
+        "0:v:0",
+        "-frames:v",
+        "1",
+        "-an",
+        "-sn",
+        "-dn",
+        "-y",
+        dest_path,
+    ]
+
+
 class _Pipeline:
     """One spawned ffmpeg->ffplay pair plus its diagnostic tails."""
 
@@ -661,7 +685,7 @@ class PlaybackEngine:
             return
         if width is None or height is None:
             width, height = self._size
-        win32.anchor_child_window(self._hwnd, width, height)
+        win32.anchor_child_window(self._hwnd, width, height, show=True)
 
     def apply_size(self, width: int, height: int):
         """Preview frame resized."""
@@ -669,11 +693,48 @@ class PlaybackEngine:
         height = max(2, int(height))
         self._size = (width, height)
         if self._embedded and self._hwnd and not self._concealed:
-            win32.anchor_child_window(self._hwnd, width, height)
+            win32.anchor_child_window(self._hwnd, width, height, show=False)
 
     # ------------------------------------------------------------------
     # Still frames (pause fallback + scrubbing)
     # ------------------------------------------------------------------
+
+    def save_frame(self, seconds: float, dest_path: str, on_done):
+        """Extract the full-resolution frame at `seconds` to dest_path on a
+        worker thread. Calls on_done(success: bool, dest_path: str) when done
+        (on the worker thread — the caller marshals to its UI thread)."""
+        video_path = self._video_path
+        if not video_path or not paths.FFMPEG:
+            on_done(False, dest_path)
+            return
+
+        seconds = self._clamp_position(seconds)
+        duration = self._duration or 0
+        if duration:
+            seconds = min(seconds, max(0.0, duration - 0.05))
+
+        def worker():
+            ok = False
+            try:
+                cmd = build_snapshot_cmd(video_path, seconds, dest_path)
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=CREATE_NO_WINDOW,
+                )
+                win32.assign_process_to_cleanup_job(process)
+                try:
+                    rc = process.wait(timeout=STILL_EXTRACT_TIMEOUT)
+                except subprocess.TimeoutExpired:
+                    _kill_process(process)
+                    rc = -1
+                ok = rc == 0 and Path(dest_path).exists()
+            except Exception:
+                ok = False
+            on_done(ok, dest_path)
+
+        threading.Thread(target=worker, name="playback-snapshot", daemon=True).start()
 
     def request_still(self, seconds: float) -> int:
         """Extract a single frame asynchronously; emits on_still_frame with the
