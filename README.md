@@ -2,7 +2,10 @@
 
 ClipToolbox is a small Windows desktop tool for previewing, mixing, trimming, exporting, and Discord-size-compressing video clips — wearing a Halo 2 (2004) menu interface.
 
-![UI style: deep navy panels, chamfered corners, slanted gradient bars, Rajdhani type]()
+<img width="2897" height="1681" alt="image" src="https://github.com/user-attachments/assets/bade2f2b-b5fb-4ce6-b03d-6e9f62dd826c" />
+
+<img width="2896" height="1682" alt="image" src="https://github.com/user-attachments/assets/133bc1e5-8523-4c0f-86b0-b1796e9d9f76" />
+
 
 ## Features
 
