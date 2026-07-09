@@ -195,9 +195,13 @@ def build(app):
     app.trim_out_entry = HaloEntry(app.trim_buttons_frame, textvariable=app.trim_out_var, width=7)
     app.trim_out_entry.pack(side=tk.LEFT)
 
+    trim_vcmd = (app.root.register(app.validate_timecode_key), "%P")
     for entry, kind in ((app.trim_in_entry, "start"), (app.trim_out_entry, "end")):
-        entry.entry.bind("<Return>", lambda e, k=kind: app.commit_trim_entry(k))
-        entry.entry.bind("<FocusOut>", lambda e, k=kind: app.commit_trim_entry(k))
+        entry.entry.configure(validate="key", validatecommand=trim_vcmd)
+        entry.entry.bind("<Return>", lambda e, k=kind: app.commit_trim_entry(k, unfocus=True))
+        # add="+" so this doesn't clobber HaloEntry's own FocusOut handler
+        # (which resets the entry's highlight background).
+        entry.entry.bind("<FocusOut>", lambda e, k=kind: app.commit_trim_entry(k), add="+")
 
     app.clear_trim_button = HaloButton(
         app.trim_buttons_frame, text="CLEAR", command=app.clear_trim_points,

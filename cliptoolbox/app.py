@@ -9,6 +9,7 @@ is not defined here.
 import hashlib
 import os
 import queue
+import re
 import subprocess
 import sys
 import tempfile
@@ -164,6 +165,14 @@ class HaloApp:
         self.wheel.register(self.seekbar, self.on_wheel_seek)
         self.wheel.register(self.track_canvas, self.on_wheel_roster)
         self.wheel.register(self.track_scrollbar, self.on_wheel_roster)
+        self.wheel.register(
+            self.trim_in_entry,
+            lambda steps, fine: self.on_wheel_trim_entry("start", steps, fine),
+        )
+        self.wheel.register(
+            self.trim_out_entry,
+            lambda steps, fine: self.on_wheel_trim_entry("end", steps, fine),
+        )
         self.wheel.register(
             self.log_text,
             lambda steps, fine: self.log_text.yview_scroll(-steps * 2, "units"),
@@ -1354,7 +1363,8 @@ class HaloApp:
 
     def sync_trim_entries(self):
         """Reflect the current trim values in the inline in/out fields, unless
-        the user is typing in one of them."""
+        the user is typing in one of them. Unset bounds default to the clip's
+        start (0:00) and end (full duration)."""
         if not hasattr(self, "trim_in_var"):
             return
         focus = None
@@ -1362,12 +1372,25 @@ class HaloApp:
             focus = self.root.focus_get()
         except Exception:
             pass
+        duration = self.total_duration_seconds or 0.0
         in_inner = getattr(self.trim_in_entry, "entry", None)
         out_inner = getattr(self.trim_out_entry, "entry", None)
         if focus is not in_inner:
-            self.trim_in_var.set(self.format_timecode(self.trim_start_seconds))
+            start = self.trim_start_seconds if self.trim_start_seconds is not None else 0.0
+            self.trim_in_var.set(self.format_timecode(start))
         if focus is not out_inner:
-            self.trim_out_var.set(self.format_timecode(self.trim_end_seconds))
+            end = self.trim_end_seconds if self.trim_end_seconds is not None else duration
+            self.trim_out_var.set(self.format_timecode(end))
+
+    _TIMECODE_KEY_RE = re.compile(r"^[0-9]*(:[0-9]{0,2})?(\.[0-9]*)?$")
+
+    def validate_timecode_key(self, proposed: str) -> bool:
+        """<Entry validate="key"> filter: only digits, one ':', one '.'."""
+        if proposed == "":
+            return True
+        if proposed.count(":") > 1 or proposed.count(".") > 1:
+            return False
+        return bool(self._TIMECODE_KEY_RE.match(proposed))
 
     def set_trim_value(self, kind: str, seconds: float | None, enable: bool = True):
         """Shared setter for the inline entries and bracket dragging."""
@@ -1392,17 +1415,34 @@ class HaloApp:
             self.trim_enabled_var.set(True)
         self.update_trim_controls()
 
-    def commit_trim_entry(self, kind: str):
+    def commit_trim_entry(self, kind: str, unfocus: bool = False):
         var = self.trim_in_var if kind == "start" else self.trim_out_var
         seconds = self.parse_timecode(var.get())
         if seconds is None and var.get().strip():
             # Unparseable — restore the displayed value.
             self.sync_trim_entries()
-            return
-        self.set_trim_value(kind, seconds)
-        if seconds is not None:
-            label = "start" if kind == "start" else "end"
-            self.log(f"Trim {label} set to {self.format_seconds(seconds)}.")
+        else:
+            self.set_trim_value(kind, seconds)
+            if seconds is not None:
+                label = "start" if kind == "start" else "end"
+                self.log(f"Trim {label} set to {self.format_seconds(seconds)}.")
+        if unfocus:
+            self.root.focus_set()
+
+    def on_wheel_trim_entry(self, kind: str, steps: int, fine: bool):
+        """Wheel over an IN/OUT field: ±1 s per notch (Shift = ±0.1 s)."""
+        step = 0.1 if fine else 1.0
+        duration = self.total_duration_seconds or 0.0
+        current = self.trim_start_seconds if kind == "start" else self.trim_end_seconds
+        if current is None:
+            current = 0.0 if kind == "start" else duration
+        target = current + steps * step
+        target = min(max(0.0, target), duration) if duration else max(0.0, target)
+        self.set_trim_value(kind, target)
+        # Refresh the field even if it currently has focus (a wheel notch is
+        # a discrete action, not free-form typing that should be left alone).
+        var = self.trim_in_var if kind == "start" else self.trim_out_var
+        var.set(self.format_timecode(target))
 
     def on_trim_bracket_drag(self, kind: str, value: float):
         """Live update while a bracket is dragged on the seekbar."""
