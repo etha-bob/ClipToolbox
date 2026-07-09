@@ -39,6 +39,7 @@ from cliptoolbox.constants import (
 from cliptoolbox.core import commands as core_commands
 from cliptoolbox.core import export as core_export
 from cliptoolbox.core import filters as core_filters
+from cliptoolbox.core import mediainfo as core_mediainfo
 from cliptoolbox.core import playback as core_playback
 from cliptoolbox.core import probe as core_probe
 from cliptoolbox.core.paths import (
@@ -75,6 +76,10 @@ class HaloApp:
         self.trim_enabled_var = tk.BooleanVar(value=False)
         self.trim_start_seconds: float | None = None
         self.trim_end_seconds: float | None = None
+
+        self.video_fps: float | None = None
+        self.loop_enabled_var = tk.BooleanVar(value=False)
+        self.show_remaining = False
 
         self.compress_enabled_var = tk.BooleanVar(value=bool(self.settings.compress_enabled))
         self.compression_target_var = tk.StringVar(
@@ -261,6 +266,11 @@ class HaloApp:
         root.bind("<Home>", lambda e: self.shortcut(lambda: self.seek_absolute(0.0)))
         root.bind("<End>", lambda e: self.shortcut(
             lambda: self.seek_absolute(self.total_duration_seconds or 0.0)))
+        root.bind("<comma>", lambda e: self.shortcut(lambda: self.step_frame(-1)))
+        root.bind("<period>", lambda e: self.shortcut(lambda: self.step_frame(1)))
+        for digit in range(10):
+            root.bind(f"<Key-{digit}>",
+                      lambda e, n=digit: self.shortcut(lambda: self.seek_to_fraction(n / 10.0)))
         root.bind("<Control-o>", lambda e: self.shortcut_load())
         root.bind("<Control-e>", lambda e: self.shortcut(self.export_video_dialog))
         root.bind("<Escape>", lambda e: self.shortcut_escape())
@@ -316,6 +326,25 @@ class HaloApp:
         self.on_seek_press()
         self.seek_var.set(seconds)
         self.on_seek_release()
+
+    def seek_to_fraction(self, fraction: float):
+        duration = self.total_duration_seconds or 0
+        if duration <= 0:
+            return
+        self.seek_absolute(min(max(0.0, fraction), 1.0) * duration)
+
+    def step_frame(self, direction: int):
+        """Nudge the playhead by one frame. If playing, pause on the current
+        frame first (the paused scrub-still path renders each stepped frame)."""
+        if not self.video_path:
+            return
+
+        if self.playback.state in (core_playback.PLAYING, core_playback.STARTING):
+            self.pause_playback()
+
+        fps = self.video_fps or core_mediainfo.DEFAULT_FRAME_RATE
+        step = 1.0 / max(1.0, fps)
+        self.seek_relative(direction * step)
 
     # ========================================================
     # Mouse wheel
@@ -615,6 +644,7 @@ class HaloApp:
         self.stop_preview()
 
         self.video_path = str(path_obj)
+        self.video_fps = None
         self.playback.configure_media(self.video_path, None)
         self.file_label_var.set(path_obj.name)
         self.clear_tracks()
@@ -630,13 +660,16 @@ class HaloApp:
         def worker():
             streams = self.get_audio_streams(str(path_obj))
             duration = self.get_media_duration(str(path_obj))
-            self.ui(self.after_probe, streams, duration)
+            fps = core_mediainfo.probe_frame_rate(str(path_obj))
+            self.ui(self.after_probe, streams, duration, fps)
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def after_probe(self, streams: list[dict], duration: float | None):
+    def after_probe(self, streams: list[dict], duration: float | None,
+                    fps: float | None = None):
         self.audio_metadata = streams
         self.total_duration_seconds = duration
+        self.video_fps = fps
         self.playback.configure_media(self.video_path, duration)
         self.set_seek_range(duration)
         self.update_trim_controls()
@@ -796,9 +829,9 @@ class HaloApp:
         duration = duration or 0
 
         self.seekbar.configure(to=max(duration, 1))
-        self.time_right_var.set(self.format_seconds(duration))
         self.time_left_var.set("0:00")
         self.seek_var.set(0)
+        self.update_time_right(0)
         self.update_trim_markers()
 
     def set_seek_position(self, seconds: float):
@@ -812,6 +845,25 @@ class HaloApp:
             self.seek_var.set(seconds)
 
         self.time_left_var.set(self.format_seconds(seconds))
+        self.update_time_right(seconds)
+
+    def update_time_right(self, position: float):
+        """Right-hand time label: total duration, or count-down remaining when
+        toggled (click the label). Left label always shows elapsed."""
+        duration = self.total_duration_seconds or 0
+        if self.show_remaining and duration:
+            remaining = max(0.0, duration - max(0.0, position))
+            self.time_right_var.set("-" + self.format_seconds(remaining))
+        else:
+            self.time_right_var.set(self.format_seconds(duration))
+
+    def toggle_time_display(self, _event=None):
+        self.show_remaining = not self.show_remaining
+        try:
+            position = float(self.seek_var.get())
+        except Exception:
+            position = 0.0
+        self.update_time_right(position)
 
     def on_seek_press(self, event=None):
         self.user_is_seeking = True
@@ -924,6 +976,17 @@ class HaloApp:
     def on_trim_toggle(self):
         self.update_trim_controls()
         self.log("Trim controls enabled." if self.trim_enabled_var.get() else "Trim controls disabled.")
+
+    def on_loop_toggle(self):
+        if self.loop_enabled_var.get():
+            bounds = self.loop_bounds()
+            if bounds is not None:
+                start, end = bounds
+                self.log(f"Loop enabled ({self.format_seconds(start)} → {self.format_seconds(end)}).")
+            else:
+                self.log("Loop enabled.")
+        else:
+            self.log("Loop disabled.")
 
     def update_trim_controls(self):
         if not hasattr(self, "trim_buttons_frame"):
@@ -1348,7 +1411,7 @@ class HaloApp:
                 app.on_ui_thread(app.on_playback_state, state)
 
             def on_position(self, seconds: float) -> None:
-                app.ui(app.set_seek_position, seconds)
+                app.ui(app.on_playback_position, seconds)
 
             def on_window_ready(self, hwnd: int) -> None:
                 app.ui(app.on_preview_window_ready)
@@ -1486,7 +1549,43 @@ class HaloApp:
         self.preview_placeholder.place(relx=0.5, rely=0.5, anchor="center")
         self.pending_still_request = self.playback.request_still(position)
 
+    def loop_bounds(self) -> tuple[float, float] | None:
+        """Return (start, end) of the active loop region, or None if looping
+        is off. Loops the trim region when trim is set, else the whole clip."""
+        if not self.loop_enabled_var.get():
+            return None
+
+        duration = self.total_duration_seconds or 0
+        if duration <= 0:
+            return None
+
+        start, end = self.get_active_trim_points()
+        start = start if start is not None else 0.0
+        end = end if end is not None else duration
+        if end - start < 0.05:
+            return None
+        return start, end
+
+    def on_playback_position(self, seconds: float):
+        bounds = self.loop_bounds()
+        if bounds is not None and self.playback.state == core_playback.PLAYING:
+            start, end = bounds
+            # Small lead so the restart fires before the tail plays past the
+            # out point (position callbacks arrive ~10 Hz).
+            if seconds >= end - 0.08:
+                self.set_seek_position(start)
+                self.restart_playback_at(start)
+                return
+        self.set_seek_position(seconds)
+
     def on_playback_ended(self, at_seconds: float):
+        bounds = self.loop_bounds()
+        if bounds is not None and not self.is_exporting:
+            start, _ = bounds
+            self.set_seek_position(start)
+            self.restart_playback_at(start)
+            return
+
         self.set_seek_position(at_seconds)
         self.refresh_playback_button_state()
         if not self.is_exporting:

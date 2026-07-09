@@ -131,8 +131,13 @@ def build(app):
     app.seekbar.bind_press(app.on_seek_press)
     app.seekbar.bind_release(app.on_seek_release)
 
-    tk.Label(timeline, textvariable=app.time_right_var, font=theme.font_small(),
-             bg=theme.BG_DEEP, fg=theme.TEXT, width=7, anchor="e").pack(side=tk.RIGHT)
+    time_right_label = tk.Label(
+        timeline, textvariable=app.time_right_var, font=theme.font_small(),
+        bg=theme.BG_DEEP, fg=theme.TEXT, width=7, anchor="e", cursor="hand2",
+    )
+    time_right_label.pack(side=tk.RIGHT)
+    # Click to toggle total duration <-> remaining (count-down).
+    time_right_label.bind("<Button-1>", app.toggle_time_display)
 
     # ------------------------------------------------------------------
     # Left: transport + trim
@@ -145,6 +150,13 @@ def build(app):
     )
     app.preview_button.config(state=tk.DISABLED)
     app.preview_button.pack(side=tk.LEFT)
+
+    app.loop_checkbox = HaloCheckbox(
+        transport, text="LOOP", variable=app.loop_enabled_var,
+        command=app.on_loop_toggle, behind=theme.BG_DEEP,
+        font=theme.font_title(13),
+    )
+    app.loop_checkbox.pack(side=tk.LEFT, padx=(px(12), 0))
 
     app.trim_checkbox = HaloCheckbox(
         transport, text="TRIM", variable=app.trim_enabled_var,
