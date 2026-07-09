@@ -43,12 +43,6 @@ class SettingsOverlay:
 
         # --- window ------------------------------------------------------
         section("Window")
-        self.native_var = tk.BooleanVar(value=app.settings.native_titlebar)
-        widgets.HaloCheckbox(
-            body, text="Use the native Windows title bar (applies on next launch)",
-            variable=self.native_var, behind=theme.PANEL_FILL,
-        ).pack(anchor="w")
-
         self.remember_var = tk.BooleanVar(value=app.settings.remember_geometry)
         widgets.HaloCheckbox(
             body, text="Remember window size and position",
@@ -134,7 +128,6 @@ class SettingsOverlay:
             pass
 
     def close(self):
-        self.app.settings.native_titlebar = bool(self.native_var.get())
         self.app.settings.remember_geometry = bool(self.remember_var.get())
         self.app.auto_preview_after_load = bool(self.autoplay_var.get())
         self.app.save_settings()

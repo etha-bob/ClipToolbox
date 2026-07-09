@@ -8,6 +8,7 @@ is not defined here.
 """
 import hashlib
 import os
+import queue
 import subprocess
 import sys
 import tempfile
@@ -70,6 +71,16 @@ class HaloApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.settings = app_settings.load()
+
+        # Background threads (playback callbacks, workers) must never touch
+        # Tk directly — Tcl is not thread-safe, and calling it from a
+        # non-main thread while the main thread is inside a Win32 nested
+        # modal loop (window drag/resize) corrupts the interpreter and
+        # crashes with a fatal GIL error. All cross-thread UI work is
+        # queued here and drained only by the main thread's own after()
+        # loop, so Tk is exclusively driven by the thread that owns it.
+        self._ui_queue: queue.Queue = queue.Queue()
+        self.root.after(15, self._pump_ui_queue)
 
         self.video_path: str | None = None
         self.audio_metadata: list[dict] = []
@@ -138,15 +149,10 @@ class HaloApp:
         self.root.configure(bg=theme.BG_DEEP)
         self.root.geometry(f"{px(1150)}x{px(780)}")
         self.root.minsize(px(980), px(700))
-        self.restore_geometry()
 
-        if self.settings.native_titlebar:
-            self.chrome_borderless = False
-            chrome.apply_dark_titlebar(self.root)
-        else:
-            self.chrome_borderless = chrome.apply_borderless(self.root)
-            if not self.chrome_borderless:
-                chrome.apply_dark_titlebar(self.root)
+        chrome.apply_dark_titlebar(self.root)
+
+        self.restore_geometry()
 
         dialogs.attach(self.root)
 
@@ -555,7 +561,26 @@ class HaloApp:
     # ========================================================
 
     def ui(self, callback, *args, **kwargs):
-        self.root.after(0, lambda: callback(*args, **kwargs))
+        """Thread-safe: queue a callback to run on the Tk main thread.
+
+        Never calls into Tk from the caller's thread — only pure-Python
+        queue operations, which are safe to call from any thread even
+        while the main thread is blocked inside a native modal loop.
+        """
+        self._ui_queue.put((callback, args, kwargs))
+
+    def _pump_ui_queue(self):
+        while True:
+            try:
+                callback, args, kwargs = self._ui_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                callback(*args, **kwargs)
+            except Exception:
+                import traceback
+                traceback.print_exc()
+        self.root.after(15, self._pump_ui_queue)
 
     def set_status(self, text: str):
         self.status_var.set(text)
@@ -2156,10 +2181,6 @@ class HaloApp:
 
     def reveal_file(self, path: str):
         core_reveal_file(path)
-
-    def reveal_current_clip(self, _event=None):
-        if self.video_path and Path(self.video_path).exists():
-            self.reveal_file(self.video_path)
 
     # ========================================================
     # Frame snapshot (save / save as / copy)

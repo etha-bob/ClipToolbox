@@ -28,7 +28,6 @@ class AppSettings:
     window_geometry: str | None = None
     window_maximized: bool = False
     remember_geometry: bool = True
-    native_titlebar: bool = False
     compress_enabled: bool = False
     compression_target_mb: str = "9.99"
     compression_resolution: str = "1080p"
