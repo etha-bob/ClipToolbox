@@ -50,6 +50,7 @@ from cliptoolbox.core.paths import (
     exe_name,
     reveal_file as core_reveal_file,
 )
+from cliptoolbox.core.win32 import assign_process_to_cleanup_job
 from cliptoolbox.dnd import DND_AVAILABLE, DND_FILES, TkinterDnD
 from cliptoolbox import settings as app_settings
 from cliptoolbox.ui import chrome, dialogs, dpi, fonts, theme
@@ -1725,6 +1726,7 @@ class HaloApp:
 
     def register_export_process(self, process: subprocess.Popen | None):
         self.export_process = process
+        assign_process_to_cleanup_job(process)
 
     def cancel_export(self):
         if self.export_process is not None:

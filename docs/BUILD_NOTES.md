@@ -38,3 +38,4 @@ Development extras:
 - `python -m cliptoolbox.ui.gallery` shows every themed widget/state for UI work.
 - `python tools\dump_commands.py` prints the exact FFmpeg commands the core produces for fixed inputs — run before/after refactors to prove the trim/compression logic is unchanged.
 - Core logic (`cliptoolbox\core\`) never imports tkinter; UI changes should leave it untouched in diffs.
+- `cliptoolbox\core\playback.py` owns the preview pipeline (FFmpeg → pre-scaled rawvideo/PCM over a NUT pipe → embedded FFplay). Pause/resume post FFplay's own pause key; track volumes go through FFmpeg runtime filter commands on stdin. Two hard-won rules: never suspend the FFplay process (a suspended window freezes Tk on the next activation/z-order change), and never show the SDL window before `SetParent` (that is the white-flash race).

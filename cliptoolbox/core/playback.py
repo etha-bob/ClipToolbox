@@ -175,6 +175,15 @@ def build_playback_stream_cmds(
         "-loglevel",
         "info",
         "-stats",
+        # The NUT header fully describes the streams, so probing needs no
+        # decode time, and skipping input buffering shaves ~80 ms off
+        # spawn-to-first-frame (measured 374 -> 292 ms median). If playback
+        # start ever sounds off, dropping "-fflags nobuffer" is the first
+        # thing to try.
+        "-fflags",
+        "nobuffer",
+        "-analyzeduration",
+        "0",
         "-x",
         str(max(2, int(width))),
         "-y",
@@ -702,6 +711,7 @@ class PlaybackEngine:
                 stderr=subprocess.DEVNULL,
                 creationflags=CREATE_NO_WINDOW,
             )
+            win32.assign_process_to_cleanup_job(process)
             self._still_process = process
 
             try:
@@ -809,6 +819,10 @@ class PlaybackEngine:
                 ffmpeg.stdout.close()
             except Exception:
                 pass
+
+        # If the app itself dies ungracefully, the OS reaps these with it.
+        win32.assign_process_to_cleanup_job(ffmpeg)
+        win32.assign_process_to_cleanup_job(ffplay)
 
         pipeline = _Pipeline(generation, ffmpeg, ffplay)
 

@@ -153,6 +153,54 @@ if IS_WINDOWS:
 
     DeleteDC = gdi32.DeleteDC
     DeleteDC.argtypes = [ctypes.c_void_p]
+
+    kernel32 = ctypes.windll.kernel32
+
+    class _IO_COUNTERS(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_uint64) for name in (
+            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount",
+        )]
+
+    class _JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_int64),
+            ("PerJobUserTimeLimit", ctypes.c_int64),
+            ("LimitFlags", ctypes.c_uint32),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", ctypes.c_uint32),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", ctypes.c_uint32),
+            ("SchedulingClass", ctypes.c_uint32),
+        ]
+
+    class _JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", _JOBOBJECT_BASIC_LIMIT_INFORMATION),
+            ("IoInfo", _IO_COUNTERS),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    JobObjectExtendedLimitInformation = 9
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+
+    CreateJobObjectW = kernel32.CreateJobObjectW
+    CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
+    CreateJobObjectW.restype = ctypes.c_void_p
+
+    SetInformationJobObject = kernel32.SetInformationJobObject
+    SetInformationJobObject.argtypes = [
+        ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32
+    ]
+
+    AssignProcessToJobObject = kernel32.AssignProcessToJobObject
+    AssignProcessToJobObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+
+    _cleanup_job = None
 else:
     # Non-Windows stubs so importing modules never fails. Every caller is
     # already guarded by IS_WINDOWS before touching these.
@@ -435,6 +483,43 @@ def capture_window_frame(hwnd: int | None) -> tuple[bytes, int, int] | None:
         return data, width, height
     except Exception:
         return None
+
+
+def assign_process_to_cleanup_job(process) -> bool:
+    """
+    Ties a child process's lifetime to ours via a kill-on-close job object:
+    if this app exits for ANY reason (including Task Manager or a crash), the
+    OS closes our job handle and terminates every process assigned to it. Our
+    graceful teardown paths still kill children explicitly; this is the
+    backstop for the ungraceful ones, so ffplay/ffmpeg can never be orphaned.
+    """
+    if not IS_WINDOWS or process is None:
+        return False
+
+    global _cleanup_job
+
+    try:
+        if _cleanup_job is None:
+            job = CreateJobObjectW(None, None)
+            if not job:
+                return False
+            info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            if not SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                ctypes.byref(info),
+                ctypes.sizeof(info),
+            ):
+                return False
+            _cleanup_job = job
+
+        handle = getattr(process, "_handle", None)
+        if not handle:
+            return False
+        return bool(AssignProcessToJobObject(_cleanup_job, handle))
+    except Exception:
+        return False
 
 
 def hide_native_window(hwnd: int | None):

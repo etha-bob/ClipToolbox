@@ -9,7 +9,7 @@ ClipToolbox is a small Windows desktop tool for previewing, mixing, trimming, ex
 - Halo 2 styled interface: main-menu landing screen, pregame-lobby workspace, custom borderless window chrome (native snap/resize still work)
 - Load a video file (dialog, drag-and-drop anywhere, Windows "Open With", or recent-clips list)
 - Detect audio tracks; enable/disable tracks and adjust per-track volume (0–200%)
-- Live preview with mixed audio, embedded in the window; pause shows a still frame; scrubbing while paused shows live frames
+- Live preview with mixed audio, embedded in the window; pause/resume are instant and frame-exact, track toggles and volume changes apply to the running preview without interrupting it, and scrubbing shows frames as you drag
 - Trim start/end before export, with green/red trim brackets on the timeline
 - Export video with merged audio (video stream copy, AAC mix)
 - Optional Discord-size compression using NVIDIA HEVC NVENC with automatic bitrate tuning (keeps the best file under your MB target)
