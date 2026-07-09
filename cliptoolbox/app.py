@@ -53,6 +53,7 @@ from cliptoolbox.core.paths import (
 from cliptoolbox.dnd import DND_AVAILABLE, DND_FILES, TkinterDnD
 from cliptoolbox import settings as app_settings
 from cliptoolbox.ui import chrome, dialogs, dpi, fonts, theme
+from cliptoolbox.ui.wheel import WheelRouter
 from cliptoolbox.ui import dialogs as messagebox  # ported call sites unchanged
 from cliptoolbox.ui.theme import px
 from cliptoolbox.ui.views import landing, shell, workspace
@@ -96,6 +97,8 @@ class HaloApp:
         self.scrub_resume_pending = False
         self.anchor_after_ids: list[str] = []
         self.live_mix_fallback_after_id: str | None = None
+        self.wheel_seek_after_id: str | None = None
+        self.wheel_seek_resume = False
 
         self.user_is_seeking = False
         self.is_exporting = False
@@ -135,6 +138,15 @@ class HaloApp:
         shell.build(self)      # header, status strip, legend, screen container
         workspace.build(self)  # the lobby screen
         landing.build(self)    # the main-menu screen
+
+        self.wheel = WheelRouter(self.root)
+        self.wheel.register(self.seekbar, self.on_wheel_seek)
+        self.wheel.register(self.track_canvas, self.on_wheel_roster)
+        self.wheel.register(self.track_scrollbar, self.on_wheel_roster)
+        self.wheel.register(
+            self.log_text,
+            lambda steps, fine: self.log_text.yview_scroll(-steps * 2, "units"),
+        )
 
         dialogs.set_toast_offset(px(theme.FOOTER_H + 16))
 
@@ -222,6 +234,7 @@ class HaloApp:
             hints = [
                 ("SPACE", "PLAY/PAUSE"),
                 ("← →", "SEEK"),
+                ("WHEEL", "SEEK · VOLUME"),
                 ("[ ]", "TRIM"),
                 ("CTRL+E", "EXPORT"),
                 ("ESC", "MENU"),
@@ -302,6 +315,76 @@ class HaloApp:
         self.on_seek_press()
         self.seek_var.set(seconds)
         self.on_seek_release()
+
+    # ========================================================
+    # Mouse wheel
+    # ========================================================
+
+    def on_wheel_seek(self, steps: int, fine: bool):
+        """Wheel over the seekbar: ±5 s per notch (Shift = ±1 s). Notches
+        move the handle and scrub-still immediately; the pipeline respawn
+        commits shortly after the last notch so spinning the wheel doesn't
+        spawn a pipeline per click."""
+        if self.is_exporting or not self.video_path or self.user_is_seeking:
+            return
+        if self.active_screen != "workspace":
+            return
+
+        state = self.playback.state
+
+        if self.wheel_seek_after_id is None:
+            # First notch of a burst: freeze a playing preview in place,
+            # exactly like pressing the seekbar.
+            if state == core_playback.PLAYING:
+                self.wheel_seek_resume = True
+                self.pause_playback()
+                self.playback.conceal()
+            elif state == core_playback.STARTING:
+                self.wheel_seek_resume = True
+            else:
+                self.wheel_seek_resume = False
+                if state == core_playback.PAUSED:
+                    self.playback.conceal()
+        else:
+            try:
+                self.root.after_cancel(self.wheel_seek_after_id)
+            except Exception:
+                pass
+
+        step = 1.0 if fine else 5.0
+        duration = self.total_duration_seconds or 0
+        target = self.current_seek_seconds() + steps * step
+        target = min(max(0.0, target), duration) if duration else max(0.0, target)
+
+        self.set_seek_position(target)
+
+        if self.playback.state == core_playback.PAUSED:
+            self.schedule_scrub_frame(target)
+
+        self.wheel_seek_after_id = self.root.after(250, self.commit_wheel_seek)
+
+    def commit_wheel_seek(self):
+        self.wheel_seek_after_id = None
+
+        target = self.current_seek_seconds()
+        resume = self.wheel_seek_resume
+        self.wheel_seek_resume = False
+        state = self.playback.state
+
+        if resume or state in (core_playback.STARTING, core_playback.PLAYING):
+            self.restart_playback_at(target)
+        elif state == core_playback.PAUSED:
+            self.playback.seek_paused(target)
+            self.refresh_playback_button_state()
+            self.set_status(
+                f"Preview paused at {self.format_seconds(target)}. Click Play to resume."
+            )
+            self.request_scrub_frame(target)
+        # IDLE: the start position simply moved.
+
+    def on_wheel_roster(self, steps: int, fine: bool):
+        if self.track_scrollbar.winfo_ismapped():
+            self.track_canvas.yview_scroll(-steps, "units")
 
     def remember_recent_clip(self, path: str | None):
         if not path:
@@ -594,6 +677,7 @@ class HaloApp:
         self.track_controls.clear()
 
         for widget in self.track_frame.winfo_children():
+            self.wheel.unregister(widget)
             widget.destroy()
 
         self.update_track_area_height(0)
@@ -668,6 +752,20 @@ class HaloApp:
 
         slider.config(command=on_volume_change)
         slider.grid(row=1, column=0, sticky="ew", pady=(px(2), 0))
+
+        def on_wheel(steps, fine):
+            # Wheel anywhere over the row adjusts this track: ±5% per notch,
+            # Shift = ±1%. Runs through the same path as a slider drag.
+            if self.is_exporting:
+                return
+            step = 0.01 if fine else 0.05
+            current = float(slider.get())
+            value = min(2.0, max(0.0, round(current + steps * step, 2)))
+            if value != current:
+                slider.set(value)
+                on_volume_change(value)
+
+        self.wheel.register(row, on_wheel)
 
         self.track_controls.append((info["index"], var, slider))
 
@@ -1432,6 +1530,14 @@ class HaloApp:
             except Exception:
                 pass
             self.live_mix_fallback_after_id = None
+
+        if self.wheel_seek_after_id is not None:
+            try:
+                self.root.after_cancel(self.wheel_seek_after_id)
+            except Exception:
+                pass
+            self.wheel_seek_after_id = None
+        self.wheel_seek_resume = False
 
         for after_id in self.anchor_after_ids:
             try:

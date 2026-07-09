@@ -15,6 +15,7 @@ ClipToolbox is a small Windows desktop tool for previewing, mixing, trimming, ex
 - Optional Discord-size compression using NVIDIA HEVC NVENC with automatic bitrate tuning (keeps the best file under your MB target)
 - Optional max compression resolution: 1080p, 720p, or 600p, plus a live bitrate estimate
 - Keyboard shortcuts with a contextual legend bar: `Space` play/pause, `←`/`→` seek (Shift = fine), `[` `]` set trim, `Ctrl+O` load, `Ctrl+E` export, `Esc` back/cancel
+- Scroll wheel: seek over the timeline (±5 s per notch, `Shift` = ±1 s) and adjust a track's volume over its roster row (±5%, `Shift` = ±1%); the roster and activity log scroll under the wheel too
 - Export-complete toast with an OPEN FOLDER button; in-window Halo dialogs instead of native message boxes
 - Activity log inside the app
 - Settings persist between sessions (window position, compression defaults, recent clips) in a portable `config.json`
