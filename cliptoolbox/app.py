@@ -8,7 +8,6 @@ is not defined here.
 """
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from io import BytesIO
@@ -29,7 +28,6 @@ except Exception:
 from cliptoolbox.constants import (
     APP_NAME,
     APP_VERSION,
-    CREATE_NO_WINDOW,
     DEFAULT_COMPRESSION_RESOLUTION,
     DEFAULT_COMPRESSION_TARGET_MB,
     IS_WINDOWS,
@@ -41,7 +39,7 @@ from cliptoolbox.constants import (
 from cliptoolbox.core import commands as core_commands
 from cliptoolbox.core import export as core_export
 from cliptoolbox.core import filters as core_filters
-from cliptoolbox.core import preview as core_preview
+from cliptoolbox.core import playback as core_playback
 from cliptoolbox.core import probe as core_probe
 from cliptoolbox.core.paths import (
     FFMPEG,
@@ -51,14 +49,6 @@ from cliptoolbox.core.paths import (
     OUTPUTS_DIR,
     exe_name,
     reveal_file as core_reveal_file,
-)
-from cliptoolbox.core.win32 import (
-    IsWindow,
-    MoveWindow,
-    UpdateWindow,
-    embed_external_window,
-    find_main_window_for_pid,
-    hide_native_window,
 )
 from cliptoolbox.dnd import DND_AVAILABLE, DND_FILES, TkinterDnD
 from cliptoolbox import settings as app_settings
@@ -91,40 +81,24 @@ class HaloApp:
             value=self.settings.compression_resolution or DEFAULT_COMPRESSION_RESOLUTION)
         self.volume_log_after_ids: dict[int, str] = {}
 
-        self.preview_thread: threading.Thread | None = None
         self.export_thread: threading.Thread | None = None
-
-        self.preview_process: subprocess.Popen | None = None
-        self.preview_generation_process: subprocess.Popen | None = None
         self.export_process: subprocess.Popen | None = None
 
-        self.preview_stop_requested = False
-        self.preview_session_id = 0
-        self.preview_temp_path: str | None = None
-        self.preview_temp_is_ready = False
-        self.preview_filter_signature: str | None = None
-        self.preview_refresh_after_id: str | None = None
-        self.preview_refresh_pending = False
+        # All preview process/state management lives in the playback engine;
+        # the app only keeps UI-side bookkeeping here.
+        self.playback = core_playback.PlaybackEngine(self.make_playback_callbacks())
 
-        self.preview_hwnd: int | None = None
-        self.preview_start_position = 0.0
-        self.preview_started_at_monotonic: float | None = None
-
-        self.preview_paused = False
-        self.pause_started_at_monotonic: float | None = None
-        self.total_pause_seconds = 0.0
-        self.preview_should_resume_paused = False
-        self.paused_seek_without_process = False
-        self.paused_frame_process: subprocess.Popen | None = None
         self.paused_frame_image = None
         self.paused_frame_label: tk.Label | None = None
         self.scrub_frame_after_id = None
-        self.scrub_frame_request_id = 0
         self.last_scrub_frame_seconds: float | None = None
+        self.pending_still_request = 0
+        self.scrub_resume_pending = False
+        self.anchor_after_ids: list[str] = []
+        self.live_mix_fallback_after_id: str | None = None
 
         self.user_is_seeking = False
         self.is_exporting = False
-        self.is_generating_preview = False
         self.auto_preview_after_load = True
         self.preview_width = px(PREVIEW_WIDTH)
         self.preview_height = px(PREVIEW_HEIGHT)
@@ -420,24 +394,10 @@ class HaloApp:
 
         self.refresh_playback_button_state()
 
-        # Legacy hidden pause button is kept only so older code paths can safely
-        # call .config() on it while the visible UI uses one playback button.
-        if hasattr(self, "play_pause_button"):
-            self.play_pause_button.config(state=tk.DISABLED)
-
         # Keep audio sliders live while previewing so users can adjust the mix
-        # and let the debounced preview refresh pick up the new levels. During
-        # export, however, controls stay locked to avoid changing an in-flight
-        # render.
-        keep_sliders_live = (
-            busy
-            and not self.is_exporting
-            and (
-                self.preview_process is not None
-                or self.preview_generation_process is not None
-                or self.is_generating_preview
-            )
-        )
+        # (changes apply to the running pipeline immediately). During export,
+        # however, controls stay locked to avoid changing an in-flight render.
+        keep_sliders_live = busy and not self.is_exporting and self.playback.is_active
 
         slider_state = tk.NORMAL if keep_sliders_live else state
 
@@ -459,7 +419,7 @@ class HaloApp:
                 self.stop_export_button.pack_forget()
 
     def refresh_playback_button_state(self):
-        """Keep the single visible playback button in sync with preview state."""
+        """Keep the single visible playback button in sync with engine state."""
         if not hasattr(self, "preview_button"):
             return
 
@@ -467,21 +427,22 @@ class HaloApp:
             self.preview_button.config(text="PLAY", state=tk.DISABLED)
             return
 
-        if self.paused_seek_without_process or self.preview_paused:
-            self.preview_button.config(text="PLAY", state=tk.NORMAL)
+        state = self.playback.state
+
+        if state == core_playback.PAUSED:
+            if self.scrub_resume_pending:
+                # Mid-scrub freeze of a playing preview: it resumes on release,
+                # so keep the button reading as playback rather than flashing.
+                self.preview_button.config(text="PAUSE", state=tk.DISABLED)
+            else:
+                self.preview_button.config(text="PLAY", state=tk.NORMAL)
             return
 
-        preview_starting_or_seeking = (
-            self.is_generating_preview
-            or self.preview_generation_process is not None
-            or (self.preview_process is not None and self.preview_hwnd is None)
-        )
-
-        if preview_starting_or_seeking:
+        if state == core_playback.STARTING:
             self.preview_button.config(text="LOADING...", state=tk.DISABLED)
             return
 
-        if self.preview_process is not None and self.preview_hwnd is not None:
+        if state == core_playback.PLAYING:
             self.preview_button.config(text="PAUSE", state=tk.NORMAL)
             return
 
@@ -568,16 +529,15 @@ class HaloApp:
         self.show_workspace()
 
         self.stop_preview()
-        self.cleanup_preview_temp_file()
 
         self.video_path = str(path_obj)
+        self.playback.configure_media(self.video_path, None)
         self.file_label_var.set(path_obj.name)
         self.clear_tracks()
         self.set_seek_range(0)
         self.clear_trim_points(silent=True)
         self.preview_placeholder_var.set("Preparing file...")
         self.preview_placeholder.place(relx=0.5, rely=0.5, anchor="center")
-        self.play_pause_button.config(state=tk.DISABLED, text="Pause")
         self.refresh_playback_button_state()
         self.set_status("Reading audio streams...")
         self.log(f"Loaded video: {path_obj.name}")
@@ -593,6 +553,7 @@ class HaloApp:
     def after_probe(self, streams: list[dict], duration: float | None):
         self.audio_metadata = streams
         self.total_duration_seconds = duration
+        self.playback.configure_media(self.video_path, duration)
         self.set_seek_range(duration)
         self.update_trim_controls()
 
@@ -667,7 +628,10 @@ class HaloApp:
         row.columnconfigure(0, weight=1)
 
         var = tk.BooleanVar(value=True)
-        var.trace_add("write", lambda *args: self.invalidate_preview())
+        var.trace_add(
+            "write",
+            lambda *args, row=row_number: self.apply_track_volume(row),
+        )
 
         # Roster-style row: maroon name bar (the lobby player bar) + slider.
         name_bar = tk.Frame(row, bg=theme.MAROON)
@@ -688,7 +652,7 @@ class HaloApp:
                             behind=theme.PANEL_FILL)
         slider.set(1.0)
 
-        def on_volume_change(value, label_var=volume_label_var):
+        def on_volume_change(value, label_var=volume_label_var, row=row_number):
             try:
                 percentage = int(float(value) * 100)
                 label_var.set(f"{percentage}%")
@@ -700,7 +664,7 @@ class HaloApp:
             except Exception:
                 pass
 
-            self.invalidate_preview()
+            self.apply_track_volume(row)
 
         slider.config(command=on_volume_change)
         slider.grid(row=1, column=0, sticky="ew", pady=(px(2), 0))
@@ -753,9 +717,22 @@ class HaloApp:
     def on_seek_press(self, event=None):
         self.user_is_seeking = True
 
-        if self.preview_paused or self.paused_seek_without_process:
-            self.preview_should_resume_paused = True
-            self.paused_seek_without_process = True
+        state = self.playback.state
+
+        if state == core_playback.PLAYING:
+            # Freeze in place: the exact current frame stays on screen while
+            # the user drags, and release resumes playback at the target.
+            self.scrub_resume_pending = True
+            self.pause_playback()
+            # Swap the live window for a captured still: drag previews render
+            # in a Tk overlay that the native window would paint over.
+            self.playback.conceal()
+        elif state == core_playback.STARTING:
+            self.scrub_resume_pending = True
+        else:
+            self.scrub_resume_pending = False
+            if state == core_playback.PAUSED:
+                self.playback.conceal()
 
     def on_seek_drag(self, value):
         if self.user_is_seeking:
@@ -763,7 +740,7 @@ class HaloApp:
                 seconds = float(value)
                 self.time_left_var.set(self.format_seconds(seconds))
 
-                if self.preview_paused or self.paused_seek_without_process:
+                if self.playback.state == core_playback.PAUSED:
                     self.schedule_scrub_frame(seconds)
             except Exception:
                 pass
@@ -779,21 +756,20 @@ class HaloApp:
         self.set_seek_position(target_seconds)
         self.update_trim_markers()
 
-        if self.preview_process is not None or self.preview_generation_process is not None:
-            if self.preview_paused:
-                self.pause_preview_at_seek_position(target_seconds)
-            else:
-                self.preview_should_resume_paused = False
-                self.restart_preview_at(target_seconds)
-        elif self.paused_seek_without_process or self.preview_paused:
-            # Already paused with no FFplay process running. Keep the app paused
-            # at the dropped position and make sure the frame shown matches it.
-            self.paused_seek_without_process = True
-            self.preview_paused = True
-            self.preview_should_resume_paused = True
-            self.preview_start_position = max(0.0, float(target_seconds))
-            self.preview_button.config(text="PLAY", state=tk.NORMAL)
-            self.play_pause_button.config(text="Play", state=tk.NORMAL)
+        resume = self.scrub_resume_pending
+        self.scrub_resume_pending = False
+        state = self.playback.state
+
+        if state in (core_playback.STARTING, core_playback.PLAYING) or (
+            state == core_playback.PAUSED and resume
+        ):
+            # The frozen frame (or last still) stays visible until the new
+            # pipeline's first frame arrives.
+            self.restart_playback_at(target_seconds)
+        elif state == core_playback.PAUSED:
+            # Stay paused at the dropped position with a matching frame.
+            self.playback.seek_paused(target_seconds)
+            self.refresh_playback_button_state()
             self.set_status(f"Preview paused at {self.format_seconds(target_seconds)}. Click Play to resume.")
             self.request_scrub_frame(target_seconds)
 
@@ -836,14 +812,11 @@ class HaloApp:
 
     def request_scrub_frame(self, seconds: float):
         self.scrub_frame_after_id = None
-        self.scrub_frame_request_id += 1
-        request_id = self.scrub_frame_request_id
 
-        self.paused_seek_without_process = True
-        self.preview_paused = True
-        self.preview_should_resume_paused = True
+        if self.playback.state != core_playback.PAUSED:
+            return
 
-        self.generate_paused_frame_at(seconds, request_id=request_id, quiet=True)
+        self.pending_still_request = self.playback.request_still(seconds)
 
     # ========================================================
     # Trim controls
@@ -1048,127 +1021,53 @@ class HaloApp:
     def build_audio_filter(self) -> str:
         return core_filters.build_audio_filter(self.selected_tracks())
 
-    def invalidate_preview(self):
-        preview_is_active = (
-            self.preview_process is not None
-            or self.preview_generation_process is not None
-            or self.is_generating_preview
-        )
+    def superset_tracks(self) -> list[tuple[int, float]]:
+        """
+        Every track in row order for the preview graph, with disabled rows at
+        volume 0.0. With amix normalize=0 this sounds identical to omitting
+        them, and it lets checkbox toggles and slider drags apply to the
+        running pipeline live instead of restarting it. Export still uses
+        selected_tracks() with only the enabled rows.
+        """
+        return [
+            (stream_index, float(slider.get()) if var.get() else 0.0)
+            for stream_index, var, slider in self.track_controls
+        ]
 
-        if preview_is_active and not self.is_exporting:
-            self.schedule_preview_refresh()
+    def apply_track_volume(self, row: int):
+        """Push one row's effective volume (0 when disabled) to the engine."""
+        if not (0 <= row < len(self.track_controls)):
             return
 
-        if self.preview_temp_is_ready:
-            self.stop_preview()
-            self.cleanup_preview_temp_file()
-            self.preview_filter_signature = None
-            self.preview_placeholder_var.set("Preview settings changed. Click Preview again.")
-            self.preview_placeholder.place(relx=0.5, rely=0.5, anchor="center")
-            self.set_status("Preview settings changed. Click Preview again.")
+        stream_index, var, slider = self.track_controls[row]
+        volume = float(slider.get()) if var.get() else 0.0
 
-    def current_preview_position(self) -> float:
-        try:
-            fallback_position = float(self.seek_var.get())
-        except Exception:
-            fallback_position = 0.0
+        if not self.playback.set_track_volume(row, volume):
+            # The live command channel failed; fall back to one seamless
+            # respawn that bakes the current mix into a fresh pipeline.
+            self.schedule_live_mix_fallback()
 
-        if self.preview_started_at_monotonic is None:
-            return fallback_position
-
-        if self.preview_paused:
-            return fallback_position
-
-        elapsed = (
-            time.monotonic()
-            - self.preview_started_at_monotonic
-            - self.total_pause_seconds
-        )
-        position = self.preview_start_position + elapsed
-
-        duration = self.total_duration_seconds or 0
-        if duration:
-            position = min(position, duration)
-
-        return max(0.0, position)
-
-    def schedule_preview_refresh(self, delay_ms: int = 700):
-        if not self.video_path or self.is_exporting:
-            return
-
-        self.preview_refresh_pending = True
-
-        if self.preview_refresh_after_id is not None:
+    def schedule_live_mix_fallback(self, delay_ms: int = 400):
+        if self.live_mix_fallback_after_id is not None:
             try:
-                self.root.after_cancel(self.preview_refresh_after_id)
+                self.root.after_cancel(self.live_mix_fallback_after_id)
             except Exception:
                 pass
 
-        self.set_status("Preview settings changed. Refreshing shortly...")
-        self.preview_refresh_after_id = self.root.after(delay_ms, self.refresh_preview_from_current_settings)
+        self.live_mix_fallback_after_id = self.root.after(
+            delay_ms, self.run_live_mix_fallback
+        )
 
-    def refresh_preview_from_current_settings(self):
-        self.preview_refresh_after_id = None
+    def run_live_mix_fallback(self):
+        self.live_mix_fallback_after_id = None
 
-        if not self.preview_refresh_pending or self.is_exporting:
-            return
-
-        self.preview_refresh_pending = False
-
-        if not self.video_path:
-            return
-
-        target_seconds = self.current_preview_position()
-
-        try:
-            self.build_audio_filter()
-        except ValueError as exc:
-            self.stop_preview()
-            self.cleanup_preview_temp_file()
-            self.preview_filter_signature = None
-            self.preview_placeholder_var.set(str(exc))
-            self.preview_placeholder.place(relx=0.5, rely=0.5, anchor="center")
-            self.set_status(str(exc))
-            return
-
-        self.preview_filter_signature = None
-        self.set_seek_position(target_seconds)
-
-        # If the preview is paused, changing audio levels should not start
-        # playback. Keep the app paused at the same timestamp; the new slider
-        # settings will apply when the user clicks Play/export.
-        if self.preview_paused or self.paused_seek_without_process:
-            self.preview_session_id += 1
-            self.preview_stop_requested = True
-            self.preview_should_resume_paused = True
-            self.paused_seek_without_process = True
-            self.preview_paused = True
-
-            self.kill_preview_pipeline()
-
-            self.preview_start_position = max(0.0, float(target_seconds))
-            self.preview_button.config(text="PLAY", state=tk.NORMAL)
-            self.play_pause_button.config(text="Play", state=tk.NORMAL)
-            self.preview_placeholder_var.set("Loading paused frame...")
-            self.preview_placeholder.place(relx=0.5, rely=0.5, anchor="center")
-            self.set_busy(False)
-            self.play_pause_button.config(text="Play", state=tk.NORMAL)
-            self.set_status(
-                f"Preview paused at {self.format_seconds(target_seconds)}. Audio changes will apply when you play/export."
-            )
-            self.generate_paused_frame_at(target_seconds)
-            return
-
-        self.stop_preview()
-        self.preview_filter_signature = None
-        self.set_seek_position(target_seconds)
-        self.preview_placeholder_var.set("Refreshing mixed preview...")
-        self.preview_placeholder.place(relx=0.5, rely=0.5, anchor="center")
-
-        # Give the old FFplay/FFmpeg process a short moment to exit before
-        # starting the next render. This avoids stale worker threads racing the
-        # new preview session.
-        self.root.after(250, self.start_preview)
+        state = self.playback.state
+        if state in (core_playback.STARTING, core_playback.PLAYING):
+            self.restart_playback_at(self.playback.position)
+        elif state == core_playback.PAUSED and self.playback.has_pipeline:
+            # Drop the paused pipeline (its mix is stale); resume will
+            # respawn with the cached track volumes.
+            self.playback.seek_paused(self.playback.position)
 
     # ========================================================
     # Paused still-frame preview
@@ -1189,145 +1088,68 @@ class HaloApp:
         except Exception:
             pass
 
+    def _display_paused_frame(self, image):
+        image.thumbnail(
+            (
+                max(320, int(getattr(self, "preview_width", 960))),
+                max(180, int(getattr(self, "preview_height", 540))),
+            ),
+            Image.LANCZOS,
+        )
+        self.paused_frame_image = ImageTk.PhotoImage(image)
+        self.paused_frame_label.config(image=self.paused_frame_image, bg="black")
+        self.paused_frame_label.place(relx=0.5, rely=0.5, anchor="center")
+        self.paused_frame_label.lift()
+        self.preview_placeholder.place_forget()
+
     def show_paused_frame_from_bytes(self, image_bytes: bytes):
         if not PIL_AVAILABLE or self.paused_frame_label is None:
             self.preview_placeholder_var.set("Paused. Click Play to resume preview.")
             return
 
         try:
-            image = Image.open(BytesIO(image_bytes))
-            image.thumbnail(
-                (
-                    max(320, int(getattr(self, "preview_width", 960))),
-                    max(180, int(getattr(self, "preview_height", 540))),
-                ),
-                Image.LANCZOS,
-            )
-            self.paused_frame_image = ImageTk.PhotoImage(image)
-            self.paused_frame_label.config(image=self.paused_frame_image, bg="black")
-            self.paused_frame_label.place(relx=0.5, rely=0.5, anchor="center")
-            self.paused_frame_label.lift()
-            self.preview_placeholder.place_forget()
-            self.set_status("Paused frame loaded. Click Play to resume.")
+            self._display_paused_frame(Image.open(BytesIO(image_bytes)))
         except Exception:
             self.preview_placeholder_var.set("Paused. Click Play to resume preview.")
             self.preview_placeholder.place(relx=0.5, rely=0.5, anchor="center")
 
-    def generate_paused_frame_at(self, seconds: float, request_id: int | None = None, quiet: bool = False):
-        if not self.video_path or not FFMPEG or not PIL_AVAILABLE:
+    def show_paused_frame_raw(self, bgra: bytes, width: int, height: int):
+        """Pause-time window capture: raw BGRA rows straight from PrintWindow."""
+        if not PIL_AVAILABLE or self.paused_frame_label is None:
             self.preview_placeholder_var.set("Paused. Click Play to resume preview.")
             return
 
-        if self.paused_frame_process is not None:
-            try:
-                self.paused_frame_process.kill()
-            except Exception:
-                pass
-            self.paused_frame_process = None
-
-        seconds = max(0.0, float(seconds))
-        duration = self.total_duration_seconds or 0
-        if duration:
-            seconds = min(seconds, max(0.0, duration - 0.05))
-
-        if request_id is None:
-            self.scrub_frame_request_id += 1
-            request_id = self.scrub_frame_request_id
-
-        session_id = self.preview_session_id
-        frame_path = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg").name
-
-        def worker():
-            try:
-                cmd = core_preview.build_frame_extract_cmd(self.video_path, seconds, frame_path)
-
-                process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    creationflags=CREATE_NO_WINDOW,
-                )
-                self.paused_frame_process = process
-
-                try:
-                    return_code = process.wait(timeout=6)
-                except subprocess.TimeoutExpired:
-                    try:
-                        process.kill()
-                    except Exception:
-                        pass
-                    return_code = -1
-
-                self.paused_frame_process = None
-
-                image_bytes = b""
-                if return_code == 0 and Path(frame_path).exists():
-                    try:
-                        image_bytes = Path(frame_path).read_bytes()
-                    except Exception:
-                        image_bytes = b""
-
-                if (
-                    image_bytes
-                    and session_id == self.preview_session_id
-                    and request_id == self.scrub_frame_request_id
-                    and self.paused_seek_without_process
-                ):
-                    self.ui(self.show_paused_frame_from_bytes, image_bytes)
-                elif (
-                    not quiet
-                    and session_id == self.preview_session_id
-                    and request_id == self.scrub_frame_request_id
-                    and self.paused_seek_without_process
-                ):
-                    self.ui(
-                        self.preview_placeholder_var.set,
-                        "Paused. Click Play to resume preview.",
-                    )
-
-            except Exception:
-                if (
-                    not quiet
-                    and session_id == self.preview_session_id
-                    and request_id == self.scrub_frame_request_id
-                    and self.paused_seek_without_process
-                ):
-                    self.ui(
-                        self.preview_placeholder_var.set,
-                        "Paused. Click Play to resume preview.",
-                    )
-            finally:
-                self.paused_frame_process = None
-                try:
-                    Path(frame_path).unlink(missing_ok=True)
-                except Exception:
-                    pass
-
-        threading.Thread(target=worker, daemon=True).start()
+        try:
+            image = Image.frombuffer(
+                "RGBA", (width, height), bgra, "raw", "BGRA", 0, 1
+            ).convert("RGB")
+            self._display_paused_frame(image)
+            # Flush the redraw now: the engine hides the live video window
+            # right after this callback returns, and the frozen frame must
+            # already be painted underneath to avoid a blank flicker.
+            self.paused_frame_label.update_idletasks()
+        except Exception:
+            self.preview_placeholder_var.set("Paused. Click Play to resume preview.")
+            self.preview_placeholder.place(relx=0.5, rely=0.5, anchor="center")
 
     # ========================================================
     # Embedded preview
     # ========================================================
 
     def toggle_preview(self):
-        # The visible control is now a media-style Play/Pause button. Stopping
-        # the FFmpeg/FFplay pipeline still exists internally for file changes,
-        # export, close, seek, and preview refreshes.
         if self.is_exporting:
             return
 
-        if self.paused_seek_without_process or self.preview_paused:
-            self.toggle_play_pause()
-            return
+        state = self.playback.state
 
-        if self.preview_process is not None and self.preview_hwnd is not None:
-            self.toggle_play_pause()
+        if state == core_playback.PLAYING:
+            self.pause_playback()
+        elif state == core_playback.PAUSED:
+            self.resume_playback()
+        elif state == core_playback.STARTING:
             return
-
-        if self.preview_generation_process is not None or self.is_generating_preview:
-            return
-
-        self.start_preview()
+        else:
+            self.start_preview()
 
     def start_preview(self):
         if not self.video_path:
@@ -1352,266 +1174,231 @@ class HaloApp:
             )
             return
 
-        try:
-            filter_complex = self.build_audio_filter()
-        except ValueError as exc:
-            messagebox.showwarning("No tracks selected", str(exc))
+        tracks = self.superset_tracks()
+        if not tracks:
+            messagebox.showwarning(
+                "No tracks selected", "Please select at least one audio track."
+            )
             return
 
-        try:
-            start_seconds = float(self.seek_var.get())
-        except Exception:
+        start_seconds = self.current_seek_seconds()
+        duration = self.total_duration_seconds or 0
+        if duration and start_seconds >= duration - 0.1:
+            # Playing from the very end restarts from the beginning, like any
+            # media player (the seekbar parks at the end after EOF/export).
             start_seconds = 0.0
 
-        self.preview_session_id += 1
-        session_id = self.preview_session_id
-
         self.hide_paused_frame()
-        self.hide_paused_frame()
-        self.preview_stop_requested = False
-        self.preview_should_resume_paused = False
-        self.paused_seek_without_process = False
-        self.preview_paused = False
-        self.pause_started_at_monotonic = None
-        self.total_pause_seconds = 0.0
-        self.preview_filter_signature = filter_complex
-        self.is_generating_preview = True
-
-        self.preview_button.config(text="LOADING...", state=tk.DISABLED)
-        self.play_pause_button.config(text="Pause", state=tk.DISABLED)
-        self.set_busy(True)
-        self.refresh_playback_button_state()
-
         self.preview_placeholder.place_forget()
         self.set_status("Starting streaming preview...")
         self.log(f"Starting preview at {self.format_seconds(start_seconds)}.")
 
-        self.preview_thread = threading.Thread(
-            target=self.preview_worker,
-            args=(filter_complex, start_seconds, session_id),
-            daemon=True,
-        )
-        self.preview_thread.start()
+        self.playback.configure_media(self.video_path, self.total_duration_seconds)
+        self.playback.play(start_seconds, tracks, self.preview_width, self.preview_height)
 
-    def preview_worker(self, filter_complex: str, start_seconds: float, session_id: int):
-        """
-        Start preview as a streaming FFmpeg -> FFplay pipeline.
-
-        The old implementation rendered a full mixed temporary video before
-        playback, which made Preview wait several seconds on longer files.
-        This version starts FFplay immediately and feeds it remuxed/mixed bytes
-        from FFmpeg over a pipe.
-        """
-        self.is_generating_preview = True
-
-        try:
-            self.play_preview_stream(filter_complex, start_seconds, session_id)
-
-        except Exception as exc:
-            # Stopping/restarting preview intentionally tears down processes.
-            # Do not show stale worker errors after Stop Preview or seek/refresh.
-            if not self.preview_stop_requested and session_id == self.preview_session_id:
-                self.ui(
-                    messagebox.showerror,
-                    "Preview Error",
-                    f"Preview failed:\n\n{exc}",
-                )
-
-        finally:
-            if session_id == self.preview_session_id:
-                self.preview_generation_process = None
-                self.preview_process = None
-                self.preview_hwnd = None
-                self.preview_started_at_monotonic = None
-
-                if not self.paused_seek_without_process:
-                    self.preview_stop_requested = False
-                    self.preview_paused = False
-                    self.pause_started_at_monotonic = None
-                    self.total_pause_seconds = 0.0
-                    self.ui(self.preview_button.config, text="PLAY")
-                    self.ui(self.play_pause_button.config, text="Pause", state=tk.DISABLED)
-                    self.ui(self.refresh_playback_button_state)
-                    self.ui(self.set_status, "Ready.")
-
-                self.is_generating_preview = False
-                self.preview_temp_is_ready = False
-                self.ui(self.set_busy, False)
-
-    def play_preview_stream(self, filter_complex: str, start_seconds: float, session_id: int):
+    def restart_playback_at(self, target_seconds: float):
+        """Respawn the pipeline at a new position (seek commits, live-mix
+        fallback). Whatever frame is on screen stays until the first new one."""
         if not self.video_path:
             return
 
-        start_seconds = max(0.0, float(start_seconds))
-
-        duration = self.total_duration_seconds or 0
-        if duration:
-            start_seconds = min(start_seconds, duration)
-
-        should_start_paused = bool(self.preview_should_resume_paused)
-
-        self.preview_start_position = start_seconds
-        self.preview_started_at_monotonic = time.monotonic()
-        self.preview_hwnd = None
-
-        self.preview_paused = False
-        self.pause_started_at_monotonic = None
-        self.total_pause_seconds = 0.0
-
-        self.ui(self.hide_paused_frame)
-        self.ui(self.preview_placeholder.place_forget)
-
-        # Use cached preview dimensions. Avoid blocking worker threads on
-        # root.update_idletasks(), which can contribute to "Not Responding"
-        # when preview is being restarted repeatedly.
-        width = max(320, int(getattr(self, "preview_width", 960)))
-        height = max(180, int(getattr(self, "preview_height", 540)))
-
-        ffmpeg_cmd, ffplay_cmd = core_preview.build_preview_stream_cmds(
-            self.video_path,
-            filter_complex,
-            start_seconds,
-            width,
-            height,
-        )
-
-        ffmpeg_process, ffplay_process = core_preview.spawn_preview_pipeline(
-            ffmpeg_cmd,
-            ffplay_cmd,
-        )
-
-        self.preview_generation_process = ffmpeg_process
-        self.preview_process = ffplay_process
-
-        self.ui(self.set_busy, True)
-        self.ui(self.set_status, "Playing preview...")
-
-        self.ui(self.embed_preview_window_when_ready, ffplay_process.pid, session_id)
-
-        if should_start_paused:
-            # Pause no longer uses suspended FFplay/FFmpeg processes. If this
-            # path is reached, stop the fresh pipeline and show a still frame.
-            self.preview_stop_requested = True
-            try:
-                ffplay_process.kill()
-            except Exception:
-                pass
-            try:
-                ffmpeg_process.kill()
-            except Exception:
-                pass
-
-            self.paused_seek_without_process = True
-            self.preview_paused = True
-            self.ui(self.set_seek_position, start_seconds)
-            self.ui(self.preview_button.config, text="PLAY", state=tk.NORMAL)
-            self.ui(self.play_pause_button.config, text="Play", state=tk.NORMAL)
-            self.ui(self.refresh_playback_button_state)
-            self.ui(self.generate_paused_frame_at, start_seconds)
+        tracks = self.superset_tracks()
+        if not tracks:
             return
 
-        while ffplay_process.poll() is None:
-            if self.preview_stop_requested or session_id != self.preview_session_id:
-                try:
-                    ffplay_process.terminate()
-                except Exception:
-                    pass
-                try:
-                    ffmpeg_process.terminate()
-                except Exception:
-                    pass
-                break
+        self.set_status("Seeking preview...")
+        self.playback.play(target_seconds, tracks, self.preview_width, self.preview_height)
 
-            if self.preview_started_at_monotonic is not None and not self.preview_paused:
-                elapsed = (
-                    time.monotonic()
-                    - self.preview_started_at_monotonic
-                    - self.total_pause_seconds
+    def pause_playback(self):
+        frame_stays_visible = self.playback.pause()
+
+        if self.playback.state != core_playback.PAUSED:
+            return
+
+        position = self.playback.position
+        self.set_seek_position(position)
+
+        if frame_stays_visible:
+            # FFplay itself is displaying the frozen frame; make sure no
+            # stale overlay covers it.
+            self.hide_paused_frame()
+        else:
+            # Pipeline had to be dropped; fetch a real frame for the overlay.
+            self.preview_placeholder_var.set("Loading paused frame...")
+            self.preview_placeholder.place(relx=0.5, rely=0.5, anchor="center")
+            self.pending_still_request = self.playback.request_still(position)
+
+    def resume_playback(self):
+        self.playback.resume()
+
+        if self.playback.state == core_playback.PLAYING:
+            # In-place resume: the live window is already showing again.
+            self.hide_paused_frame()
+            self.preview_placeholder.place_forget()
+        # Otherwise the engine respawned (long pause / dropped pipeline) and
+        # the current still stays visible until the first new frame.
+
+    def make_playback_callbacks(self):
+        """Bridges engine events onto the Tk thread. Synchronous events (the
+        ones the engine raises from inside pause/resume/stop calls) run
+        directly so the UI updates before the engine's next win32 step."""
+        app = self
+
+        class TkPlaybackCallbacks:
+            def on_state(self, state: str) -> None:
+                app.on_ui_thread(app.on_playback_state, state)
+
+            def on_position(self, seconds: float) -> None:
+                app.ui(app.set_seek_position, seconds)
+
+            def on_window_ready(self, hwnd: int) -> None:
+                app.ui(app.on_preview_window_ready)
+
+            def on_embed_timeout(self) -> None:
+                app.ui(
+                    app.set_status,
+                    "Preview is playing, but the video window could not be embedded.",
                 )
-                current_position = self.preview_start_position + elapsed
 
-                if duration:
-                    current_position = min(current_position, duration)
+            def on_first_frame(self) -> None:
+                app.ui(app.on_preview_first_frame)
 
-                self.ui(self.set_seek_position, current_position)
+            def on_still_frame(self, kind, payload, width, height, request_id) -> None:
+                app.on_ui_thread(
+                    app.on_playback_still, kind, payload, width, height, request_id
+                )
 
-            time.sleep(0.25)
+            def on_still_failed(self, request_id: int) -> None:
+                app.ui(app.on_playback_still_failed, request_id)
 
-        # Clean up both sides of the streaming pipeline.
-        if session_id == self.preview_session_id:
-            self.ui(hide_native_window, self.preview_hwnd)
+            def on_pause_slipped(self) -> None:
+                app.ui(app.on_pause_slipped)
 
-        for proc in (ffplay_process, ffmpeg_process):
-            if proc is not None and proc.poll() is None:
-                try:
-                    proc.terminate()
-                except Exception:
-                    pass
+            def on_ended(self, at_seconds: float) -> None:
+                app.ui(app.on_playback_ended, at_seconds)
 
-        if ffmpeg_process.poll() is None:
-            try:
-                ffmpeg_process.wait(timeout=0.5)
-            except Exception:
-                try:
-                    ffmpeg_process.kill()
-                except Exception:
-                    pass
+            def on_error(self, title: str, message: str) -> None:
+                app.ui(app.on_playback_error, title, message)
 
-        if ffplay_process.poll() is None:
-            try:
-                ffplay_process.wait(timeout=0.5)
-            except Exception:
-                try:
-                    ffplay_process.kill()
-                except Exception:
-                    pass
+        return TkPlaybackCallbacks()
 
-    def embed_preview_window_when_ready(self, pid: int, session_id: int | None = None):
-        """
-        Finds the FFplay/SDL window by process ID and embeds it into preview_frame.
-        This version uses WindowLongPtr and retries aggressively until the native
-        SDL window exists, then hides/reparents/restyles it.
-        """
+    def on_ui_thread(self, callback, *args):
+        """Run now when already on the Tk thread, else marshal via after()."""
+        if threading.current_thread() is threading.main_thread():
+            callback(*args)
+        else:
+            self.ui(callback, *args)
+
+    def on_playback_state(self, state: str):
+        self.refresh_playback_button_state()
+
+        if self.is_exporting:
+            return
+
+        if state == core_playback.STARTING:
+            self.set_busy(True)
+        elif state == core_playback.PLAYING:
+            self.set_busy(True)
+            self.set_status("Playing preview...")
+        elif state == core_playback.PAUSED:
+            self.set_busy(False)
+            if not self.user_is_seeking:
+                self.set_status(
+                    f"Preview paused at {self.format_seconds(self.playback.position)}. Click Play to resume."
+                )
+        else:  # IDLE
+            self.set_busy(False)
+
+    def on_preview_window_ready(self):
         if not IS_WINDOWS:
             return
 
         parent_hwnd = self.preview_frame.winfo_id()
-        attempts = {"count": 0}
+        width = max(1, self.preview_frame.winfo_width())
+        height = max(1, self.preview_frame.winfo_height())
 
-        def try_embed():
-            if session_id is not None and session_id != self.preview_session_id:
-                return
+        if not self.playback.embed(parent_hwnd, width, height):
+            if self.playback.is_active:
+                self.set_status("Found preview window, but embedding failed.")
 
-            preview_process = self.preview_process
-            if preview_process is None or preview_process.poll() is not None:
-                return
+    def on_preview_first_frame(self):
+        """First decoded frame is on screen: drop any held still and pin the
+        window in place (FFplay repositions it once at first-frame time)."""
+        self.hide_paused_frame()
+        self.preview_placeholder.place_forget()
+        self.schedule_anchor_burst()
+        self.refresh_playback_button_state()
 
-            hwnd = find_main_window_for_pid(pid)
+    def schedule_anchor_burst(self):
+        for after_id in self.anchor_after_ids:
+            try:
+                self.root.after_cancel(after_id)
+            except Exception:
+                pass
+        self.anchor_after_ids = []
 
-            if hwnd:
-                hide_native_window(hwnd)
-                self.preview_hwnd = hwnd
+        def anchor():
+            width = max(1, self.preview_frame.winfo_width())
+            height = max(1, self.preview_frame.winfo_height())
+            self.playback.re_anchor(width, height)
 
-                width = max(1, self.preview_frame.winfo_width())
-                height = max(1, self.preview_frame.winfo_height())
+        anchor()
+        # FFplay's own first-frame reposition can land just after this event;
+        # a couple of delayed re-anchors win that race without polling.
+        for delay in (120, 400):
+            self.anchor_after_ids.append(self.root.after(delay, anchor))
 
-                ok = embed_external_window(hwnd, parent_hwnd, width, height)
+    def on_playback_still(self, kind, payload, width, height, request_id):
+        if request_id == core_playback.PAUSE_STILL_REQUEST:
+            # Synchronous pause capture: always show (the engine hides the
+            # live window immediately after this returns).
+            self.show_paused_frame_raw(payload, width, height)
+            return
 
-                if ok:
-                    self.preview_button.config(state=tk.NORMAL, text="PAUSE")
-                    self.play_pause_button.config(state=tk.DISABLED, text="Pause")
-                    self.set_status("Playing preview...")
-                else:
-                    self.set_status("Found preview window, but embedding failed.")
-                return
+        # Async extracts: only the newest request while still paused matters.
+        if request_id < self.pending_still_request:
+            return
+        if self.playback.state != core_playback.PAUSED:
+            return
 
-            attempts["count"] += 1
-            if attempts["count"] < 200:
-                self.root.after(25, try_embed)
-            else:
-                self.set_status("Preview is playing, but the video window could not be embedded.")
+        if kind == core_playback.STILL_KIND_BGRA:
+            self.show_paused_frame_raw(payload, width, height)
+        else:
+            self.show_paused_frame_from_bytes(payload)
 
-        self.root.after(25, try_embed)
+    def on_playback_still_failed(self, request_id):
+        if request_id < self.pending_still_request:
+            return
+        if self.playback.state != core_playback.PAUSED:
+            return
+
+        self.preview_placeholder_var.set("Paused. Click Play to resume preview.")
+        self.preview_placeholder.place(relx=0.5, rely=0.5, anchor="center")
+
+    def on_pause_slipped(self):
+        """FFplay ignored the pause key; the engine dropped the pipeline at
+        the position it actually stopped. Show a matching still."""
+        if self.playback.state != core_playback.PAUSED:
+            return
+
+        position = self.playback.position
+        self.set_seek_position(position)
+        self.preview_placeholder_var.set("Loading paused frame...")
+        self.preview_placeholder.place(relx=0.5, rely=0.5, anchor="center")
+        self.pending_still_request = self.playback.request_still(position)
+
+    def on_playback_ended(self, at_seconds: float):
+        self.set_seek_position(at_seconds)
+        self.refresh_playback_button_state()
+        if not self.is_exporting:
+            self.set_busy(False)
+            self.set_status("Ready.")
+
+    def on_playback_error(self, title: str, message: str):
+        self.refresh_playback_button_state()
+        if not self.is_exporting:
+            self.set_busy(False)
+        messagebox.showerror(title, message)
 
     def on_preview_frame_resize(self, event=None):
         try:
@@ -1627,170 +1414,10 @@ class HaloApp:
         if not IS_WINDOWS:
             return
 
-        if self.preview_hwnd and IsWindow(self.preview_hwnd):
-            width = max(1, self.preview_width)
-            height = max(1, self.preview_height)
-            try:
-                MoveWindow(self.preview_hwnd, 0, 0, width, height, True)
-                UpdateWindow(self.preview_hwnd)
-            except Exception:
-                pass
-
-    def restart_preview_at(self, target_seconds: float, show_placeholder: bool = True):
-        if not self.video_path:
-            return
-
-        was_paused = bool(self.preview_paused)
-        self.preview_should_resume_paused = was_paused
-
-        self.kill_preview_pipeline()
-
-        self.preview_session_id += 1
-        session_id = self.preview_session_id
-
-        try:
-            filter_complex = self.build_audio_filter()
-        except ValueError as exc:
-            self.stop_preview()
-            self.preview_placeholder_var.set(str(exc))
-            self.preview_placeholder.place(relx=0.5, rely=0.5, anchor="center")
-            self.set_status(str(exc))
-            return
-
-        self.preview_filter_signature = filter_complex
-        self.preview_stop_requested = False
-        self.preview_process = None
-        self.preview_generation_process = None
-        self.preview_hwnd = None
-        self.preview_paused = False
-        self.pause_started_at_monotonic = None
-        self.total_pause_seconds = 0.0
-        self.is_generating_preview = True
-
-        self.preview_button.config(text="LOADING...", state=tk.DISABLED)
-        self.play_pause_button.config(text="Play" if was_paused else "Pause", state=tk.DISABLED)
-
-        self.preview_placeholder.place_forget()
-
-        self.set_busy(True)
-        self.set_status("Seeking preview...")
-
-        def worker():
-            try:
-                self.preview_worker(filter_complex, target_seconds, session_id)
-            except Exception:
-                # Stale seek/restart errors are expected when processes are torn
-                # down rapidly. Do not show modal popups for these.
-                pass
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def kill_preview_pipeline(self):
-        """
-        Tear down preview processes without process suspension.
-
-        Suspending FFmpeg/FFplay on Windows while they own pipe handles can
-        deadlock Tkinter after the app idles in the background. Pause is now
-        represented by a still frame plus no running preview process.
-        """
-        hide_native_window(self.preview_hwnd)
-
-        generation_process = self.preview_generation_process
-        preview_process = self.preview_process
-
-        for proc in (preview_process, generation_process):
-            if proc is not None:
-                try:
-                    proc.kill()
-                except Exception:
-                    try:
-                        proc.terminate()
-                    except Exception:
-                        pass
-
-        self.preview_generation_process = None
-        self.preview_process = None
-        self.preview_hwnd = None
-        self.preview_started_at_monotonic = None
-        self.pause_started_at_monotonic = None
-        self.total_pause_seconds = 0.0
-
-    def pause_preview_at_seek_position(self, target_seconds: float):
-        """Seek while paused: stay paused at the new position with a fresh frame."""
-        self.preview_session_id += 1
-        self.preview_stop_requested = True
-        self.preview_should_resume_paused = True
-        self.paused_seek_without_process = True
-        self.preview_paused = True
-
-        self.kill_preview_pipeline()
-
-        self.set_seek_position(target_seconds)
-        self.preview_start_position = max(0.0, float(target_seconds))
-
-        self.preview_button.config(text="PLAY", state=tk.NORMAL)
-        self.play_pause_button.config(text="Play", state=tk.NORMAL)
-        self.set_busy(False)
-        self.set_status(f"Preview paused at {self.format_seconds(target_seconds)}. Click Play to resume.")
-        self.generate_paused_frame_at(target_seconds)
-
-    def toggle_play_pause(self):
-        # Resume from still-frame paused state.
-        if self.paused_seek_without_process:
-            resume_seconds = self.current_seek_seconds()
-            self.hide_paused_frame()
-            self.preview_placeholder.place_forget()
-            self.paused_seek_without_process = False
-            self.preview_paused = False
-            self.preview_should_resume_paused = False
-            self.preview_button.config(text="LOADING...", state=tk.DISABLED)
-            self.play_pause_button.config(text="Pause", state=tk.DISABLED)
-            self.restart_preview_at(resume_seconds, show_placeholder=False)
-            return
-
-        if self.preview_process is None:
-            return
-
-        # Pause by stopping preview processes and showing a still frame.
-        # Do NOT suspend FFplay/FFmpeg; that caused idle crashes.
-        paused_at = self.current_preview_position()
-        self.preview_session_id += 1
-        self.preview_stop_requested = True
-        self.preview_should_resume_paused = True
-        self.paused_seek_without_process = True
-        self.preview_paused = True
-
-        self.kill_preview_pipeline()
-
-        self.set_seek_position(paused_at)
-        self.preview_start_position = max(0.0, float(paused_at))
-
-        self.preview_button.config(text="PLAY", state=tk.NORMAL)
-        self.play_pause_button.config(text="Play", state=tk.NORMAL)
-        self.preview_placeholder_var.set("Loading paused frame...")
-        self.preview_placeholder.place(relx=0.5, rely=0.5, anchor="center")
-        self.set_busy(False)
-        self.preview_button.config(text="PLAY", state=tk.NORMAL)
-        self.play_pause_button.config(text="Play", state=tk.NORMAL)
-        self.set_status(f"Preview paused at {self.format_seconds(paused_at)}. Click Play to resume.")
-        self.generate_paused_frame_at(paused_at)
+        self.playback.apply_size(self.preview_width, self.preview_height)
 
     def stop_preview(self):
-        had_active_preview = (
-            self.preview_process is not None
-            or self.preview_generation_process is not None
-            or self.paused_seek_without_process
-        )
-
-        self.preview_stop_requested = True
-        self.preview_session_id += 1
-
-        if self.preview_refresh_after_id is not None:
-            try:
-                self.root.after_cancel(self.preview_refresh_after_id)
-            except Exception:
-                pass
-            self.preview_refresh_after_id = None
+        had_active_preview = self.playback.is_active
 
         if self.scrub_frame_after_id is not None:
             try:
@@ -1799,29 +1426,26 @@ class HaloApp:
                 pass
             self.scrub_frame_after_id = None
 
-        self.preview_refresh_pending = False
-        self.preview_should_resume_paused = False
-        self.paused_seek_without_process = False
-        self.hide_paused_frame()
-
-        if self.paused_frame_process is not None:
+        if self.live_mix_fallback_after_id is not None:
             try:
-                self.paused_frame_process.kill()
+                self.root.after_cancel(self.live_mix_fallback_after_id)
             except Exception:
                 pass
-            self.paused_frame_process = None
+            self.live_mix_fallback_after_id = None
 
-        self.kill_preview_pipeline()
+        for after_id in self.anchor_after_ids:
+            try:
+                self.root.after_cancel(after_id)
+            except Exception:
+                pass
+        self.anchor_after_ids = []
 
-        self.preview_paused = False
-        # Stopping the pipeline ends any generation by definition. The stale
-        # worker's finally-block skips this reset when its session id no longer
-        # matches (pause/stop bump the id), which used to strand the play
-        # button on "Loading..." after a pause -> export -> finish sequence.
-        self.is_generating_preview = False
+        self.scrub_resume_pending = False
+        self.last_scrub_frame_seconds = None
+        self.hide_paused_frame()
 
-        self.preview_button.config(text="PLAY")
-        self.play_pause_button.config(text="Pause", state=tk.DISABLED)
+        self.playback.stop()
+
         self.refresh_playback_button_state()
 
         if not self.is_exporting:
@@ -1829,17 +1453,6 @@ class HaloApp:
             self.set_status("Preview stopped.")
             if had_active_preview:
                 self.log("Preview stopped.")
-
-    def cleanup_preview_temp_file(self):
-        try:
-            if self.preview_temp_path and Path(self.preview_temp_path).exists():
-                Path(self.preview_temp_path).unlink()
-        except Exception:
-            pass
-
-        self.preview_temp_path = None
-        self.preview_temp_is_ready = False
-        self.preview_hwnd = None
 
     # ========================================================
     # Export
@@ -2043,7 +1656,7 @@ class HaloApp:
                 pass
 
         self.save_settings()
-        self.cleanup_preview_temp_file()
+        self.playback.shutdown()
         self.root.destroy()
 
     # ========================================================

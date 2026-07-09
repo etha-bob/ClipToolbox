@@ -21,7 +21,6 @@ from cliptoolbox.ui.widgets import (
     HaloPanel,
     HaloScrollbar,
     HaloSegmented,
-    _NullWidget,
     make_log,
 )
 
@@ -146,8 +145,6 @@ def build(app):
     )
     app.preview_button.config(state=tk.DISABLED)
     app.preview_button.pack(side=tk.LEFT)
-
-    app.play_pause_button = _NullWidget()  # legacy compatibility shim
 
     app.trim_checkbox = HaloCheckbox(
         transport, text="TRIM", variable=app.trim_enabled_var,

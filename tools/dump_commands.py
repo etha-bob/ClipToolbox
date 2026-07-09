@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from cliptoolbox.core import commands, filters, preview
+from cliptoolbox.core import commands, filters, playback
 from cliptoolbox.core import paths
 
 INPUT = r"C:\clips\example.mp4"
@@ -86,13 +86,18 @@ def main():
     dump("compressed export, trim 4.2->11.8, 9.99 MB @720p, mp4", mask(cmd))
     dump("compressed export bitrates (video/audio/total kbps)", [video_kbps, audio_kbps, round(total_kbps, 3)])
 
-    ffmpeg_cmd, ffplay_cmd = preview.build_preview_stream_cmds(INPUT, two_track_filter, 30.0, 676, 396)
-    dump("preview ffmpeg cmd from 0:30", mask(ffmpeg_cmd))
-    dump("preview ffplay cmd 676x396", mask(ffplay_cmd))
+    playback_filter = playback.build_playback_filter([(1, 1.0), (2, 0.8)], 676, 396)
+    dump("playback filter: 2 tracks + scaled video", playback_filter)
+
+    ffmpeg_cmd, ffplay_cmd = playback.build_playback_stream_cmds(
+        INPUT, playback_filter, 30.0, 676, 396
+    )
+    dump("playback ffmpeg cmd from 0:30", mask(ffmpeg_cmd))
+    dump("playback ffplay cmd 676x396", mask(ffplay_cmd))
 
     dump(
         "paused-frame extract cmd @12.34s",
-        mask(preview.build_frame_extract_cmd(INPUT, 12.34, r"C:\temp\frame.jpg")),
+        mask(playback.build_frame_extract_cmd(INPUT, 12.34, r"C:\temp\frame.jpg")),
     )
 
     dump("trim clamp: end<=start", list(commands.clamp_trim_points(10.0, 5.0, 60.0)))
