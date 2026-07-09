@@ -270,6 +270,8 @@ class HaloApp:
         root.bind("<Home>", lambda e: self.shortcut(lambda: self.seek_absolute(0.0)))
         root.bind("<End>", lambda e: self.shortcut(
             lambda: self.seek_absolute(self.total_duration_seconds or 0.0)))
+        root.bind("<Shift-Home>", lambda e: self.shortcut(lambda: self.jump_to_trim("start")))
+        root.bind("<Shift-End>", lambda e: self.shortcut(lambda: self.jump_to_trim("end")))
         root.bind("<comma>", lambda e: self.shortcut(lambda: self.step_frame(-1)))
         root.bind("<period>", lambda e: self.shortcut(lambda: self.step_frame(1)))
         root.bind("<Key-m>", lambda e: self.shortcut(self.toggle_mute_preview))
@@ -1167,27 +1169,23 @@ class HaloApp:
         if not hasattr(self, "trim_info_var"):
             return
 
+        # Endpoints show in the IN/OUT fields; this is just a compact length.
         if not self.trim_enabled_var.get():
             self.trim_info_var.set("")
             return
 
         start, end = self.get_active_trim_points()
-
-        if start is None and end is None:
-            self.trim_info_var.set("No trim points set")
-        elif start is not None and end is not None:
-            self.trim_info_var.set(
-                f"TRIM {self.format_seconds(start)} → {self.format_seconds(end)} · {self.format_seconds(end - start)}"
-            )
-        elif start is not None:
-            self.trim_info_var.set(f"TRIM from {self.format_seconds(start)}")
+        if start is not None and end is not None:
+            self.trim_info_var.set(f"· {self.format_seconds(end - start)}")
         else:
-            self.trim_info_var.set(f"TRIM until {self.format_seconds(end)}")
+            self.trim_info_var.set("")
 
     def update_trim_markers(self):
         """Trim brackets are drawn by the seekbar itself now."""
         if not hasattr(self, "seekbar"):
             return
+
+        self.sync_trim_entries()
 
         duration = self.total_duration_seconds or 0
         if not self.trim_enabled_var.get() or duration <= 0:
@@ -1196,6 +1194,114 @@ class HaloApp:
 
         start, end = self.get_active_trim_points()
         self.seekbar.set_trim(start, end)
+
+    # ------------------------------------------------------------------
+    # Timecodes + exact trim entry / bracket dragging
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def format_timecode(seconds: float | None) -> str:
+        """m:ss.cs — the precision the inline trim fields use."""
+        if seconds is None:
+            return ""
+        seconds = max(0.0, float(seconds))
+        minutes = int(seconds // 60)
+        rest = seconds - minutes * 60
+        return f"{minutes}:{rest:05.2f}"
+
+    @staticmethod
+    def parse_timecode(text: str) -> float | None:
+        """Accept 'm:ss.cs', 'ss.cs', or raw seconds; return seconds or None."""
+        text = (text or "").strip()
+        if not text:
+            return None
+        try:
+            if ":" in text:
+                mins, _, secs = text.rpartition(":")
+                return max(0.0, int(mins or 0) * 60 + float(secs))
+            return max(0.0, float(text))
+        except Exception:
+            return None
+
+    def sync_trim_entries(self):
+        """Reflect the current trim values in the inline in/out fields, unless
+        the user is typing in one of them."""
+        if not hasattr(self, "trim_in_var"):
+            return
+        focus = None
+        try:
+            focus = self.root.focus_get()
+        except Exception:
+            pass
+        in_inner = getattr(self.trim_in_entry, "entry", None)
+        out_inner = getattr(self.trim_out_entry, "entry", None)
+        if focus is not in_inner:
+            self.trim_in_var.set(self.format_timecode(self.trim_start_seconds))
+        if focus is not out_inner:
+            self.trim_out_var.set(self.format_timecode(self.trim_end_seconds))
+
+    def set_trim_value(self, kind: str, seconds: float | None, enable: bool = True):
+        """Shared setter for the inline entries and bracket dragging."""
+        duration = self.total_duration_seconds or 0
+        if seconds is not None:
+            seconds = max(0.0, float(seconds))
+            if duration:
+                seconds = min(seconds, duration)
+
+        if kind == "start":
+            self.trim_start_seconds = seconds
+            if (seconds is not None and self.trim_end_seconds is not None
+                    and seconds >= self.trim_end_seconds):
+                self.trim_end_seconds = None
+        else:
+            self.trim_end_seconds = seconds
+            if (seconds is not None and self.trim_start_seconds is not None
+                    and seconds <= self.trim_start_seconds):
+                self.trim_start_seconds = None
+
+        if enable:
+            self.trim_enabled_var.set(True)
+        self.update_trim_controls()
+
+    def commit_trim_entry(self, kind: str):
+        var = self.trim_in_var if kind == "start" else self.trim_out_var
+        seconds = self.parse_timecode(var.get())
+        if seconds is None and var.get().strip():
+            # Unparseable — restore the displayed value.
+            self.sync_trim_entries()
+            return
+        self.set_trim_value(kind, seconds)
+        if seconds is not None:
+            label = "start" if kind == "start" else "end"
+            self.log(f"Trim {label} set to {self.format_seconds(seconds)}.")
+
+    def on_trim_bracket_drag(self, kind: str, value: float):
+        """Live update while a bracket is dragged on the seekbar."""
+        if kind == "start":
+            self.trim_start_seconds = float(value)
+        else:
+            self.trim_end_seconds = float(value)
+        self.update_trim_info()
+        # Show the frame at the dragged edge when paused (matches scrubbing).
+        if self.playback.state == core_playback.PAUSED:
+            self.set_seek_position(value)
+            self.schedule_scrub_frame(value)
+
+    def on_trim_bracket_commit(self, kind: str):
+        self.update_trim_controls()
+        seconds = self.trim_start_seconds if kind == "start" else self.trim_end_seconds
+        if seconds is not None:
+            label = "start" if kind == "start" else "end"
+            self.set_status(f"Trim {label} set to {self.format_seconds(seconds)}.")
+            self.log(f"Trim {label} set to {self.format_seconds(seconds)}.")
+
+    def jump_to_trim(self, kind: str):
+        if kind == "start":
+            target = self.trim_start_seconds if self.trim_start_seconds is not None else 0.0
+        else:
+            target = (self.trim_end_seconds if self.trim_end_seconds is not None
+                      else (self.total_duration_seconds or 0.0))
+        self.seek_absolute(target)
 
     # ========================================================
     # FFmpeg filter building

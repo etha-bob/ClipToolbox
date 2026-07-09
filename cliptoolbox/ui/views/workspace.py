@@ -130,6 +130,8 @@ def build(app):
     app.seekbar.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=px(6))
     app.seekbar.bind_press(app.on_seek_press)
     app.seekbar.bind_release(app.on_seek_release)
+    app.seekbar.bind_trim_change(app.on_trim_bracket_drag)
+    app.seekbar.bind_trim_commit(app.on_trim_bracket_commit)
 
     time_right_label = tk.Label(
         timeline, textvariable=app.time_right_var, font=theme.font_small(),
@@ -180,15 +182,32 @@ def build(app):
     )
     app.trim_end_button.pack(side=tk.LEFT, padx=(px(6), 0))
 
+    # Inline editable in/out timecodes (type exact boundaries).
+    app.trim_in_var = tk.StringVar(value="")
+    app.trim_out_var = tk.StringVar(value="")
+    tk.Label(app.trim_buttons_frame, text="IN", font=theme.font_small(11),
+             bg=theme.BG_DEEP, fg=theme.TEXT_DIM).pack(side=tk.LEFT, padx=(px(10), px(2)))
+    app.trim_in_entry = HaloEntry(app.trim_buttons_frame, textvariable=app.trim_in_var, width=7)
+    app.trim_in_entry.pack(side=tk.LEFT)
+    tk.Label(app.trim_buttons_frame, text="OUT", font=theme.font_small(11),
+             bg=theme.BG_DEEP, fg=theme.TEXT_DIM).pack(side=tk.LEFT, padx=(px(6), px(2)))
+    app.trim_out_entry = HaloEntry(app.trim_buttons_frame, textvariable=app.trim_out_var, width=7)
+    app.trim_out_entry.pack(side=tk.LEFT)
+
+    for entry, kind in ((app.trim_in_entry, "start"), (app.trim_out_entry, "end")):
+        entry.entry.bind("<Return>", lambda e, k=kind: app.commit_trim_entry(k))
+        entry.entry.bind("<FocusOut>", lambda e, k=kind: app.commit_trim_entry(k))
+
     app.clear_trim_button = HaloButton(
         app.trim_buttons_frame, text="CLEAR", command=app.clear_trim_points,
         variant="danger", height=px(28), font=theme.font_small(12),
     )
-    app.clear_trim_button.pack(side=tk.LEFT, padx=(px(6), 0))
+    app.clear_trim_button.pack(side=tk.LEFT, padx=(px(8), 0))
 
+    # Compact trimmed-length readout (endpoints live in the IN/OUT fields).
     app.trim_info_var = tk.StringVar(value="")
-    tk.Label(transport, textvariable=app.trim_info_var, font=theme.font_small(),
-             bg=theme.BG_DEEP, fg=theme.ACCENT).pack(side=tk.LEFT, padx=(px(10), 0))
+    tk.Label(app.trim_buttons_frame, textvariable=app.trim_info_var, font=theme.font_small(),
+             bg=theme.BG_DEEP, fg=theme.ACCENT).pack(side=tk.LEFT, padx=(px(8), 0))
 
     app.trim_buttons_frame.pack_forget()
 

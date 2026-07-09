@@ -34,6 +34,10 @@ class HaloSeekbar(tk.Canvas):
         self._trim_end: float | None = None
         self._press_callbacks = []
         self._release_callbacks = []
+        self._trim_change_callbacks = []
+        self._trim_commit_callbacks = []
+        self._trim_drag_kind: str | None = None
+        self._cursor = ""
         self._suspend_var_sync = False
 
         h = px(theme.SEEKBAR_H)
@@ -49,6 +53,7 @@ class HaloSeekbar(tk.Canvas):
         self.bind("<ButtonPress-1>", self._on_press)
         self.bind("<B1-Motion>", self._on_drag)
         self.bind("<ButtonRelease-1>", self._on_release)
+        self.bind("<Motion>", self._on_motion)
 
     # ------------------------------------------------------------------
     # tk.Scale-compatible surface
@@ -75,6 +80,15 @@ class HaloSeekbar(tk.Canvas):
 
     def bind_release(self, callback):
         self._release_callbacks.append(callback)
+
+    def bind_trim_change(self, callback):
+        """callback(kind, value) fires continuously while a trim bracket is
+        dragged; kind is "start" or "end"."""
+        self._trim_change_callbacks.append(callback)
+
+    def bind_trim_commit(self, callback):
+        """callback(kind) fires once when a trim-bracket drag is released."""
+        self._trim_commit_callbacks.append(callback)
 
     def set_trim(self, start: float | None, end: float | None):
         """Draw trim brackets; None hides that bracket."""
@@ -188,9 +202,53 @@ class HaloSeekbar(tk.Canvas):
         if self._command is not None:
             self._command(f"{value}")
 
+    def _bracket_at(self, x: int) -> str | None:
+        """Which trim bracket, if any, sits under x (within a grab margin).
+        Returns "start"/"end"/None. Only set brackets are grabbable."""
+        margin = px(9)
+        best_kind = None
+        best_dist = margin + 1
+        if self._trim_start is not None:
+            d = abs(x - self._x_for(self._trim_start))
+            if d < best_dist:
+                best_kind, best_dist = "start", d
+        if self._trim_end is not None:
+            d = abs(x - self._x_for(self._trim_end))
+            if d < best_dist:
+                best_kind, best_dist = "end", d
+        return best_kind
+
+    def _apply_trim_drag(self, x):
+        kind = self._trim_drag_kind
+        value = self._value_at(x)
+
+        # Keep start < end so the kept range never inverts.
+        if kind == "start" and self._trim_end is not None:
+            value = min(value, max(self._from, self._trim_end - 0.05))
+        elif kind == "end" and self._trim_start is not None:
+            value = max(value, min(self._to, self._trim_start + 0.05))
+        value = min(self._to, max(self._from, value))
+
+        if kind == "start":
+            self._trim_start = value
+        else:
+            self._trim_end = value
+        self._redraw()
+
+        for callback in self._trim_change_callbacks:
+            callback(kind, value)
+
     def _on_press(self, event):
         if self._state != tk.NORMAL:
             return
+
+        # Grabbing a trim bracket takes priority over moving the playhead.
+        kind = self._bracket_at(event.x)
+        if kind is not None:
+            self._trim_drag_kind = kind
+            self._apply_trim_drag(event.x)
+            return
+
         # Press hooks run first so user_is_seeking is set before any value
         # updates fire the command (mirrors the old bind order).
         for callback in self._press_callbacks:
@@ -198,11 +256,35 @@ class HaloSeekbar(tk.Canvas):
         self._dragging = True
         self._apply_drag(event.x)
 
+    def _on_motion(self, event):
+        if self._state != tk.NORMAL or self._trim_drag_kind is not None:
+            return
+        cursor = "sb_h_double_arrow" if self._bracket_at(event.x) else ""
+        if cursor != self._cursor:
+            self._cursor = cursor
+            try:
+                # Bypass the overridden configure (which redraws) — just set the
+                # cursor on the underlying canvas.
+                tk.Canvas.configure(self, cursor=cursor)
+            except Exception:
+                pass
+
     def _on_drag(self, event):
-        if self._dragging and self._state == tk.NORMAL:
+        if self._state != tk.NORMAL:
+            return
+        if self._trim_drag_kind is not None:
+            self._apply_trim_drag(event.x)
+        elif self._dragging:
             self._apply_drag(event.x)
 
     def _on_release(self, event):
+        if self._trim_drag_kind is not None:
+            kind = self._trim_drag_kind
+            self._trim_drag_kind = None
+            self._redraw()
+            for callback in self._trim_commit_callbacks:
+                callback(kind)
+            return
         if self._state != tk.NORMAL:
             self._dragging = False
             return
