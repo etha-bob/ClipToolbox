@@ -12,6 +12,7 @@ import tkinter as tk
 
 from cliptoolbox.constants import COMPRESSION_RESOLUTION_PRESETS, PREVIEW_HEIGHT
 from cliptoolbox.ui import theme
+from cliptoolbox.ui.cropbox import CropBoxCanvas
 from cliptoolbox.ui.seekbar import HaloSeekbar
 from cliptoolbox.ui.theme import px
 from cliptoolbox.ui.widgets import (
@@ -109,6 +110,11 @@ def build(app):
     )
     app.paused_frame_label.place_forget()
 
+    # Crop/zoom editing surface: covers the preview frame while crop-edit mode
+    # is active (the controller places/forgets it).
+    app.cropbox = CropBoxCanvas(app.preview_frame, behind="black")
+    app.cropbox.place_forget()
+
     app.preview_frame.bind("<Configure>", app.on_preview_frame_resize)
 
     # ------------------------------------------------------------------
@@ -133,6 +139,9 @@ def build(app):
     app.seekbar.bind_release(app.on_seek_release)
     app.seekbar.bind_trim_change(app.on_trim_bracket_drag)
     app.seekbar.bind_trim_commit(app.on_trim_bracket_commit)
+    app.seekbar.bind_keyframe_click(app.on_keyframe_click)
+    app.seekbar.bind_keyframe_drag(app.on_keyframe_drag)
+    app.seekbar.bind_keyframe_commit(app.on_keyframe_commit)
 
     time_right_label = tk.Label(
         timeline, textvariable=app.time_right_var, font=theme.font_small(),
@@ -147,6 +156,7 @@ def build(app):
     # ------------------------------------------------------------------
     transport = tk.Frame(left, bg=theme.BG_DEEP)
     transport.pack(fill=tk.X, pady=(px(4), 0))
+    app.transport_frame = transport  # crop toolbar re-packs after this row
 
     app.preview_button = HaloButton(
         transport, text="PLAY", command=app.toggle_preview, width=px(110),
@@ -167,6 +177,14 @@ def build(app):
         font=theme.font_title(13),
     )
     app.trim_checkbox.pack(side=tk.LEFT, padx=(px(16), 0))
+
+    app.crop_checkbox = HaloCheckbox(
+        transport, text="CROP", variable=app.crop_enabled_var,
+        command=app.on_crop_toggle, behind=theme.BG_DEEP,
+        font=theme.font_title(13),
+    )
+    app.crop_checkbox.pack(side=tk.LEFT, padx=(px(16), 0))
+    Tooltip(app.crop_checkbox, "Crop / zoom with keyframes (re-encodes on export)")
 
     app.trim_buttons_frame = tk.Frame(transport, bg=theme.BG_DEEP)
     app.trim_buttons_frame.pack(side=tk.LEFT, padx=(px(10), 0))
@@ -215,6 +233,58 @@ def build(app):
              bg=theme.BG_DEEP, fg=theme.ACCENT).pack(side=tk.LEFT, padx=(px(8), 0))
 
     app.trim_buttons_frame.pack_forget()
+
+    # ------------------------------------------------------------------
+    # Left: crop / keyframe toolbar (shown while CROP is enabled)
+    # ------------------------------------------------------------------
+    app.crop_toolbar_frame = tk.Frame(left, bg=theme.BG_DEEP)
+    app.crop_toolbar_frame.pack(fill=tk.X, pady=(px(4), 0))
+
+    app.crop_addkey_button = HaloButton(
+        app.crop_toolbar_frame, text="ADD KEY", command=app.on_crop_add_key,
+        height=px(28), font=theme.font_small(12),
+    )
+    app.crop_addkey_button.pack(side=tk.LEFT)
+    Tooltip(app.crop_addkey_button, "Set a crop keyframe at the playhead (K)")
+
+    app.crop_delkey_button = HaloButton(
+        app.crop_toolbar_frame, text="DELETE", command=app.on_crop_delete_key,
+        height=px(28), font=theme.font_small(12),
+    )
+    app.crop_delkey_button.pack(side=tk.LEFT, padx=(px(6), 0))
+    Tooltip(app.crop_delkey_button, "Delete the keyframe at the playhead")
+
+    app.crop_prevkey_button = HaloButton(
+        app.crop_toolbar_frame, text="◂ KEY", command=app.on_crop_prev_key,
+        height=px(28), font=theme.font_small(12),
+    )
+    app.crop_prevkey_button.pack(side=tk.LEFT, padx=(px(6), 0))
+
+    app.crop_nextkey_button = HaloButton(
+        app.crop_toolbar_frame, text="KEY ▸", command=app.on_crop_next_key,
+        height=px(28), font=theme.font_small(12),
+    )
+    app.crop_nextkey_button.pack(side=tk.LEFT, padx=(px(6), 0))
+
+    app.crop_reset_button = HaloButton(
+        app.crop_toolbar_frame, text="RESET", command=app.on_crop_reset_rect,
+        height=px(28), font=theme.font_small(12),
+    )
+    app.crop_reset_button.pack(side=tk.LEFT, padx=(px(6), 0))
+    Tooltip(app.crop_reset_button, "Reset the crop rectangle to the full frame")
+
+    app.crop_clear_button = HaloButton(
+        app.crop_toolbar_frame, text="CLEAR", command=app.on_crop_clear_keys,
+        variant="danger", height=px(28), font=theme.font_small(12),
+    )
+    app.crop_clear_button.pack(side=tk.LEFT, padx=(px(8), 0))
+    Tooltip(app.crop_clear_button, "Remove all crop keyframes")
+
+    app.crop_info_var = tk.StringVar(value="")
+    tk.Label(app.crop_toolbar_frame, textvariable=app.crop_info_var, font=theme.font_small(),
+             bg=theme.BG_DEEP, fg=theme.ACCENT).pack(side=tk.LEFT, padx=(px(8), 0))
+
+    app.crop_toolbar_frame.pack_forget()
 
     # ------------------------------------------------------------------
     # Left: frame snapshot actions

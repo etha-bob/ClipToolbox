@@ -40,6 +40,19 @@ class HaloSeekbar(tk.Canvas):
         self._cursor = ""
         self._suspend_var_sync = False
 
+        # Keyframe markers (crop/zoom). Times live in the same units as the
+        # playhead; the controller owns the authoritative list and pushes it
+        # back via set_keyframes after every edit.
+        self._keyframes: list[float] = []
+        self._kf_press_callbacks = []
+        self._kf_drag_callbacks = []
+        self._kf_commit_callbacks = []
+        self._kf_click_callbacks = []
+        self._kf_drag_index: int | None = None
+        self._kf_press_x: int | None = None
+        self._kf_moved = False
+        self._kf_hover_index: int | None = None
+
         h = px(theme.SEEKBAR_H)
         super().__init__(parent, height=h, highlightthickness=0, bd=0, bg=behind)
         self._wpx, self._hpx = 100, h
@@ -96,6 +109,39 @@ class HaloSeekbar(tk.Canvas):
         self._trim_end = end
         self._redraw()
 
+    def bind_keyframe_press(self, callback):
+        """callback(index) when a keyframe diamond is grabbed."""
+        self._kf_press_callbacks.append(callback)
+
+    def bind_keyframe_drag(self, callback):
+        """callback(index, value) fires continuously while a diamond is dragged."""
+        self._kf_drag_callbacks.append(callback)
+
+    def bind_keyframe_commit(self, callback):
+        """callback(index, value) fires when a diamond drag (a real move) ends."""
+        self._kf_commit_callbacks.append(callback)
+
+    def bind_keyframe_click(self, callback):
+        """callback(index) fires when a diamond is clicked without dragging."""
+        self._kf_click_callbacks.append(callback)
+
+    def set_keyframes(self, times):
+        """Replace the keyframe markers. Empty list hides the lane markers."""
+        self._keyframes = sorted(float(t) for t in times)
+        self._redraw()
+
+    # ------------------------------------------------------------------
+    # Layout bands
+    # ------------------------------------------------------------------
+
+    def _scrub_cy(self) -> int:
+        """Vertical center of the scrubber track (upper band)."""
+        return px(15)
+
+    def _kf_cy(self) -> int:
+        """Vertical center of the keyframe lane (lower band)."""
+        return self._hpx - px(8)
+
     # ------------------------------------------------------------------
     # Geometry
     # ------------------------------------------------------------------
@@ -125,6 +171,8 @@ class HaloSeekbar(tk.Canvas):
 
     def _set_hover(self, value):
         self._hover = value
+        if not value:
+            self._kf_hover_index = None
         self._redraw()
 
     def _redraw(self):
@@ -132,7 +180,7 @@ class HaloSeekbar(tk.Canvas):
             return
         self.delete("all")
         sk = skin.get_skin()
-        cy = self._hpx // 2
+        cy = self._scrub_cy()
         th = px(5)
         x0, x1 = self._usable()
 
@@ -159,7 +207,7 @@ class HaloSeekbar(tk.Canvas):
                               fill=fill, width=0)
 
         # Trim brackets.
-        bracket_h = px(22)
+        bracket_h = px(20)
         if self._trim_start is not None:
             self.create_image(self._x_for(self._trim_start), cy,
                               image=sk.get("trim_flag", h=bracket_h, kind="start", behind=self.behind),
@@ -173,7 +221,23 @@ class HaloSeekbar(tk.Canvas):
         hstate = "disabled" if self._state == tk.DISABLED else (
             "drag" if self._dragging else ("hover" if self._hover else "normal"))
         self.create_image(hx, cy, image=sk.get(
-            "handle", w=px(10), h=px(22), state=hstate, behind=self.behind))
+            "handle", w=px(10), h=px(18), state=hstate, behind=self.behind))
+
+        # Keyframe diamonds in the lower lane.
+        if self._keyframes:
+            kf_cy = self._kf_cy()
+            kf_h = px(12)
+            for i, t in enumerate(self._keyframes):
+                if i == self._kf_drag_index:
+                    state = "drag"
+                elif abs(self._x_for(t) - hx) <= px(3):
+                    state = "active"
+                elif i == self._kf_hover_index:
+                    state = "hover"
+                else:
+                    state = "normal"
+                self.create_image(self._x_for(t), kf_cy,
+                                  image=sk.get("keyframe", h=kf_h, state=state, behind=self.behind))
 
     def _on_var_write(self, *_):
         if self._suspend_var_sync:
@@ -218,6 +282,39 @@ class HaloSeekbar(tk.Canvas):
                 best_kind, best_dist = "end", d
         return best_kind
 
+    def _keyframe_at(self, x: int, y: int) -> int | None:
+        """Index of the keyframe diamond under (x, y), or None. Restricted to
+        the lower lane so it never competes with playhead/trim grabs above."""
+        if not self._keyframes:
+            return None
+        if y < self._kf_cy() - px(10):
+            return None
+        margin = px(8)
+        best_index = None
+        best_dist = margin + 1
+        for i, t in enumerate(self._keyframes):
+            d = abs(x - self._x_for(t))
+            if d < best_dist:
+                best_index, best_dist = i, d
+        return best_index
+
+    def _apply_keyframe_drag(self, x):
+        index = self._kf_drag_index
+        if index is None:
+            return
+        value = self._value_at(x)
+        # Clamp between neighbours so a drag can't reorder the keyframes
+        # (mirrors CropTrack.retime on the controller side).
+        if index > 0:
+            value = max(value, self._keyframes[index - 1] + 0.05)
+        if index < len(self._keyframes) - 1:
+            value = min(value, self._keyframes[index + 1] - 0.05)
+        value = min(self._to, max(self._from, value))
+        self._keyframes[index] = value
+        self._redraw()
+        for callback in self._kf_drag_callbacks:
+            callback(index, value)
+
     def _apply_trim_drag(self, x):
         kind = self._trim_drag_kind
         value = self._value_at(x)
@@ -249,6 +346,18 @@ class HaloSeekbar(tk.Canvas):
             self._apply_trim_drag(event.x)
             return
 
+        # Keyframe diamonds (lower lane) come next: grab to retime or click to
+        # seek. They sit below the scrubber, so this only wins in that band.
+        kf_index = self._keyframe_at(event.x, event.y)
+        if kf_index is not None:
+            self._kf_drag_index = kf_index
+            self._kf_press_x = event.x
+            self._kf_moved = False
+            self._redraw()
+            for callback in self._kf_press_callbacks:
+                callback(kf_index)
+            return
+
         # Press hooks run first so user_is_seeking is set before any value
         # updates fire the command (mirrors the old bind order).
         for callback in self._press_callbacks:
@@ -257,9 +366,18 @@ class HaloSeekbar(tk.Canvas):
         self._apply_drag(event.x)
 
     def _on_motion(self, event):
-        if self._state != tk.NORMAL or self._trim_drag_kind is not None:
+        if self._state != tk.NORMAL or self._trim_drag_kind is not None or self._kf_drag_index is not None:
             return
-        cursor = "sb_h_double_arrow" if self._bracket_at(event.x) else ""
+        if self._bracket_at(event.x) is not None:
+            cursor = "sb_h_double_arrow"
+        elif self._keyframe_at(event.x, event.y) is not None:
+            cursor = "hand2"
+        else:
+            cursor = ""
+        hover = self._keyframe_at(event.x, event.y)
+        if hover != self._kf_hover_index:
+            self._kf_hover_index = hover
+            self._redraw()
         if cursor != self._cursor:
             self._cursor = cursor
             try:
@@ -274,6 +392,11 @@ class HaloSeekbar(tk.Canvas):
             return
         if self._trim_drag_kind is not None:
             self._apply_trim_drag(event.x)
+        elif self._kf_drag_index is not None:
+            if self._kf_press_x is not None and abs(event.x - self._kf_press_x) > px(3):
+                self._kf_moved = True
+            if self._kf_moved:
+                self._apply_keyframe_drag(event.x)
         elif self._dragging:
             self._apply_drag(event.x)
 
@@ -284,6 +407,21 @@ class HaloSeekbar(tk.Canvas):
             self._redraw()
             for callback in self._trim_commit_callbacks:
                 callback(kind)
+            return
+        if self._kf_drag_index is not None:
+            index = self._kf_drag_index
+            moved = self._kf_moved
+            value = self._keyframes[index] if 0 <= index < len(self._keyframes) else 0.0
+            self._kf_drag_index = None
+            self._kf_press_x = None
+            self._kf_moved = False
+            self._redraw()
+            if moved:
+                for callback in self._kf_commit_callbacks:
+                    callback(index, value)
+            else:
+                for callback in self._kf_click_callbacks:
+                    callback(index)
             return
         if self._state != tk.NORMAL:
             self._dragging = False

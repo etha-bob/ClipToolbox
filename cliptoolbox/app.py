@@ -61,6 +61,7 @@ from cliptoolbox.core.win32 import assign_process_to_cleanup_job, set_clipboard_
 from cliptoolbox.dnd import DND_AVAILABLE, DND_FILES, TkinterDnD
 from cliptoolbox import settings as app_settings
 from cliptoolbox.ui import chrome, dialogs, dpi, fonts, theme
+from cliptoolbox.ui.crop_controller import CropController
 from cliptoolbox.ui.wheel import WheelRouter
 from cliptoolbox.ui import dialogs as messagebox  # ported call sites unchanged
 from cliptoolbox.ui.theme import px
@@ -115,12 +116,16 @@ class HaloApp:
         self.trim_end_seconds: float | None = None
 
         self.video_fps: float | None = None
+        self.video_dimensions: tuple[int, int] | None = None
         self.loop_enabled_var = tk.BooleanVar(value=False)
         self.show_remaining = False
 
         self.preview_muted = False
         self.solo_row: int | None = None
         self.track_state_strips: dict[int, tk.Frame] = {}
+
+        self.crop_enabled_var = tk.BooleanVar(value=False)
+        self.crop = None  # CropController, constructed after build_ui
 
         self.compress_enabled_var = tk.BooleanVar(value=bool(self.settings.compress_enabled))
         self.compression_target_var = tk.StringVar(
@@ -159,6 +164,7 @@ class HaloApp:
         self.active_screen = "landing"
 
         self.build_ui()
+        self.crop = CropController(self)
         self.enable_drag_and_drop()
         self.startup_checks()
 
@@ -318,6 +324,10 @@ class HaloApp:
         root.bind("<period>", lambda e: self.shortcut(lambda: self.step_frame(1)))
         root.bind("<Key-m>", lambda e: self.shortcut(self.toggle_mute_preview))
         root.bind("<Key-M>", lambda e: self.shortcut(self.toggle_mute_preview))
+        root.bind("<Key-c>", lambda e: self.shortcut(self.toggle_crop_mode))
+        root.bind("<Key-C>", lambda e: self.shortcut(self.toggle_crop_mode))
+        root.bind("<Key-k>", lambda e: self.shortcut(self.on_crop_add_key))
+        root.bind("<Key-K>", lambda e: self.shortcut(self.on_crop_add_key))
         for digit in range(10):
             root.bind(f"<Key-{digit}>",
                       lambda e, n=digit: self.shortcut(lambda: self.seek_to_fraction(n / 10.0)))
@@ -812,11 +822,14 @@ class HaloApp:
 
         self.video_path = str(path_obj)
         self.video_fps = None
+        self.video_dimensions = None
         self.playback.configure_media(self.video_path, None)
         self.file_label_var.set(path_obj.name)
         self.clear_tracks()
         self.set_seek_range(0)
         self.clear_trim_points(silent=True)
+        if self.crop:
+            self.crop.reset()
         self.preview_placeholder_var.set("Preparing file...")
         self.preview_placeholder.place(relx=0.5, rely=0.5, anchor="center")
         self.refresh_playback_button_state()
@@ -828,18 +841,23 @@ class HaloApp:
             streams = self.get_audio_streams(str(path_obj))
             duration = self.get_media_duration(str(path_obj))
             fps = core_mediainfo.probe_frame_rate(str(path_obj))
-            self.ui(self.after_probe, streams, duration, fps)
+            dimensions = core_mediainfo.probe_video_dimensions(str(path_obj))
+            self.ui(self.after_probe, streams, duration, fps, dimensions)
 
         threading.Thread(target=worker, daemon=True).start()
 
     def after_probe(self, streams: list[dict], duration: float | None,
-                    fps: float | None = None):
+                    fps: float | None = None,
+                    dimensions: tuple[int, int] | None = None):
         self.audio_metadata = streams
         self.total_duration_seconds = duration
         self.video_fps = fps
+        self.video_dimensions = dimensions
         self.playback.configure_media(self.video_path, duration)
         self.set_seek_range(duration)
         self.update_trim_controls()
+        if self.crop:
+            self.crop.set_source(dimensions, duration, fps)
 
         self.clear_tracks()
 
@@ -1038,6 +1056,9 @@ class HaloApp:
         self.time_left_var.set(self.format_seconds(seconds))
         self.update_time_right(seconds)
 
+        if self.crop:
+            self.crop.on_playhead(seconds)
+
     def update_time_right(self, position: float):
         """Right-hand time label: total duration, or count-down remaining when
         toggled (click the label). Left label always shows elapsed."""
@@ -1158,7 +1179,12 @@ class HaloApp:
         if self.playback.state != core_playback.PAUSED:
             return
 
-        self.pending_still_request = self.playback.request_still(seconds)
+        self.pending_still_request = self.playback.request_still(
+            seconds, vf=self._crop_still_vf(seconds))
+
+    def _crop_still_vf(self, seconds: float):
+        """Static crop VF for a still at `seconds`, or None (no crop / editing)."""
+        return self.crop.still_vf(seconds) if self.crop else None
 
     # ========================================================
     # Trim controls
@@ -1167,6 +1193,45 @@ class HaloApp:
     def on_trim_toggle(self):
         self.update_trim_controls()
         self.log("Trim controls enabled." if self.trim_enabled_var.get() else "Trim controls disabled.")
+
+    # ---- Crop / keyframe delegates (logic lives in CropController) ----
+
+    def on_crop_toggle(self):
+        self.crop.on_toggle()
+
+    def toggle_crop_mode(self):
+        """Keyboard 'C': flip crop mode when the clip has known dimensions."""
+        if not self.video_dimensions:
+            return
+        self.crop_enabled_var.set(not self.crop_enabled_var.get())
+        self.on_crop_toggle()
+
+    def on_crop_add_key(self):
+        self.crop.add_key()
+
+    def on_crop_delete_key(self):
+        self.crop.delete_key()
+
+    def on_crop_prev_key(self):
+        self.crop.goto_prev()
+
+    def on_crop_next_key(self):
+        self.crop.goto_next()
+
+    def on_crop_reset_rect(self):
+        self.crop.reset_rect()
+
+    def on_crop_clear_keys(self):
+        self.crop.clear_keys()
+
+    def on_keyframe_click(self, index):
+        self.crop.on_kf_click(index)
+
+    def on_keyframe_drag(self, index, value):
+        self.crop.on_kf_drag(index, value)
+
+    def on_keyframe_commit(self, index, value):
+        self.crop.on_kf_commit(index, value)
 
     def on_loop_toggle(self):
         if self.loop_enabled_var.get():
@@ -1233,7 +1298,10 @@ class HaloApp:
             return
 
         if not self.compress_enabled_var.get():
-            self.compression_estimate_var.set("Stream-copy export (no re-encode)")
+            if self.crop and self.crop.will_reencode():
+                self.compression_estimate_var.set("Crop/zoom re-encode (H.265 NVENC)")
+            else:
+                self.compression_estimate_var.set("Stream-copy export (no re-encode)")
             return
 
         try:
@@ -1720,6 +1788,9 @@ class HaloApp:
             messagebox.showwarning("No video loaded", "Please load a video file first.")
             return
 
+        if self.crop and self.crop.editing:
+            self.crop.leave_edit_for_playback()
+
         if not FFMPEG:
             messagebox.showerror("Missing ffmpeg", "ffmpeg was not found.")
             return
@@ -1790,9 +1861,15 @@ class HaloApp:
             # Pipeline had to be dropped; fetch a real frame for the overlay.
             self.preview_placeholder_var.set("Loading paused frame...")
             self.preview_placeholder.place(relx=0.5, rely=0.5, anchor="center")
-            self.pending_still_request = self.playback.request_still(position)
+            self.pending_still_request = self.playback.request_still(
+                position, vf=self._crop_still_vf(position))
 
     def resume_playback(self):
+        if self.crop and self.crop.editing:
+            # Leaving the crop editor for live playback: drop the overlay so
+            # the respawn shows the animated crop through FFplay.
+            self.crop.leave_edit_for_playback()
+
         self.playback.resume()
 
         if self.playback.state == core_playback.PLAYING:
@@ -1913,6 +1990,9 @@ class HaloApp:
             self.anchor_after_ids.append(self.root.after(delay, anchor))
 
     def on_playback_still(self, kind, payload, width, height, request_id):
+        if self.crop and self.crop.route_still(kind, payload, width, height, request_id):
+            return
+
         if request_id == core_playback.PAUSE_STILL_REQUEST:
             # Synchronous pause capture: always show (the engine hides the
             # live window immediately after this returns).
@@ -1949,7 +2029,8 @@ class HaloApp:
         self.set_seek_position(position)
         self.preview_placeholder_var.set("Loading paused frame...")
         self.preview_placeholder.place(relx=0.5, rely=0.5, anchor="center")
-        self.pending_still_request = self.playback.request_still(position)
+        self.pending_still_request = self.playback.request_still(
+            position, vf=self._crop_still_vf(position))
 
     def loop_bounds(self) -> tuple[float, float] | None:
         """Return (start, end) of the active loop region, or None if looping
@@ -2098,13 +2179,19 @@ class HaloApp:
         OUTPUTS_DIR.mkdir(exist_ok=True)
 
         trim_start, trim_end = self.get_active_trim_points()
+
+        crop_video_filter = self.crop.export_video_chain(trim_start) if self.crop else None
+        crop_prefilter = self.crop.export_prefilter(trim_start) if self.crop else None
+        crop_active = crop_video_filter is not None or crop_prefilter is not None
+
         trim_suffix = "_trimmed" if (trim_start is not None or trim_end is not None) else ""
+        crop_suffix = "_crop" if crop_active else ""
         compression_suffix = (
             f"_compressed_{compression_target_mb:g}mb_{compression_resolution_label}"
             if compression_target_mb is not None
             else ""
         )
-        default_output = OUTPUTS_DIR / f"{source.stem}_mixed_audio{trim_suffix}{compression_suffix}.mp4"
+        default_output = OUTPUTS_DIR / f"{source.stem}_mixed_audio{trim_suffix}{crop_suffix}{compression_suffix}.mp4"
 
         output_path = filedialog.asksaveasfilename(
             title="Save merged video as",
@@ -2130,9 +2217,18 @@ class HaloApp:
             )
             return
 
+        if self.crop and self.crop.editing:
+            self.crop.leave_edit_for_playback()
+
         self.stop_preview()
 
         self.update_trim_info()
+
+        if crop_active:
+            self.log(
+                "Crop/zoom keyframes active: video will be re-encoded with "
+                "H.265 NVENC (constant quality)."
+            )
 
         self.is_exporting = True
         self.stop_export_button.config(state=tk.NORMAL)
@@ -2173,6 +2269,8 @@ class HaloApp:
                 self.make_export_callbacks(),
                 lambda: not self.is_exporting,
                 self.register_export_process,
+                crop_video_filter,
+                crop_prefilter,
             ),
             daemon=True,
         )
@@ -2284,6 +2382,7 @@ class HaloApp:
         self.playback.save_frame(
             seconds, dest,
             lambda ok, path, mode=mode: self.ui(self.on_snapshot_done, ok, path, mode),
+            vf=self.crop.snapshot_vf(seconds) if self.crop else None,
         )
 
     def on_snapshot_done(self, ok: bool, path: str, mode: str):

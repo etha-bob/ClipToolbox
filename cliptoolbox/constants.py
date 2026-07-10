@@ -55,6 +55,18 @@ COMPRESSION_TARGET_FILL_RATIO = 0.995
 COMPRESSION_BUDGET_EPSILON_MB = 0.05
 COMPRESSION_DEFAULT_AUDIO_KBPS = 64
 DEFAULT_COMPRESSION_RESOLUTION = "1080p"
+
+# Keyframed crop/zoom ("pan/crop"). A crop transform forces a video
+# re-encode (the standard export path is otherwise stream-copy), so the
+# standard path switches to NVENC constant-quality when a motion filter is
+# present. Lower CQ = higher quality / larger file.
+CROP_EXPORT_CQ = 19
+# Smallest crop rect the editor allows, in source pixels (clamped to the
+# source dimension for tiny videos).
+CROP_MIN_SIZE = 16
+# scale flags for the live preview motion chain; bilinear keeps the animated
+# zoom cheap enough for real-time playback (export uses ffmpeg's default).
+PREVIEW_MOTION_SCALE_FLAGS = "bilinear"
 COMPRESSION_RESOLUTION_PRESETS = {
     "1080p": (1920, 1080),
     "720p": (1280, 720),

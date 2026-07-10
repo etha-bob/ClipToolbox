@@ -54,7 +54,7 @@ BTN_PRIMARY_H = 44
 MENU_ITEM_H = 46
 CHECK_SIZE = 18
 SLIDER_H = 22
-SEEKBAR_H = 30
+SEEKBAR_H = 40  # scrubber occupies the upper band; keyframe diamonds the lower lane
 ENTRY_H = 30
 
 PAD = 12

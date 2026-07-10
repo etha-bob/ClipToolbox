@@ -3,6 +3,7 @@ from pathlib import Path
 from cliptoolbox.constants import (
     COMPRESSION_DEFAULT_AUDIO_KBPS,
     COMPRESSION_RESOLUTION_PRESETS,
+    CROP_EXPORT_CQ,
     DEFAULT_COMPRESSION_RESOLUTION,
     WINDOWS_MB_BYTES,
 )
@@ -92,6 +93,7 @@ def build_standard_export_command(
     output_path: str,
     trim_start: float | None = None,
     trim_end: float | None = None,
+    video_filter: str | None = None,
 ) -> list[str]:
     cmd = [
         paths.FFMPEG,
@@ -103,6 +105,8 @@ def build_standard_export_command(
 
     add_export_input_args(cmd, input_path, trim_start, trim_end)
 
+    is_mp4_like = Path(output_path).suffix.lower() in {".mp4", ".mov", ".m4v"}
+
     cmd.extend(
         [
             "-filter_complex",
@@ -112,10 +116,38 @@ def build_standard_export_command(
             "0:v:0?",
             "-map",
             "[aout]",
+        ]
+    )
 
-            "-c:v",
-            "copy",
+    if video_filter:
+        # A crop/zoom transform cannot be stream-copied; re-encode the video
+        # with NVENC constant-quality. Mirrors the compressed path's encoder
+        # choice so both re-encode routes behave consistently on this GPU.
+        cmd.extend(
+            [
+                "-vf",
+                video_filter,
+                "-c:v",
+                "hevc_nvenc",
+                "-preset",
+                "slow",
+                "-rc",
+                "vbr",
+                "-cq",
+                str(CROP_EXPORT_CQ),
+                "-b:v",
+                "0",
+                "-pix_fmt",
+                "yuv420p",
+            ]
+        )
+        if is_mp4_like:
+            cmd.extend(["-tag:v", "hvc1"])
+    else:
+        cmd.extend(["-c:v", "copy"])
 
+    cmd.extend(
+        [
             "-c:a",
             "aac",
             "-b:a",
@@ -123,7 +155,7 @@ def build_standard_export_command(
         ]
     )
 
-    if Path(output_path).suffix.lower() in {".mp4", ".mov", ".m4v"}:
+    if is_mp4_like:
         cmd.extend(["-movflags", "+faststart"])
 
     cmd.extend(
@@ -176,6 +208,7 @@ def build_compressed_export_command(
     budget_mb: float,
     duration_seconds: float,
     compression_resolution_label: str | None,
+    video_prefilter: str | None = None,
 ) -> tuple[list[str], int, int, float]:
     video_kbps, audio_kbps, total_kbps = compression_bitrates_for_budget(
         budget_mb,
@@ -205,7 +238,8 @@ def build_compressed_export_command(
 
             "-vf",
             (
-                f"scale=w='min({max_width},iw)':"
+                (f"{video_prefilter}," if video_prefilter else "")
+                + f"scale=w='min({max_width},iw)':"
                 f"h='min({max_height},ih)':"
                 "force_original_aspect_ratio=decrease:"
                 "force_divisible_by=2,setsar=1"
