@@ -13,8 +13,11 @@ ClipToolbox is a small Windows desktop tool for previewing, mixing, trimming, ex
 - Load a video file (dialog, drag-and-drop anywhere, Windows "Open With", or recent-clips list)
 - Detect audio tracks; enable/disable tracks and adjust per-track volume (0–200%), with mute-all (`M`), right-click solo, a RESET button, and double-click a slider to reset it to 100%
 - Live preview with mixed audio, embedded in the window; pause/resume are instant and frame-exact, track toggles and volume changes apply to the running preview without interrupting it, and scrubbing shows frames as you drag
+- Two preview engines, selectable in Settings: the lightweight built-in **FFplay** (default), or an optional **mpv** engine (drop `mpv.exe` in an `mpv\` folder — see `docs/BUILD_NOTES.md`) that adds live-frame scrubbing and smoother pause/seek for crop keyframing
 - Frame-step (`,` / `.`), number-key seeking (`0`–`9` → 0–90%), and a LOOP toggle that loops the trim region (or the whole clip)
 - Trim start/end before export, with green/red trim brackets on the timeline you can drag directly, plus editable IN/OUT timecode fields and jump-to-trim (`Shift+Home`/`Shift+End`)
+- Crop / zoom with keyframes (`CROP` mode, `C`): drag the corners of a box over the frame (aspect-locked; `Shift` to stretch), set keyframes at different times (`K`), and export interpolates between them for animated punch-in zooms, pans, and stretches — re-encoded with NVENC only when a crop is active
+- Zoomable timeline (`Ctrl`+scroll, anchored at the cursor; `Ctrl+0` resets): zoom in to place keyframes precisely on long clips, with per-frame ticks and cells once frames are far enough apart
 - Save the current frame as a PNG, or copy it straight to the clipboard
 - Export video with merged audio (video stream copy, AAC mix)
 - Optional Discord-size compression using NVIDIA HEVC NVENC with automatic bitrate tuning (keeps the best file under your MB target)

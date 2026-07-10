@@ -342,6 +342,11 @@ def _retire_pipeline(pipeline: "_Pipeline | None"):
 class PlaybackEngine:
     """Owns the preview pipeline. Public methods: UI thread only."""
 
+    # This engine extracts JPEG stills for paused scrubbing (no live seek).
+    # An alternative engine (mpv) sets this True so the app scrubs with real
+    # frames instead. Behavior-neutral for this class.
+    supports_live_scrub = False
+
     def __init__(self, callbacks: PlaybackCallbacks):
         self._cb = callbacks
         self._lock = threading.RLock()
@@ -407,6 +412,10 @@ class PlaybackEngine:
     def has_pipeline(self) -> bool:
         pipeline = self._pipeline
         return pipeline is not None and pipeline.ffplay.poll() is None
+
+    @property
+    def concealed(self) -> bool:
+        return self._concealed
 
     @property
     def live_mix_ok(self) -> bool:

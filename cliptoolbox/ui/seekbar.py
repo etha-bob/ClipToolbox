@@ -13,6 +13,7 @@ behavioral subset the preview state machine relies on:
 
 Trim points render as green/red brackets with the kept range brightened.
 """
+import math
 import tkinter as tk
 
 from cliptoolbox.ui import skin, theme
@@ -52,6 +53,14 @@ class HaloSeekbar(tk.Canvas):
         self._kf_press_x: int | None = None
         self._kf_moved = False
         self._kf_hover_index: int | None = None
+
+        # Zoomed view window (None = the full [_from, _to] range). All pixel
+        # mapping goes through _view(), so trim brackets, keyframes and the
+        # playhead inherit zoom automatically; drag CLAMPS stay on the full
+        # data range. _fps enables the per-frame grid when zoomed far enough.
+        self._view_from: float | None = None
+        self._view_to: float | None = None
+        self._fps: float | None = None
 
         h = px(theme.SEEKBAR_H)
         super().__init__(parent, height=h, highlightthickness=0, bd=0, bg=behind)
@@ -131,6 +140,90 @@ class HaloSeekbar(tk.Canvas):
         self._redraw()
 
     # ------------------------------------------------------------------
+    # Zoomed view window
+    # ------------------------------------------------------------------
+
+    ZOOM_STEP = 1.35  # span factor per wheel notch
+
+    def set_fps(self, fps: float | None):
+        """Frame rate for the zoomed-in frame grid (None hides it)."""
+        self._fps = float(fps) if fps and fps > 0 else None
+        self._redraw()
+
+    def set_view(self, v0: float, v1: float):
+        full0, full1 = self._from, self._to
+        v0 = max(full0, min(float(v0), full1))
+        v1 = max(v0 + 1e-6, min(float(v1), full1))
+        if v1 - v0 >= (full1 - full0) - 1e-9:
+            self.reset_view()
+            return
+        self._view_from, self._view_to = v0, v1
+        self._redraw()
+
+    def get_view(self) -> tuple[float, float]:
+        return self._view()
+
+    def reset_view(self):
+        if self._view_from is None and self._view_to is None:
+            return
+        self._view_from = None
+        self._view_to = None
+        self._redraw()
+
+    @property
+    def zoomed(self) -> bool:
+        return self._view_from is not None
+
+    def zoom_at(self, steps: int, x_px: int):
+        """Zoom the view by wheel notches, keeping the time under x_px fixed."""
+        v0, v1 = self._view()
+        span = v1 - v0
+        full = max(1e-9, self._to - self._from)
+        anchor = self._time_at(x_px)
+
+        new_span = span * (self.ZOOM_STEP ** -steps)
+
+        # Zoom-in floor: pointless past ~40 px per frame (0.25 s if fps unknown).
+        x0, x1 = self._usable()
+        usable_px = max(1, x1 - x0)
+        if self._fps:
+            min_span = max(0.05, usable_px / (40.0 * self._fps))
+        else:
+            min_span = 0.25
+        new_span = max(min_span, new_span)
+
+        if new_span >= full:
+            self.reset_view()
+            return
+
+        frac = min(1.0, max(0.0, (x_px - x0) / usable_px))
+        new_v0 = anchor - frac * new_span
+        new_v1 = new_v0 + new_span
+        if new_v0 < self._from:
+            new_v0, new_v1 = self._from, self._from + new_span
+        elif new_v1 > self._to:
+            new_v0, new_v1 = self._to - new_span, self._to
+
+        self._view_from, self._view_to = new_v0, new_v1
+        self._redraw()
+
+    def follow(self, seconds: float):
+        """Auto-scroll a zoomed view so the playhead stays visible. No-op when
+        not zoomed or while the user is dragging anything on the bar."""
+        if self._view_from is None:
+            return
+        if self._dragging or self._trim_drag_kind is not None or self._kf_drag_index is not None:
+            return
+        v0, v1 = self._view()
+        span = v1 - v0
+        if seconds > v0 + 0.85 * span or seconds < v0:
+            new_v0 = min(max(self._from, seconds - 0.15 * span), self._to - span)
+            if abs(new_v0 - v0) > 1e-9:
+                self._view_from = new_v0
+                self._view_to = new_v0 + span
+                self._redraw()
+
+    # ------------------------------------------------------------------
     # Layout bands
     # ------------------------------------------------------------------
 
@@ -149,17 +242,28 @@ class HaloSeekbar(tk.Canvas):
     def _usable(self) -> tuple[int, int]:
         return self._pad, max(self._pad + 1, self._wpx - self._pad)
 
+    def _view(self) -> tuple[float, float]:
+        """The visible time range: the zoom window, or the full range."""
+        v0 = self._view_from if self._view_from is not None else self._from
+        v1 = self._view_to if self._view_to is not None else self._to
+        return v0, v1
+
     def _x_for(self, value: float) -> int:
         x0, x1 = self._usable()
-        span = max(1e-9, self._to - self._from)
-        frac = min(1.0, max(0.0, (value - self._from) / span))
+        v0, v1 = self._view()
+        span = max(1e-9, v1 - v0)
+        frac = min(1.0, max(0.0, (value - v0) / span))
         return round(x0 + frac * (x1 - x0))
 
-    def _value_at(self, x: int) -> float:
+    def _time_at(self, x: int) -> float:
+        """Un-rounded pixel→time mapping (zoom anchoring needs full precision)."""
         x0, x1 = self._usable()
+        v0, v1 = self._view()
         frac = min(1.0, max(0.0, (x - x0) / max(1, x1 - x0)))
-        value = self._from + frac * (self._to - self._from)
-        return round(value, 2)  # matches the old resolution=0.01
+        return v0 + frac * (v1 - v0)
+
+    def _value_at(self, x: int) -> float:
+        return round(self._time_at(x), 2)  # matches the old resolution=0.01
 
     # ------------------------------------------------------------------
     # Drawing
@@ -168,6 +272,39 @@ class HaloSeekbar(tk.Canvas):
     def _on_resize(self, event):
         self._wpx = event.width
         self._redraw()
+
+    def _frame_grid_columns(self, x0: int, x1: int, v0: float, v1: float):
+        """Frame-grid geometry when zoomed far enough to separate frames.
+
+        Returns {"cells": [(x0, x1, even), ...], "hairlines": [x, ...],
+        "seconds": [x, ...]} or None when frames are too dense / fps unknown.
+        """
+        if not self._fps:
+            return None
+        span = max(1e-9, v1 - v0)
+        px_per_frame = (x1 - x0) / (span * self._fps)
+        if px_per_frame < 6:
+            return None
+
+        cells = []
+        hairlines = []
+        seconds = []
+        i0 = math.floor(v0 * self._fps)
+        i1 = math.ceil(v1 * self._fps)
+        second_step = max(1, round(self._fps))
+        for i in range(i0, i1 + 1):
+            t = i / self._fps
+            fx = self._x_for(t)
+            if x0 <= fx <= x1:
+                if i % second_step == 0:
+                    seconds.append(fx)
+                else:
+                    hairlines.append(fx)
+            fx_next = self._x_for((i + 1) / self._fps)
+            c0, c1 = max(x0, fx), min(x1, fx_next)
+            if c1 > c0:
+                cells.append((c0, c1, i % 2 == 0))
+        return {"cells": cells, "hairlines": hairlines, "seconds": seconds}
 
     def _set_hover(self, value):
         self._hover = value
@@ -190,9 +327,21 @@ class HaloSeekbar(tk.Canvas):
             value = 0.0
         hx = self._x_for(value)
 
+        v0, v1 = self._view()
+
         # Track + elapsed fill (axis-aligned: native rects stay crisp).
         self.create_rectangle(x0, cy - th // 2, x1, cy + th // 2,
                               fill=theme.SEEK_TRACK, outline=theme.PANEL_BORDER_DIM)
+
+        # Zoomed-in frame grid: alternating per-frame cells under the fills.
+        frame_lines = self._frame_grid_columns(x0, x1, v0, v1)
+        if frame_lines is not None:
+            band_top = cy - th // 2 - px(2)
+            band_bot = cy + th // 2 + px(2)
+            for fx0, fx1, even in frame_lines["cells"]:
+                if even:
+                    self.create_rectangle(fx0, band_top, fx1, band_bot,
+                                          fill=theme.SEEK_CELL, outline="")
 
         # Kept trim range brightens the track between the brackets.
         if self._trim_start is not None or self._trim_end is not None:
@@ -206,28 +355,51 @@ class HaloSeekbar(tk.Canvas):
         self.create_rectangle(x0, cy - th // 2 + 1, max(x0, hx), cy + th // 2 - 1,
                               fill=fill, width=0)
 
-        # Trim brackets.
+        # Frame hairlines + heavier second-ticks stay visible over the fills.
+        if frame_lines is not None:
+            band_top = cy - th // 2 - px(2)
+            band_bot = cy + th // 2 + px(2)
+            for fx in frame_lines["hairlines"]:
+                self.create_line(fx, band_top, fx, band_bot, fill=theme.PANEL_BORDER_DIM)
+            for fx in frame_lines["seconds"]:
+                self.create_line(fx, band_top - px(3), fx, band_bot + px(3),
+                                 fill=theme.ACCENT_DEEP)
+
+        # Zoom view indicator: where the visible window sits in the full clip.
+        if self._view_from is not None:
+            full_span = max(1e-9, self._to - self._from)
+            ix0 = round(x0 + (v0 - self._from) / full_span * (x1 - x0))
+            ix1 = round(x0 + (v1 - self._from) / full_span * (x1 - x0))
+            self.create_rectangle(x0, 0, x1, px(2), fill=theme.SEEK_TRACK, outline="")
+            self.create_rectangle(ix0, 0, max(ix0 + px(2), ix1), px(2),
+                                  fill=theme.ACCENT_DEEP, outline="")
+
+        # Trim brackets (culled outside a zoomed view — a clamped flag at the
+        # edge would read as a bracket AT the edge).
         bracket_h = px(20)
-        if self._trim_start is not None:
+        if self._trim_start is not None and v0 <= self._trim_start <= v1:
             self.create_image(self._x_for(self._trim_start), cy,
                               image=sk.get("trim_flag", h=bracket_h, kind="start", behind=self.behind),
                               anchor="w")
-        if self._trim_end is not None:
+        if self._trim_end is not None and v0 <= self._trim_end <= v1:
             self.create_image(self._x_for(self._trim_end), cy,
                               image=sk.get("trim_flag", h=bracket_h, kind="end", behind=self.behind),
                               anchor="e")
 
-        # Playhead handle.
-        hstate = "disabled" if self._state == tk.DISABLED else (
-            "drag" if self._dragging else ("hover" if self._hover else "normal"))
-        self.create_image(hx, cy, image=sk.get(
-            "handle", w=px(10), h=px(18), state=hstate, behind=self.behind))
+        # Playhead handle (culled when scrolled out of a zoomed view).
+        if v0 <= value <= v1:
+            hstate = "disabled" if self._state == tk.DISABLED else (
+                "drag" if self._dragging else ("hover" if self._hover else "normal"))
+            self.create_image(hx, cy, image=sk.get(
+                "handle", w=px(10), h=px(18), state=hstate, behind=self.behind))
 
-        # Keyframe diamonds in the lower lane.
+        # Keyframe diamonds in the lower lane (culled outside the view).
         if self._keyframes:
             kf_cy = self._kf_cy()
             kf_h = px(12)
             for i, t in enumerate(self._keyframes):
+                if not (v0 <= t <= v1):
+                    continue
                 if i == self._kf_drag_index:
                     state = "drag"
                 elif abs(self._x_for(t) - hx) <= px(3):
@@ -268,15 +440,17 @@ class HaloSeekbar(tk.Canvas):
 
     def _bracket_at(self, x: int) -> str | None:
         """Which trim bracket, if any, sits under x (within a grab margin).
-        Returns "start"/"end"/None. Only set brackets are grabbable."""
+        Returns "start"/"end"/None. Only set brackets are grabbable; brackets
+        scrolled outside a zoomed view are not (they aren't drawn either)."""
         margin = px(9)
+        v0, v1 = self._view()
         best_kind = None
         best_dist = margin + 1
-        if self._trim_start is not None:
+        if self._trim_start is not None and v0 <= self._trim_start <= v1:
             d = abs(x - self._x_for(self._trim_start))
             if d < best_dist:
                 best_kind, best_dist = "start", d
-        if self._trim_end is not None:
+        if self._trim_end is not None and v0 <= self._trim_end <= v1:
             d = abs(x - self._x_for(self._trim_end))
             if d < best_dist:
                 best_kind, best_dist = "end", d
@@ -284,15 +458,19 @@ class HaloSeekbar(tk.Canvas):
 
     def _keyframe_at(self, x: int, y: int) -> int | None:
         """Index of the keyframe diamond under (x, y), or None. Restricted to
-        the lower lane so it never competes with playhead/trim grabs above."""
+        the lower lane so it never competes with playhead/trim grabs above.
+        Diamonds scrolled outside a zoomed view are not grabbable."""
         if not self._keyframes:
             return None
         if y < self._kf_cy() - px(10):
             return None
         margin = px(8)
+        v0, v1 = self._view()
         best_index = None
         best_dist = margin + 1
         for i, t in enumerate(self._keyframes):
+            if not (v0 <= t <= v1):
+                continue
             d = abs(x - self._x_for(t))
             if d < best_dist:
                 best_index, best_dist = i, d

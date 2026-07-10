@@ -38,6 +38,7 @@ TRIM_IN = "#58C973"        # trim start bracket (was "green")
 TRIM_OUT = "#E0556B"       # trim end bracket (was "red")
 
 SEEK_TRACK = "#0C1E33"
+SEEK_CELL = "#122B47"      # alternating frame cells on the zoomed timeline
 ENTRY_FILL = "#0A1B2E"
 
 # ------------------------------------------------------------------

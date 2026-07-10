@@ -88,6 +88,12 @@ def build(app):
     app.preview_frame.pack(fill=tk.X, expand=False)
     app.preview_frame.pack_propagate(False)
 
+    # mpv render host: the mpv engine parents its --wid video window into this
+    # frame's HWND. Created first (lowest sibling) so the placeholder, paused
+    # still, and crop editor all stack above it; inert when ffplay is active.
+    app.mpv_host_frame = tk.Frame(app.preview_frame, bg="black")
+    app.mpv_host_frame.place(x=0, y=0, relwidth=1.0, relheight=1.0)
+
     app.preview_placeholder_var = tk.StringVar(
         value="Load a video, choose tracks, then click Preview."
     )
@@ -228,9 +234,11 @@ def build(app):
     app.clear_trim_button.pack(side=tk.LEFT, padx=(px(8), 0))
 
     # Compact trimmed-length readout (endpoints live in the IN/OUT fields).
+    # Fixed width for the same reason as the crop readout: it updates live
+    # during trim-bracket drags and must not re-measure the left column.
     app.trim_info_var = tk.StringVar(value="")
     tk.Label(app.trim_buttons_frame, textvariable=app.trim_info_var, font=theme.font_small(),
-             bg=theme.BG_DEEP, fg=theme.ACCENT).pack(side=tk.LEFT, padx=(px(8), 0))
+             bg=theme.BG_DEEP, fg=theme.ACCENT, width=10, anchor="w").pack(side=tk.LEFT, padx=(px(8), 0))
 
     app.trim_buttons_frame.pack_forget()
 
@@ -281,8 +289,11 @@ def build(app):
     Tooltip(app.crop_clear_button, "Remove all crop keyframes")
 
     app.crop_info_var = tk.StringVar(value="")
+    # Fixed width: this text changes on every crop-drag motion event, and a
+    # variable-width label would re-measure the left grid column, resizing the
+    # preview (and the crop editor's letterbox transform) mid-drag.
     tk.Label(app.crop_toolbar_frame, textvariable=app.crop_info_var, font=theme.font_small(),
-             bg=theme.BG_DEEP, fg=theme.ACCENT).pack(side=tk.LEFT, padx=(px(8), 0))
+             bg=theme.BG_DEEP, fg=theme.ACCENT, width=42, anchor="w").pack(side=tk.LEFT, padx=(px(8), 0))
 
     app.crop_toolbar_frame.pack_forget()
 

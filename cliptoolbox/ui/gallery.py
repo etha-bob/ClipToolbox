@@ -78,6 +78,18 @@ def build(root: tk.Tk) -> None:
     seek.place(x=px(24), y=px(340), width=px(600))
     seek.set_trim(20.0, 90.0)
     seek.set_keyframes([12.0, 42.0, 68.0, 105.0])
+    seek.set_fps(60.0)
+
+    # Second seekbar: zoomed in far enough to show the per-frame grid.
+    zoom_var = tk.DoubleVar(value=41.6)
+    zoom_seek = HaloSeekbar(root, to=120.0, variable=zoom_var)
+    zoom_seek.place(x=px(24), y=px(300), width=px(600))
+    zoom_seek.set_fps(60.0)
+    zoom_seek.set_keyframes([41.55, 41.7])
+    zoom_seek.set_view(41.4, 41.9)  # ~0.5 s window → frames clearly separated
+    tk.Label(root, text="zoomed (frame grid)", font=theme.font_small(),
+             bg=theme.BG_DEEP, fg=theme.TEXT_DIM).place(x=px(636), y=px(306))
+
     kf_readout = tk.Label(root, text="0:42", font=theme.font_small(), bg=theme.BG_DEEP,
                           fg=theme.TEXT)
     kf_readout.place(x=px(636), y=px(346))

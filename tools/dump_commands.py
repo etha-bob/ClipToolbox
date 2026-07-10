@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from cliptoolbox.core import commands, filters, motion, playback
+from cliptoolbox.core import commands, filters, motion, playback, playback_mpv
 from cliptoolbox.core import paths
 
 INPUT = r"C:\clips\example.mp4"
@@ -109,6 +109,26 @@ def main():
     dump("resolution limit: invalid -> default", list(commands.resolve_resolution_limit("nope")))
 
     dump_motion()
+    dump_mpv()
+
+
+def dump_mpv():
+    """Optional mpv engine builders. Appended so the output above stays
+    byte-identical whether or not mpv is installed."""
+    dump(
+        "mpv lavfi: single track @80%",
+        playback_mpv.build_mpv_lavfi([(1, 0.8)], None),
+    )
+    dump(
+        "mpv lavfi: 3 tracks (100/0/50%)",
+        playback_mpv.build_mpv_lavfi([(1, 1.0), (2, 0.0), (3, 0.5)], None),
+    )
+    dump(
+        "mpv lavfi: single track + crop chain",
+        playback_mpv.build_mpv_lavfi([(1, 1.0)], "crop=1280:720:100:50,scale=1920:1080"),
+    )
+    cmd = playback_mpv.build_mpv_cmd("{MPV}", 123456, r"\\.\pipe\cliptoolbox-mpv-0-1")
+    dump("mpv spawn cmd (wid 123456)", cmd)
 
 
 def make_track(*keyframes: tuple) -> motion.CropTrack:

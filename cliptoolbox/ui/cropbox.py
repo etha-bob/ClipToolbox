@@ -60,6 +60,7 @@ class CropBoxCanvas(tk.Canvas):
         self._drag_handle: str | None = None
         self._press_rect = (0.0, 0.0, 0.0, 0.0)
         self._press_src = (0.0, 0.0)
+        self._resize_pending = False
         self._cursor = ""
 
         self._change_callbacks = []
@@ -143,6 +144,12 @@ class CropBoxCanvas(tk.Canvas):
     # ------------------------------------------------------------------
 
     def _on_resize(self, event):
+        if self._drag_handle is not None:
+            # Freeze the letterbox transform mid-drag: recomputing _scale/_ox
+            # here would remap the mouse position mid-gesture and feed the
+            # rect a moved origin (visible as jitter). Applied on release.
+            self._resize_pending = True
+            return
         self._recompute_layout()
         self._redraw()
 
@@ -291,6 +298,10 @@ class CropBoxCanvas(tk.Canvas):
         if self._drag_handle is None:
             return
         self._drag_handle = None
+        if self._resize_pending:
+            self._resize_pending = False
+            self._recompute_layout()
+            self._redraw()
         for callback in self._commit_callbacks:
             callback(self._rect)
 

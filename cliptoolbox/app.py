@@ -45,6 +45,7 @@ from cliptoolbox.constants import (
 from cliptoolbox.core import commands as core_commands
 from cliptoolbox.core import export as core_export
 from cliptoolbox.core import filters as core_filters
+from cliptoolbox.core import engine_factory
 from cliptoolbox.core import mediainfo as core_mediainfo
 from cliptoolbox.core import playback as core_playback
 from cliptoolbox.core import probe as core_probe
@@ -138,8 +139,13 @@ class HaloApp:
         self.export_process: subprocess.Popen | None = None
 
         # All preview process/state management lives in the playback engine;
-        # the app only keeps UI-side bookkeeping here.
-        self.playback = core_playback.PlaybackEngine(self.make_playback_callbacks())
+        # the app only keeps UI-side bookkeeping here. The engine is chosen by
+        # settings (ffplay default; mpv optional), falling back to ffplay when
+        # mpv.exe is missing.
+        self.playback, self.playback_engine_name = engine_factory.create_engine(
+            self.settings.playback_engine, self.make_playback_callbacks(),
+            wid_provider=self._mpv_wid,
+        )
 
         self.paused_frame_image = None
         self.paused_frame_label: tk.Label | None = None
@@ -190,6 +196,7 @@ class HaloApp:
 
         self.wheel = WheelRouter(self.root)
         self.wheel.register(self.seekbar, self.on_wheel_seek)
+        self.wheel.register_ctrl(self.seekbar, self.on_wheel_zoom)
         self.wheel.register(self.track_canvas, self.on_wheel_roster)
         self.wheel.register(self.track_scrollbar, self.on_wheel_roster)
         self.wheel.register(
@@ -328,6 +335,7 @@ class HaloApp:
         root.bind("<Key-C>", lambda e: self.shortcut(self.toggle_crop_mode))
         root.bind("<Key-k>", lambda e: self.shortcut(self.on_crop_add_key))
         root.bind("<Key-K>", lambda e: self.shortcut(self.on_crop_add_key))
+        root.bind("<Control-Key-0>", lambda e: self.shortcut(self.reset_timeline_zoom))
         for digit in range(10):
             root.bind(f"<Key-{digit}>",
                       lambda e, n=digit: self.shortcut(lambda: self.seek_to_fraction(n / 10.0)))
@@ -427,6 +435,16 @@ class HaloApp:
     # ========================================================
     # Mouse wheel
     # ========================================================
+
+    def on_wheel_zoom(self, steps: int, x_px: int):
+        """Ctrl+wheel over the seekbar: zoom the timeline view, anchored at
+        the cursor (Vegas/LosslessCut-style)."""
+        if self.active_screen != "workspace" or not self.video_path:
+            return
+        self.seekbar.zoom_at(steps, x_px)
+
+    def reset_timeline_zoom(self):
+        self.seekbar.reset_view()
 
     def on_wheel_seek(self, steps: int, fine: bool):
         """Wheel over the seekbar: ±5 s per notch (Shift = ±1 s). Notches
@@ -777,6 +795,12 @@ class HaloApp:
             self.set_status(f"{version_text} FFmpeg folder: {FFMPEG_BIN_DIR}")
             self.log(f"{version_text} FFmpeg folder: {FFMPEG_BIN_DIR}")
 
+        self.log(f"Playback engine: {self.playback_engine_name.upper()}.")
+        if (self.settings.playback_engine == engine_factory.ENGINE_MPV
+                and self.playback_engine_name != engine_factory.ENGINE_MPV):
+            self.log("mpv.exe not found — fell back to FFplay. Put an mpv build "
+                     "in the mpv folder next to ffmpeg (see BUILD_NOTES).")
+
     # ========================================================
     # Loading files
     # ========================================================
@@ -855,6 +879,7 @@ class HaloApp:
         self.video_dimensions = dimensions
         self.playback.configure_media(self.video_path, duration)
         self.set_seek_range(duration)
+        self.seekbar.set_fps(fps)  # enables the zoomed-in frame grid
         self.update_trim_controls()
         if self.crop:
             self.crop.set_source(dimensions, duration, fps)
@@ -1038,6 +1063,7 @@ class HaloApp:
         duration = duration or 0
 
         self.seekbar.configure(to=max(duration, 1))
+        self.seekbar.reset_view()  # a new clip starts fully zoomed out
         self.time_left_var.set("0:00")
         self.seek_var.set(0)
         self.update_time_right(0)
@@ -1055,6 +1081,7 @@ class HaloApp:
 
         self.time_left_var.set(self.format_seconds(seconds))
         self.update_time_right(seconds)
+        self.seekbar.follow(seconds)  # auto-scroll a zoomed view to the playhead
 
         if self.crop:
             self.crop.on_playhead(seconds)
@@ -1087,14 +1114,16 @@ class HaloApp:
             # the user drags, and release resumes playback at the target.
             self.scrub_resume_pending = True
             self.pause_playback()
-            # Swap the live window for a captured still: drag previews render
-            # in a Tk overlay that the native window would paint over.
-            self.playback.conceal()
+            # ffplay: swap the live window for a captured still, because drag
+            # previews render in a Tk overlay the native window would paint
+            # over. mpv paints the seeked frame itself, so leave it visible.
+            if not self._live_scrub_active():
+                self.playback.conceal()
         elif state == core_playback.STARTING:
             self.scrub_resume_pending = True
         else:
             self.scrub_resume_pending = False
-            if state == core_playback.PAUSED:
+            if state == core_playback.PAUSED and not self._live_scrub_active():
                 self.playback.conceal()
 
     def on_seek_drag(self, value):
@@ -1153,6 +1182,16 @@ class HaloApp:
         else:
             seconds = max(0.0, float(seconds))
 
+        if self._live_scrub_active():
+            # mpv paints the real frame directly — exact-seek instead of
+            # extracting a JPEG still. hr-seek coalesces the burst natively.
+            if (self.last_scrub_frame_seconds is not None
+                    and abs(seconds - self.last_scrub_frame_seconds) < 0.02):
+                return
+            self.last_scrub_frame_seconds = seconds
+            self.playback.seek_paused(seconds)
+            return
+
         # Avoid requesting almost-identical frames repeatedly.
         if (
             self.last_scrub_frame_seconds is not None
@@ -1177,6 +1216,11 @@ class HaloApp:
         self.scrub_frame_after_id = None
 
         if self.playback.state != core_playback.PAUSED:
+            return
+
+        if self._live_scrub_active():
+            # The live window already shows the seeked frame; no still overlay.
+            self.playback.seek_paused(seconds)
             return
 
         self.pending_still_request = self.playback.request_still(
@@ -1795,10 +1839,10 @@ class HaloApp:
             messagebox.showerror("Missing ffmpeg", "ffmpeg was not found.")
             return
 
-        if not FFPLAY:
+        if self.playback_engine_name == engine_factory.ENGINE_FFPLAY and not FFPLAY:
             messagebox.showerror(
                 "Missing ffplay",
-                "ffplay was not found. Video preview requires ffplay.exe.",
+                "ffplay was not found. The FFplay preview engine requires ffplay.exe.",
             )
             return
 
@@ -1867,10 +1911,47 @@ class HaloApp:
     def resume_playback(self):
         if self.crop and self.crop.editing:
             # Leaving the crop editor for live playback: drop the overlay so
-            # the respawn shows the animated crop through FFplay.
+            # the respawn shows the animated crop through the engine.
             self.crop.leave_edit_for_playback()
 
         self.playback.resume()
+
+    def _mpv_wid(self):
+        """HWND for the mpv engine to embed into (resolved at play time, on the
+        UI thread). None before the workspace is built."""
+        frame = getattr(self, "mpv_host_frame", None)
+        return frame.winfo_id() if frame is not None else None
+
+    def _live_scrub_active(self) -> bool:
+        """True when the active engine can paint real frames during a paused
+        scrub (mpv), so the app skips the ffmpeg still-extraction path. Never
+        during crop editing (the editor draws Tk over a concealed window)."""
+        return (
+            self.playback.supports_live_scrub
+            and self.playback.has_pipeline
+            and not self.playback.concealed
+            and not (self.crop and self.crop.editing)
+        )
+
+    def switch_playback_engine(self, name: str):
+        """Tear down the current engine and build another (from Settings)."""
+        name = engine_factory.normalize_engine_name(name)
+        if name == self.playback_engine_name:
+            return
+        self.stop_preview()
+        try:
+            self.playback.shutdown()
+        except Exception:
+            pass
+        self.playback, self.playback_engine_name = engine_factory.create_engine(
+            name, self.make_playback_callbacks(), wid_provider=self._mpv_wid,
+        )
+        if self.crop:
+            self.playback.set_video_chain_provider(self.crop.preview_chain)
+        if self.video_path:
+            self.playback.configure_media(self.video_path, self.total_duration_seconds)
+        self.refresh_playback_button_state()
+        self.log(f"Playback engine: {self.playback_engine_name.upper()}.")
 
         if self.playback.state == core_playback.PLAYING:
             # In-place resume: the live window is already showing again.

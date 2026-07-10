@@ -33,6 +33,19 @@ python -m PyInstaller --onedir --noconsole --name ClipToolbox --collect-all tkin
 
 The app supports PyInstaller onedir layout. The `ffmpeg` folder should live next to the EXE after building; the `assets` folder is looked up both next to the EXE and inside `_internal\` (PyInstaller 5/6 differ).
 
+## Optional: mpv playback engine
+
+ClipToolbox ships with the lightweight FFplay preview engine by default. An optional **mpv** engine gives smoother pausing and live-frame scrubbing, which helps a lot when placing crop keyframes. It is entirely optional — the app falls back to FFplay when mpv is absent, and Settings → Playback → Engine greys out the MPV choice.
+
+To enable it:
+
+1. Download a Windows mpv build from https://mpv.io/installation/ (the shinchiro or zhongfly builds — gyan.dev ships ffmpeg only, no mpv). Use `mpv.exe`, not the `mpv.com` console wrapper.
+2. Create an `mpv\` folder next to `ffmpeg\` and drop `mpv.exe` into it (so `mpv\mpv.exe`). It is also found on PATH.
+3. Validate the build: `python tools\spike_mpv.py` — all checks must pass.
+4. Pick it in Settings → Playback → Engine (or set `playback_engine` to `mpv` in `config.json`).
+
+`ClipToolbox.spec` bundles the `mpv\` folder automatically **only if it exists** at build time, so builds without mpv still succeed. To rip mpv out entirely, delete `cliptoolbox\core\playback_mpv.py`, `cliptoolbox\core\mpv_ipc.py`, and `tools\spike_mpv.py`, then remove the mpv branch from `cliptoolbox\core\engine_factory.py` — nothing else imports them.
+
 Development extras:
 
 - `python -m cliptoolbox.ui.gallery` shows every themed widget/state for UI work.
