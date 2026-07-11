@@ -65,11 +65,12 @@ def normalize_engine_name(name: str | None) -> str:
     return name if name in (ENGINE_FFPLAY, ENGINE_MPV) else ENGINE_FFPLAY
 
 
-def create_engine(name: str | None, callbacks, wid_provider=None):
+def create_engine(name: str | None, callbacks, wid_provider=None, mpv_cache_mb: int = 100):
     """Return (engine, actual_name). Falls back to ffplay when mpv is
     requested but mpv.exe is missing; actual_name reflects what was built."""
     name = normalize_engine_name(name)
     if name == ENGINE_MPV and paths.MPV:
         from cliptoolbox.core.playback_mpv import MpvPlaybackEngine
-        return MpvPlaybackEngine(callbacks, wid_provider, paths.MPV), ENGINE_MPV
+        return MpvPlaybackEngine(callbacks, wid_provider, paths.MPV,
+                                 cache_mb=mpv_cache_mb), ENGINE_MPV
     return core_playback.PlaybackEngine(callbacks), ENGINE_FFPLAY

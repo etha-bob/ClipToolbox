@@ -83,6 +83,24 @@ class SettingsOverlay:
                      anchor="w", wraplength=self._card_w - px(48),
                      justify=tk.LEFT).pack(fill=tk.X, pady=(px(2), 0))
 
+        cache_row = tk.Frame(body, bg=theme.PANEL_FILL)
+        cache_row.pack(fill=tk.X, pady=(px(8), 0))
+        tk.Label(cache_row, text="Seek cache (mpv)", font=theme.font_body(),
+                 bg=theme.PANEL_FILL, fg=theme.TEXT).pack(side=tk.LEFT)
+        self.cache_var = tk.StringVar(value=str(app.settings.mpv_cache_mb))
+        self.cache_entry = widgets.HaloEntry(cache_row, textvariable=self.cache_var, width=6)
+        self.cache_entry.pack(side=tk.LEFT, padx=(px(12), 0))
+        tk.Label(cache_row, text="MB", font=theme.font_body(),
+                 bg=theme.PANEL_FILL, fg=theme.TEXT_DIM).pack(side=tk.LEFT, padx=(px(6), 0))
+        if not self._mpv_available:
+            self.cache_entry.config(state=tk.DISABLED)
+        else:
+            tk.Label(body, text="RAM buffer for instant seeking — the bright line "
+                     "under the seekbar shows what's cached. Bigger covers longer clips.",
+                     font=theme.font_small(), bg=theme.PANEL_FILL, fg=theme.TEXT_DIM,
+                     anchor="w", wraplength=self._card_w - px(48),
+                     justify=tk.LEFT).pack(fill=tk.X, pady=(px(2), 0))
+
         # --- library -----------------------------------------------------
         section("Library")
         row = tk.Frame(body, bg=theme.PANEL_FILL)
@@ -164,6 +182,14 @@ class SettingsOverlay:
             if selected != self.app.settings.playback_engine:
                 self.app.settings.playback_engine = selected
                 self.app.switch_playback_engine(selected)
+            try:
+                cache_mb = int(float(self.cache_var.get().strip().replace(",", ".")))
+            except (TypeError, ValueError):
+                cache_mb = self.app.settings.mpv_cache_mb
+            cache_mb = max(16, min(4096, cache_mb))
+            if cache_mb != self.app.settings.mpv_cache_mb:
+                self.app.settings.mpv_cache_mb = cache_mb
+                self.app.apply_mpv_cache_size(cache_mb)
         self.app.save_settings()
 
         try:

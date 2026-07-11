@@ -144,7 +144,7 @@ class HaloApp:
         # mpv.exe is missing.
         self.playback, self.playback_engine_name = engine_factory.create_engine(
             self.settings.playback_engine, self.make_playback_callbacks(),
-            wid_provider=self._mpv_wid,
+            wid_provider=self._mpv_wid, mpv_cache_mb=self.settings.mpv_cache_mb,
         )
 
         self.paused_frame_image = None
@@ -1064,6 +1064,7 @@ class HaloApp:
 
         self.seekbar.configure(to=max(duration, 1))
         self.seekbar.reset_view()  # a new clip starts fully zoomed out
+        self.seekbar.set_cache_ranges([])
         self.time_left_var.set("0:00")
         self.seek_var.set(0)
         self.update_time_right(0)
@@ -1085,6 +1086,11 @@ class HaloApp:
 
         if self.crop:
             self.crop.on_playhead(seconds)
+
+    def on_playback_cache_ranges(self, ranges):
+        """mpv's in-RAM cache grew/shrank: repaint the seekbar's cache bar."""
+        if hasattr(self, "seekbar"):
+            self.seekbar.set_cache_ranges(ranges)
 
     def update_time_right(self, position: float):
         """Right-hand time label: total duration, or count-down remaining when
@@ -1956,7 +1962,9 @@ class HaloApp:
             pass
         self.playback, self.playback_engine_name = engine_factory.create_engine(
             name, self.make_playback_callbacks(), wid_provider=self._mpv_wid,
+            mpv_cache_mb=self.settings.mpv_cache_mb,
         )
+        self.seekbar.set_cache_ranges([])  # ffplay never emits; mpv repopulates
         if self.crop:
             self.playback.set_video_chain_provider(self.crop.preview_chain)
         if self.video_path:
@@ -1970,6 +1978,12 @@ class HaloApp:
             self.preview_placeholder.place_forget()
         # Otherwise the engine respawned (long pause / dropped pipeline) and
         # the current still stays visible until the first new frame.
+
+    def apply_mpv_cache_size(self, cache_mb: int):
+        """Push a Settings cache-size change into a live mpv engine; a future
+        engine build picks it up from settings via create_engine."""
+        if hasattr(self.playback, "set_cache_size_mb"):
+            self.playback.set_cache_size_mb(cache_mb)
 
     def make_playback_callbacks(self):
         """Bridges engine events onto the Tk thread. Synchronous events (the
@@ -2006,6 +2020,9 @@ class HaloApp:
 
             def on_pause_slipped(self) -> None:
                 app.ui(app.on_pause_slipped)
+
+            def on_cache_ranges(self, ranges) -> None:
+                app.ui(app.on_playback_cache_ranges, ranges)
 
             def on_ended(self, at_seconds: float) -> None:
                 app.ui(app.on_playback_ended, at_seconds)

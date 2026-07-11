@@ -72,7 +72,17 @@ def build_mpv_lavfi(tracks: list[tuple[int, float]], video_chain: str | None) ->
     return ";".join(segs)
 
 
-def build_mpv_cmd(mpv_path: str, wid: int, ipc_pipe: str) -> list[str]:
+def cache_split_mb(cache_mb: int) -> tuple[int, int]:
+    """Split the user's single cache budget into mpv's forward/back demuxer
+    buffers (2/3 ahead of the playhead, 1/3 behind for instant back-seeks)."""
+    total = max(16, int(cache_mb))
+    forward = max(8, total * 2 // 3)
+    return forward, max(8, total - forward)
+
+
+def build_mpv_cmd(mpv_path: str, wid: int, ipc_pipe: str,
+                  cache_mb: int = 100) -> list[str]:
+    forward_mb, back_mb = cache_split_mb(cache_mb)
     return [
         mpv_path,
         f"--wid={wid}",
@@ -84,6 +94,11 @@ def build_mpv_cmd(mpv_path: str, wid: int, ipc_pipe: str) -> list[str]:
         "--pause",                # spawn paused; play() unpauses
         "--hr-seek=yes",
         "--hr-seek-framedrop=yes",
+        "--cache=yes",            # RAM demuxer cache even for local files
+        "--demuxer-seekable-cache=yes",  # seeks inside cached ranges skip the disk
+        f"--demuxer-max-bytes={forward_mb}MiB",
+        f"--demuxer-max-back-bytes={back_mb}MiB",
+        "--demuxer-readahead-secs=600",  # keep demuxing ahead up to the byte cap
         "--hwdec=no",             # parity with the ffmpeg pipeline; lavfi-safe
         "--no-osc",
         "--no-osd-bar",
@@ -104,10 +119,12 @@ def build_mpv_cmd(mpv_path: str, wid: int, ipc_pipe: str) -> list[str]:
 class MpvPlaybackEngine:
     supports_live_scrub = True
 
-    def __init__(self, callbacks, wid_provider, mpv_path: str):
+    def __init__(self, callbacks, wid_provider, mpv_path: str, cache_mb: int = 100):
         self._cb = callbacks
         self._wid_provider = wid_provider
         self._mpv_path = mpv_path
+        self._cache_mb = max(16, int(cache_mb))
+        self._cache_ranges: list[tuple[float, float]] = []
 
         self._video_path: str | None = None
         self._duration: float | None = None
@@ -242,7 +259,7 @@ class MpvPlaybackEngine:
         pipe = rf"\\.\pipe\cliptoolbox-mpv-{os.getpid()}-{gen}"
         try:
             proc = subprocess.Popen(
-                build_mpv_cmd(self._mpv_path, wid, pipe),
+                build_mpv_cmd(self._mpv_path, wid, pipe, self._cache_mb),
                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                 creationflags=CREATE_NO_WINDOW,
             )
@@ -268,6 +285,7 @@ class MpvPlaybackEngine:
         self._ipc = ipc
         ipc.observe_property(1, "time-pos")
         ipc.observe_property(2, "eof-reached")
+        ipc.observe_property(3, "demuxer-cache-state")
 
         self._apply_graph()
         self._cold_load(start_seconds)
@@ -278,6 +296,7 @@ class MpvPlaybackEngine:
     def _cold_load(self, start_seconds: float):
         if not (self._ipc and self._ipc.alive):
             return
+        self._emit_cache_ranges([])  # fresh file: drop the stale cache bar now
         self._ipc.set_property("start", f"{start_seconds:.3f}")
         self._ipc.command_async("loadfile", self._video_path, "replace")
         self._ipc.set_property("pause", False)
@@ -377,6 +396,7 @@ class MpvPlaybackEngine:
             except MpvIpcError:
                 pass
         self._loaded = False
+        self._emit_cache_ranges([])
         self._reveal()
         self._kill_process(self._still_process)
         self._still_process = None
@@ -571,11 +591,47 @@ class MpvPlaybackEngine:
                             self._cb.on_position(self.position)
             elif name == "eof-reached" and data:
                 self._on_eof()
+            elif name == "demuxer-cache-state":
+                self._on_cache_state(data)
         elif event == "playback-restart":
             # First frame after a load/seek: promote STARTING → PLAYING once.
             if self._state == STARTING:
                 self._cb.on_first_frame()
                 self._set_state(PLAYING)
+
+    def _on_cache_state(self, data):
+        """Observed demuxer-cache-state → seekbar cache bar. mpv rate-limits
+        these events itself; we just dedupe on the rounded ranges."""
+        ranges = []
+        if isinstance(data, dict):
+            for item in data.get("seekable-ranges") or []:
+                try:
+                    start = round(float(item["start"]), 1)
+                    end = round(float(item["end"]), 1)
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if end > start:
+                    ranges.append((start, end))
+        ranges.sort()
+        self._emit_cache_ranges(ranges)
+
+    def _emit_cache_ranges(self, ranges: list[tuple[float, float]]):
+        if ranges == self._cache_ranges:
+            return
+        self._cache_ranges = ranges
+        self._cb.on_cache_ranges(list(ranges))
+
+    def set_cache_size_mb(self, cache_mb: int):
+        """Resize the demuxer cache; applies live when mpv is running and to
+        the next spawn otherwise."""
+        self._cache_mb = max(16, int(cache_mb))
+        forward_mb, back_mb = cache_split_mb(self._cache_mb)
+        if self._ipc and self._ipc.alive:
+            try:
+                self._ipc.set_property("demuxer-max-bytes", forward_mb * 1024 * 1024)
+                self._ipc.set_property("demuxer-max-back-bytes", back_mb * 1024 * 1024)
+            except MpvIpcError:
+                pass
 
     def _on_eof(self):
         if self._state == IDLE:

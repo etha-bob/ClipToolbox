@@ -41,6 +41,10 @@ class HaloSeekbar(tk.Canvas):
         self._cursor = ""
         self._suspend_var_sync = False
 
+        # Cached (instantly seekable) ranges, pushed by the mpv engine. Drawn
+        # as a thin bright line under the track, like mpv's own cache bar.
+        self._cache_ranges: list[tuple[float, float]] = []
+
         # Keyframe markers (crop/zoom). Times live in the same units as the
         # playhead; the controller owns the authoritative list and pushes it
         # back via set_keyframes after every edit.
@@ -133,6 +137,12 @@ class HaloSeekbar(tk.Canvas):
     def bind_keyframe_click(self, callback):
         """callback(index) fires when a diamond is clicked without dragging."""
         self._kf_click_callbacks.append(callback)
+
+    def set_cache_ranges(self, ranges):
+        """Replace the cached-range segments ((start, end) pairs in seconds).
+        Empty list hides the cache bar (e.g. the ffplay engine)."""
+        self._cache_ranges = [(float(a), float(b)) for a, b in ranges]
+        self._redraw()
 
     def set_keyframes(self, times):
         """Replace the keyframe markers. Empty list hides the lane markers."""
@@ -354,6 +364,20 @@ class HaloSeekbar(tk.Canvas):
         fill = theme.ACCENT_DEEP if self._state == tk.NORMAL else theme.TEXT_DIM
         self.create_rectangle(x0, cy - th // 2 + 1, max(x0, hx), cy + th // 2 - 1,
                               fill=fill, width=0)
+
+        # Cached-range bar: bright segments just below the track showing which
+        # parts of the clip seek instantly from the mpv RAM cache.
+        if self._cache_ranges:
+            cache_top = cy + th // 2 + px(3)
+            cache_bot = cache_top + px(2)
+            for rs, re_ in self._cache_ranges:
+                if re_ < v0 or rs > v1:
+                    continue
+                cx0 = self._x_for(max(rs, v0))
+                cx1 = self._x_for(min(re_, v1))
+                if cx1 > cx0:
+                    self.create_rectangle(cx0, cache_top, cx1, cache_bot,
+                                          fill=theme.BAR_EDGE, outline="")
 
         # Frame hairlines + heavier second-ticks stay visible over the fills.
         if frame_lines is not None:
