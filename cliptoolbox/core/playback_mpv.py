@@ -57,7 +57,10 @@ def build_mpv_lavfi(tracks: list[tuple[int, float]], video_chain: str | None) ->
     which map to the track ROW order (== the file's audio-stream order) — NOT
     the stored global ffprobe stream index that core.filters uses. Video is
     always routed ([vid1]…[vo]) so mpv keeps displaying it; without a crop
-    chain it passes through untouched.
+    chain it passes through untouched. (Leaving video out of the graph and
+    swapping back at runtime was tried and does NOT reliably restore the
+    native video path — the old filtered frame keeps rendering. hwdec still
+    accelerates decode through the routed graph, so nothing is lost.)
     """
     n = len(tracks)
     segs = []
@@ -99,7 +102,11 @@ def build_mpv_cmd(mpv_path: str, wid: int, ipc_pipe: str,
         f"--demuxer-max-bytes={forward_mb}MiB",
         f"--demuxer-max-back-bytes={back_mb}MiB",
         "--demuxer-readahead-secs=600",  # keep demuxing ahead up to the byte cap
-        "--hwdec=no",             # parity with the ffmpeg pipeline; lavfi-safe
+        # auto-copy picks GPU decode (NVDEC/D3D11) but copies frames back to
+        # system memory, so lavfi-complex still works. This is what makes
+        # exact seeks fast: the keyframe→target catch-up decode runs on the
+        # GPU instead of the CPU. Falls back to software decode by itself.
+        "--hwdec=auto-copy",
         "--no-osc",
         "--no-osd-bar",
         "--osd-level=0",
@@ -118,6 +125,7 @@ def build_mpv_cmd(mpv_path: str, wid: int, ipc_pipe: str,
 # ---------------------------------------------------------------------------
 class MpvPlaybackEngine:
     supports_live_scrub = True
+    supports_fast_stills = True  # stills come from the warm mpv, not an ffmpeg spawn
 
     def __init__(self, callbacks, wid_provider, mpv_path: str, cache_mb: int = 100):
         self._cb = callbacks
@@ -151,6 +159,7 @@ class MpvPlaybackEngine:
 
         self._still_request_id = 0
         self._still_process: subprocess.Popen | None = None
+        self._restart_evt = threading.Event()  # set on every playback-restart
 
         self._graph_lock = threading.Lock()
         self._graph_pending: str | None = None
@@ -354,14 +363,18 @@ class MpvPlaybackEngine:
             return
         self.play(self.position, self._tracks, *self._size)
 
-    def seek_paused(self, seconds: float):
+    def seek_paused(self, seconds: float, exact: bool = True):
+        """Move the paused position. exact=False snaps to the nearest video
+        keyframe — instant, used while a drag is in flight; the release/commit
+        seek is exact."""
         if self._state != PAUSED:
             return
         self._pause_position = self._clamp(seconds)
         self._position = self._pause_position
         if self._loaded and self._ipc and self._ipc.alive:
             self._apply_graph()  # a crop edit may have changed the graph while paused
-            self._ipc.command_async("seek", f"{self._pause_position:.3f}", "absolute+exact")
+            flags = "absolute+exact" if exact else "absolute+keyframes"
+            self._ipc.command_async("seek", f"{self._pause_position:.3f}", flags)
 
     def hold_paused_at(self, seconds: float):
         self._pause_position = self._clamp(seconds)
@@ -494,15 +507,62 @@ class MpvPlaybackEngine:
         self._still_request_id += 1
         request_id = self._still_request_id
         video_path = self._video_path
-        if not video_path or not paths.FFMPEG:
+        if not video_path:
             return request_id
         seconds = self._clamp(seconds)
         duration = self._duration or 0
         if duration:
             seconds = min(seconds, max(0.0, duration - 0.05))
+        # Fast path: capture the frame from the warm mpv itself (an in-process
+        # seek + JPEG encode) instead of spawning ffmpeg to cold-open the file.
+        # Only for uncropped stills (vf=None — the crop editor backdrop): a vf
+        # must be baked by ffmpeg because mpv renders its own lavfi graph.
+        if vf is None and self.has_pipeline and self._ipc and self._ipc.alive:
+            threading.Thread(target=self._mpv_still_worker,
+                             args=(request_id, video_path, seconds),
+                             name="mpv-still-ipc", daemon=True).start()
+            return request_id
+        if not paths.FFMPEG:
+            return request_id
         threading.Thread(target=self._still_worker, args=(request_id, video_path, seconds, vf),
                          name="mpv-still", daemon=True).start()
         return request_id
+
+    def _mpv_still_worker(self, request_id: int, video_path: str, seconds: float):
+        """Grab a still from the running mpv: exact-seek (GPU-decoded, served
+        from the RAM cache), wait for the frame to land, screenshot-to-file.
+        Any failure falls back to the ffmpeg extraction path."""
+        import tempfile
+        from pathlib import Path
+
+        image_bytes = b""
+        try:
+            ipc = self._ipc
+            if request_id != self._still_request_id or self._state != PAUSED:
+                return  # superseded, or playback took over the transport
+            self._apply_graph()  # editing clears the crop chain → full frame
+            self._restart_evt.clear()
+            ipc.command_async("seek", f"{seconds:.3f}", "absolute+exact")
+            self._restart_evt.wait(1.5)  # frame shown; timeout still screenshots
+            frame_path = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg").name
+            try:
+                ipc.command("screenshot-to-file", frame_path, "video", timeout=3.0)
+                image_bytes = Path(frame_path).read_bytes()
+            finally:
+                try:
+                    Path(frame_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
+        except (MpvIpcError, OSError, AttributeError):
+            image_bytes = b""
+        if request_id != self._still_request_id:
+            return
+        if image_bytes:
+            self._cb.on_still_frame(STILL_KIND_JPEG, image_bytes, 0, 0, request_id)
+        elif paths.FFMPEG:
+            self._still_worker(request_id, video_path, seconds, None)
+        else:
+            self._cb.on_still_failed(request_id)
 
     def _still_worker(self, request_id, video_path, seconds, vf):
         import tempfile
@@ -594,6 +654,7 @@ class MpvPlaybackEngine:
             elif name == "demuxer-cache-state":
                 self._on_cache_state(data)
         elif event == "playback-restart":
+            self._restart_evt.set()  # a pending still capture may be waiting
             # First frame after a load/seek: promote STARTING → PLAYING once.
             if self._state == STARTING:
                 self._cb.on_first_frame()

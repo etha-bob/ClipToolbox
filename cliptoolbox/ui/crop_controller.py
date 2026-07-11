@@ -224,8 +224,12 @@ class CropController:
 
     def preview_chain(self, start_seconds, width, height):
         """Engine provider: video chain for a spawn at start_seconds. Runs on
-        the spawn thread — pure, no tkinter, reads only atomic state."""
-        if not self.track.enabled or self.src_w <= 0:
+        the spawn thread — pure, no tkinter, reads only atomic state.
+
+        While the editor is open the chain is None: the engine then renders
+        (and screenshots) the full uncropped frame, which is exactly what the
+        editor backdrop needs — the crop lives in the overlay rect instead."""
+        if not self.track.enabled or self.src_w <= 0 or self._editing:
             return None
         out_w, out_h = motion.fit_size(self.src_w, self.src_h, width, height)
         return motion.build_motion_chain(

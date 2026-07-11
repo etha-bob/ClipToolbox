@@ -460,16 +460,19 @@ class HaloApp:
 
         if self.wheel_seek_after_id is None:
             # First notch of a burst: freeze a playing preview in place,
-            # exactly like pressing the seekbar.
+            # exactly like pressing the seekbar. Conceal only on the still
+            # path — mpv paints seeked frames live, and concealing would
+            # knock it off the fast live-scrub path.
             if state == core_playback.PLAYING:
                 self.wheel_seek_resume = True
                 self.pause_playback()
-                self.playback.conceal()
+                if not self._live_scrub_active():
+                    self.playback.conceal()
             elif state == core_playback.STARTING:
                 self.wheel_seek_resume = True
             else:
                 self.wheel_seek_resume = False
-                if state == core_playback.PAUSED:
+                if state == core_playback.PAUSED and not self._live_scrub_active():
                     self.playback.conceal()
         else:
             try:
@@ -1189,19 +1192,26 @@ class HaloApp:
             seconds = max(0.0, float(seconds))
 
         if self._live_scrub_active():
-            # mpv paints the real frame directly — exact-seek instead of
-            # extracting a JPEG still. hr-seek coalesces the burst natively.
+            # mpv paints the real frame directly. Keyframe-snap seeks while
+            # the drag is in flight (instant, like mpv's own seekbar); the
+            # release/commit seek is exact.
             if (self.last_scrub_frame_seconds is not None
                     and abs(seconds - self.last_scrub_frame_seconds) < 0.02):
                 return
             self.last_scrub_frame_seconds = seconds
-            self.playback.seek_paused(seconds)
+            self.playback.seek_paused(seconds, exact=False)
             return
+
+        # Still-based scrub (ffplay, or the crop editor backdrop). mpv serves
+        # stills from its warm process, so it can afford a much tighter cadence
+        # than the spawn-ffmpeg-per-frame path.
+        fast = getattr(self.playback, "supports_fast_stills", False)
+        min_delta, debounce_ms = (0.03, 30) if fast else (0.08, 90)
 
         # Avoid requesting almost-identical frames repeatedly.
         if (
             self.last_scrub_frame_seconds is not None
-            and abs(seconds - self.last_scrub_frame_seconds) < 0.08
+            and abs(seconds - self.last_scrub_frame_seconds) < min_delta
         ):
             return
 
@@ -1214,7 +1224,7 @@ class HaloApp:
                 pass
 
         self.scrub_frame_after_id = self.root.after(
-            90,
+            debounce_ms,
             lambda s=seconds: self.request_scrub_frame(s),
         )
 

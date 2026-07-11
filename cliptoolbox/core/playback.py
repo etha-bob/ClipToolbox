@@ -351,6 +351,7 @@ class PlaybackEngine:
     # An alternative engine (mpv) sets this True so the app scrubs with real
     # frames instead. Behavior-neutral for this class.
     supports_live_scrub = False
+    supports_fast_stills = False  # stills spawn ffmpeg; throttle scrub requests
 
     def __init__(self, callbacks: PlaybackCallbacks):
         self._cb = callbacks
@@ -634,9 +635,11 @@ class PlaybackEngine:
         timer.daemon = True
         timer.start()
 
-    def seek_paused(self, seconds: float):
+    def seek_paused(self, seconds: float, exact: bool = True):
         """Move the paused position. The paused pipeline is dropped (it can
-        only continue where it stopped); resume() will respawn at the new spot."""
+        only continue where it stopped); resume() will respawn at the new spot.
+        `exact` is part of the engine contract (mpv snaps drag seeks to video
+        keyframes); position bookkeeping here is exact either way."""
         if self._state != PAUSED:
             return
         self._drop_pipeline()
