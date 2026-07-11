@@ -1,0 +1,10 @@
+Put the file in this folder:
+
+- mpv.exe
+
+Required layout:
+
+ClipToolbox/
+  ClipToolbox.py
+  mpv/
+    mpv.exe

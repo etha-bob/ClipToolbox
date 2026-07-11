@@ -34,6 +34,7 @@ ClipToolbox is a small Windows desktop tool for previewing, mixing, trimming, ex
 - Windows 10/11
 - Python 3.11 or newer
 - FFmpeg, FFprobe, and FFplay executables
+- Optional `mpv.exe` for the MPV playback engine (put in `mpv\` next to `ffmpeg\`, or install it on PATH)
 - NVIDIA GPU and NVIDIA driver if you want Discord compression mode
 
 Python packages are listed in `requirements.txt` (unchanged — the UI is rendered with Pillow):
@@ -64,6 +65,7 @@ ClipToolbox/
     fonts/                Rajdhani (OFL) — loaded privately, never installed
   ffmpeg/
     bin/                  put ffmpeg.exe, ffprobe.exe, ffplay.exe here
+  mpv/                    optional: put mpv.exe here to bundle the optional MPV playback engine
   outputs/                default export folder (auto-created)
 ```
 
@@ -110,12 +112,12 @@ python -m pip install -r requirements.txt
 python -m pip install -r requirements-build.txt
 ```
 
-### Single-file EXE with bundled assets and FFmpeg
+### Single-file EXE with bundled assets, FFmpeg, and optional mpv
 
-This build keeps the app self-contained in one EXE, including the icon, bundled fonts, and the local `ffmpeg` tree:
+This build keeps the app self-contained in one EXE, including the icon, bundled fonts, the local `ffmpeg` tree, and the optional `mpv` engine when present:
 
 ```bat
-python -m PyInstaller --onefile --noconsole --name ClipToolbox --icon "assets\ClipToolbox.ico" --collect-all tkinterdnd2 --add-data "assets;assets" --add-data "ffmpeg;ffmpeg" ClipToolbox.py
+python -m PyInstaller --onefile --noconsole --name ClipToolbox --icon "assets\ClipToolbox.ico" --collect-all tkinterdnd2 --add-data "assets;assets" --add-data "ffmpeg;ffmpeg" --add-data "mpv;mpv" ClipToolbox.py
 ```
 
 The finished file is written to:
@@ -129,7 +131,7 @@ dist\ClipToolbox.exe
 If you prefer a folder-based build instead of a single EXE, use:
 
 ```bat
-python -m PyInstaller --onedir --noconsole --name ClipToolbox --icon "assets\ClipToolbox.ico" --collect-all tkinterdnd2 --add-data "assets;assets" --add-data "ffmpeg;ffmpeg" ClipToolbox.py
+python -m PyInstaller --onefile --noconsole --name ClipToolbox --icon "assets\ClipToolbox.ico" --collect-all tkinterdnd2 --add-data "assets;assets" --add-data "ffmpeg;ffmpeg" --add-data "mpv;mpv" ClipToolbox.py
 ```
 
 After the build finishes, the app can be run from:
