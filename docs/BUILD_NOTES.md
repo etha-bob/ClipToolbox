@@ -26,10 +26,10 @@ python -m pip install -r requirements-build.txt
 7. Build with PyInstaller (`--add-data` bundles the Rajdhani fonts the UI loads):
 
 ```bat
-python -m PyInstaller --onedir --noconsole --name ClipToolbox --collect-all tkinterdnd2 --add-data "assets;assets" ClipToolbox.py
+python -m PyInstaller --onedir --noconsole --name ClipToolbox --collect-all tkinterdnd2 --add-data "assets;assets" --add-data "ffmpeg;ffmpeg" --add-data "mpv;mpv" ClipToolbox.py
 ```
 
-8. Copy the local `ffmpeg` folder into `dist\ClipToolbox\` so it sits next to `ClipToolbox.exe`.
+8. Copy the local `ffmpeg` and optional `mpv` folders into `dist\ClipToolbox\` so they sit next to `ClipToolbox.exe`.
 
 The app supports PyInstaller onedir layout. The `ffmpeg` folder should live next to the EXE after building; the `assets` folder is looked up both next to the EXE and inside `_internal\` (PyInstaller 5/6 differ).
 
