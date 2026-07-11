@@ -79,6 +79,37 @@ class CropController:
             self.src_w = self.src_h = 0
             self.app.crop_checkbox.config(state=tk.DISABLED)
 
+    def export_state(self) -> dict:
+        """Serializable snapshot for the per-video session store."""
+        return {
+            "enabled": bool(self.track.enabled),
+            "keyframes": [[kf.t, kf.x, kf.y, kf.w, kf.h]
+                          for kf in self.track.keyframes],
+        }
+
+    def restore_state(self, state: dict) -> bool:
+        """Reload a saved session's crop setup (called after set_source). If
+        crop mode was on, come back in preview mode — playback applies the
+        crop; the editor stays closed until the user opens it."""
+        try:
+            keyframes = tuple(sorted(
+                (CropKeyframe(float(t), float(x), float(y), float(w), float(h))
+                 for t, x, y, w, h in state.get("keyframes") or []),
+                key=lambda kf: kf.t,
+            ))
+        except (TypeError, ValueError):
+            return False
+        if not keyframes:
+            return False
+        self.track.keyframes = keyframes
+        if state.get("enabled") and self.src_w > 0:
+            self.track.enabled = True
+            self.app.crop_enabled_var.set(True)
+            self._show_toolbar()
+            self._update_mode_button()
+            self._refresh_markers()
+        return True
+
     def on_toggle(self):
         if self.app.crop_enabled_var.get():
             if self.src_w <= 0:

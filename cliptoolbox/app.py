@@ -61,6 +61,7 @@ from cliptoolbox.core.paths import (
 from cliptoolbox.core.win32 import assign_process_to_cleanup_job, set_clipboard_dib
 from cliptoolbox.dnd import DND_AVAILABLE, DND_FILES, TkinterDnD
 from cliptoolbox import settings as app_settings
+from cliptoolbox import sessions as video_sessions
 from cliptoolbox.ui import chrome, dialogs, dpi, fonts, theme
 from cliptoolbox.ui.crop_controller import CropController
 from cliptoolbox.ui.wheel import WheelRouter
@@ -107,6 +108,9 @@ class HaloApp:
         self.root.after(15, self._pump_ui_queue)
 
         self.video_path: str | None = None
+        # Saved per-video setup for the clip being loaded; applied in
+        # after_probe (and read by add_track_row) once probing finishes.
+        self._session_to_restore: dict | None = None
         self.audio_metadata: list[dict] = []
         self.track_controls: list[tuple[int, tk.BooleanVar, object]] = []
 
@@ -847,6 +851,12 @@ class HaloApp:
 
         self.stop_preview()
 
+        # Persist the outgoing clip's setup, then look up a saved session for
+        # the incoming one (applied in after_probe, once the probe results and
+        # track rows exist).
+        self.persist_video_session()
+        self._session_to_restore = video_sessions.load(str(path_obj))
+
         self.video_path = str(path_obj)
         self.video_fps = None
         self.video_dimensions = None
@@ -888,6 +898,7 @@ class HaloApp:
             self.crop.set_source(dimensions, duration, fps)
 
         self.clear_tracks()
+        self.restore_video_session()
 
         if not streams:
             self.set_status("No audio tracks found.")
@@ -903,6 +914,8 @@ class HaloApp:
             self.add_track_row(row_number, info)
 
         self.update_track_area_height(len(streams))
+        # A restored session may start rows disabled; tint their strips now.
+        self.update_track_row_styles()
         self.remember_recent_clip(self.video_path)
         self.update_legend()
 
@@ -931,6 +944,99 @@ class HaloApp:
             widget.destroy()
 
         self.update_track_area_height(0)
+
+    # ========================================================
+    # Per-video sessions (trim / crop keyframes / track mix)
+    # ========================================================
+
+    def capture_video_session(self) -> dict:
+        state = {
+            "trim": {
+                "enabled": bool(self.trim_enabled_var.get()),
+                "start": self.trim_start_seconds,
+                "end": self.trim_end_seconds,
+            },
+            "tracks": [
+                {"index": stream_index, "enabled": bool(var.get()),
+                 "volume": float(slider.get())}
+                for stream_index, var, slider in self.track_controls
+            ],
+            "position": self.current_seek_seconds(),
+        }
+        if self.crop:
+            state["crop"] = self.crop.export_state()
+        return state
+
+    def persist_video_session(self):
+        """Save the current clip's setup so reopening it restores everything."""
+        if not self.video_path:
+            return
+        try:
+            video_sessions.save(self.video_path, self.capture_video_session())
+        except Exception:
+            pass
+
+    def session_track_state(self, stream_index: int) -> tuple[bool, float]:
+        """Saved (enabled, volume) for a stream in the session being restored,
+        or the fresh-row defaults."""
+        state = self._session_to_restore or {}
+        for track in state.get("tracks") or []:
+            if track.get("index") == stream_index:
+                try:
+                    volume = min(2.0, max(0.0, float(track.get("volume", 1.0))))
+                except (TypeError, ValueError):
+                    volume = 1.0
+                return bool(track.get("enabled", True)), volume
+        return True, 1.0
+
+    def restore_video_session(self):
+        """Re-apply a saved session (looked up in load_video). Track rows pull
+        their part via session_track_state; this handles trim, crop keyframes,
+        and the playhead."""
+        state = self._session_to_restore
+        if not state:
+            return
+        duration = self.total_duration_seconds or 0
+
+        def saved_time(value):
+            try:
+                seconds = float(value)
+            except (TypeError, ValueError):
+                return None
+            if seconds < 0:
+                return None
+            return min(seconds, duration) if duration else seconds
+
+        restored = []
+
+        trim = state.get("trim") or {}
+        start = saved_time(trim.get("start"))
+        end = saved_time(trim.get("end"))
+        if start is not None or end is not None:
+            self.trim_start_seconds = start
+            self.trim_end_seconds = end
+            self.trim_enabled_var.set(bool(trim.get("enabled")))
+            self.update_trim_controls()
+            restored.append("trim")
+
+        crop_state = state.get("crop") or {}
+        if self.crop and crop_state.get("keyframes"):
+            if self.crop.restore_state(crop_state):
+                count = len(crop_state["keyframes"])
+                restored.append(f"{count} crop keyframe(s)")
+
+        if any(not track.get("enabled", True) or track.get("volume") not in (None, 1.0, 1)
+               for track in state.get("tracks") or []):
+            restored.append("track mix")
+
+        # Resume near where the clip was left, unless that would start a
+        # preview right at EOF.
+        position = saved_time(state.get("position"))
+        if position and (not duration or position < duration - 0.5):
+            self.set_seek_position(position)
+
+        if restored:
+            self.log("Restored saved setup: " + ", ".join(restored) + ".")
 
     def update_track_area_height(self, track_count: int):
         # Keep the roster only as tall as the rows it actually needs; beyond
@@ -961,7 +1067,10 @@ class HaloApp:
         row.grid(row=row_number, column=0, sticky="ew", pady=(0, px(8)))
         row.columnconfigure(0, weight=1)
 
-        var = tk.BooleanVar(value=True)
+        # Fresh rows default to enabled at 100%; a restored session overrides.
+        initial_enabled, initial_volume = self.session_track_state(info["index"])
+
+        var = tk.BooleanVar(value=initial_enabled)
         var.trace_add(
             "write",
             lambda *args, row=row_number: self.apply_track_volume(row),
@@ -983,13 +1092,13 @@ class HaloApp:
         )
         checkbox.pack(side=tk.LEFT, padx=px(6), pady=px(2))
 
-        volume_label_var = tk.StringVar(value="100%")
+        volume_label_var = tk.StringVar(value=f"{int(round(initial_volume * 100))}%")
         tk.Label(name_bar, textvariable=volume_label_var, font=theme.font_small(),
                  bg=theme.MAROON, fg=theme.TEXT_BRIGHT).pack(side=tk.RIGHT, padx=px(8))
 
         slider = HaloSlider(row, from_=0.0, to=2.0, resolution=0.01,
                             behind=theme.PANEL_FILL)
-        slider.set(1.0)
+        slider.set(initial_volume)
 
         def on_volume_change(value, label_var=volume_label_var, row=row_number):
             try:
@@ -2574,6 +2683,7 @@ class HaloApp:
             except Exception:
                 pass
 
+        self.persist_video_session()
         self.save_settings()
         self.playback.shutdown()
         self.root.destroy()
