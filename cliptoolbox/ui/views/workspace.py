@@ -248,6 +248,16 @@ def build(app):
     app.crop_toolbar_frame = tk.Frame(left, bg=theme.BG_DEEP)
     app.crop_toolbar_frame.pack(fill=tk.X, pady=(px(4), 0))
 
+    # Working ⇄ preview toggle. Fixed width so the label swap doesn't resize it.
+    app.crop_preview_button = HaloButton(
+        app.crop_toolbar_frame, text="PREVIEW  ▶", command=app.on_crop_preview_toggle,
+        variant="primary", width=px(128), height=px(28), font=theme.font_small(12),
+    )
+    app.crop_preview_button.pack(side=tk.LEFT, padx=(0, px(10)))
+    Tooltip(app.crop_preview_button,
+            "Switch between working mode (edit the crop box) and preview mode "
+            "(play it back). Space also toggles this while cropping.")
+
     app.crop_addkey_button = HaloButton(
         app.crop_toolbar_frame, text="ADD KEY", command=app.on_crop_add_key,
         height=px(28), font=theme.font_small(12),

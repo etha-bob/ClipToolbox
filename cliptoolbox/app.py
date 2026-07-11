@@ -1243,6 +1243,9 @@ class HaloApp:
     def on_crop_toggle(self):
         self.crop.on_toggle()
 
+    def on_crop_preview_toggle(self):
+        self.crop.toggle_mode()
+
     def toggle_crop_mode(self):
         """Keyboard 'C': flip crop mode when the clip has known dimensions."""
         if not self.video_dimensions:
@@ -1816,6 +1819,14 @@ class HaloApp:
         if self.is_exporting:
             return
 
+        if self.crop and self.crop.active:
+            # While cropping, play/pause flips working ⇄ preview mode: pausing
+            # returns to the editor (box + keyframes), playing shows the result.
+            if self.playback.state == core_playback.STARTING:
+                return  # same debounce as the normal path below
+            self.crop.toggle_mode()
+            return
+
         state = self.playback.state
 
         if state == core_playback.PLAYING:
@@ -2151,6 +2162,14 @@ class HaloApp:
             return
 
         self.set_seek_position(at_seconds)
+
+        if not self.is_exporting and self.crop and self.crop.previewing:
+            # A crop preview ran to the end — return to the editor so the box
+            # is available again instead of leaving a box-less last frame.
+            self.crop.on_playback_ended()
+            self.set_busy(False)
+            return
+
         self.refresh_playback_button_state()
         if not self.is_exporting:
             self.set_busy(False)

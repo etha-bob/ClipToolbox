@@ -42,7 +42,18 @@ class CropController:
 
     @property
     def editing(self) -> bool:
+        """True in working mode: the crop box is shown and playback is paused."""
         return self._editing
+
+    @property
+    def active(self) -> bool:
+        """True whenever crop mode is on (either working or preview mode)."""
+        return self.track.enabled
+
+    @property
+    def previewing(self) -> bool:
+        """True in preview mode: playing back with the crop/keyframes applied."""
+        return self.track.enabled and not self._editing
 
     def reset(self):
         """New file loaded: drop keyframes and leave crop mode."""
@@ -78,8 +89,9 @@ class CropController:
             self.track.enabled = True
             self._show_toolbar()
             self._refresh_markers()
-            self._enter_edit()
-            self.app.log("Crop/zoom mode enabled.")
+            self.enter_work()
+            self.app.log("Crop/zoom mode enabled. Working mode — drag to crop, "
+                         "K to keyframe, PREVIEW to play it back.")
         else:
             self.track.enabled = False
             self._exit_edit()
@@ -94,11 +106,78 @@ class CropController:
                 self.app.pending_still_request = self.app.playback.request_still(pos, vf=None)
             self.app.log("Crop/zoom mode disabled.")
 
+    # ------------------------------------------------------------------
+    # Working mode ⇄ preview mode
+    # ------------------------------------------------------------------
+    # Crop mode has two sub-states while enabled: WORKING (paused, the crop box
+    # is shown, keyframes are editable) and PREVIEW (the clip plays back with
+    # the crop/keyframes applied, box hidden). The main play button and the
+    # toolbar's PREVIEW/EDIT button both flip between them.
+
+    def toggle_mode(self):
+        """Flip between working and preview mode (from the play button / the
+        toolbar toggle)."""
+        if not self.track.enabled:
+            return
+        if self._editing:
+            self.enter_preview()
+        else:
+            self.enter_work()
+
+    def enter_work(self):
+        """Switch to working mode: pause on the current frame with the crop box
+        so keyframes can be added/edited."""
+        self._enter_edit()
+        self._update_mode_button()
+
+    def enter_preview(self):
+        """Switch to preview mode: play the clip back with the crop applied."""
+        if not self.app.superset_tracks():
+            dialogs.showinfo(
+                "Preview needs a track",
+                "Preview playback needs at least one audio track. Keep working "
+                "in the editor, or export to see the crop result.",
+            )
+            return
+        self.leave_edit_for_playback()
+        self._start_preview_playback()
+        self._update_mode_button()
+
     def leave_edit_for_playback(self):
-        """Play was pressed while editing: hide the overlay but keep crop mode
-        on (markers stay, the live preview will show the animated crop)."""
+        """Hide the editor box because playback is (about to be) started by the
+        caller. Used by enter_preview and by the normal play/export paths."""
         if self._editing:
             self._exit_edit()
+            self._update_mode_button()
+
+    def on_playback_ended(self):
+        """A preview reached the end: drop back into working mode at the last
+        frame so the box is available again."""
+        if self.track.enabled and not self._editing:
+            self.enter_work()
+
+    def _start_preview_playback(self):
+        pos = self.app.current_seek_seconds()
+        duration = self.duration or 0
+        if duration and pos >= duration - 0.1:
+            # Previewing from the very end would EOF instantly and bounce
+            # straight back to working mode; restart like any media player.
+            pos = 0.0
+            self.app.set_seek_position(pos)
+        state = self.app.playback.state
+        if state in (core_playback.PLAYING, core_playback.STARTING):
+            return
+        if state == core_playback.PAUSED:
+            self.app.restart_playback_at(pos)
+        else:
+            self.app.start_preview()
+
+    def _update_mode_button(self):
+        btn = getattr(self.app, "crop_preview_button", None)
+        if btn is None:
+            return
+        # The label names the mode you switch TO.
+        btn.config(text="PREVIEW  ▶" if self._editing else "◀  EDIT")
 
     # ------------------------------------------------------------------
     # Edit mode enter/exit
