@@ -1,10 +1,15 @@
-"""Pillow-rendered Halo 2 chrome.
+"""Pillow-rendered Halo chrome (all skins).
 
 Tk's canvas cannot antialias, so every diagonal shape (chamfered panels,
 slanted bars, glows) is rendered by Pillow at 3x supersample, downscaled with
 LANCZOS, and served as a cached PhotoImage. Axis-aligned fills (progress
 bars, slider tracks) stay native canvas rectangles — those are already crisp
 and cheap to move every frame.
+
+Skin differences flow in through theme tokens: colors and chamfer/skew
+geometry parameterize the shared renderers (Reach zeroes the cuts for its
+rectangular chrome), while the few genuinely different treatments (window
+backdrop, menu selection band) dispatch on the theme's style switches.
 
 Rendering is composited against a known `behind` color rather than relying on
 Tk alpha blending, which is unreliable across Tk builds. Widgets therefore
@@ -173,9 +178,9 @@ def render_bar(
 
 _BUTTON_STYLES = {
     # variant: (fill_top, fill_bottom, border, text_color)
-    "primary": (theme.BAR_HI, theme.BAR_LO, theme.PANEL_BORDER, theme.TEXT_BRIGHT),
+    "primary": (theme.BTN_PRIMARY_HI, theme.BTN_PRIMARY_LO, theme.BTN_PRIMARY_BORDER, theme.BTN_PRIMARY_TEXT),
     "secondary": (theme.PANEL_FILL_HI, theme.PANEL_FILL, theme.PANEL_BORDER_DIM, theme.TEXT),
-    "danger": (theme.MAROON_HI, theme.MAROON, "#B06A78", theme.TEXT_BRIGHT),
+    "danger": (theme.MAROON_HI, theme.MAROON, theme.BTN_DANGER_BORDER, theme.TEXT_BRIGHT),
 }
 
 
@@ -236,7 +241,7 @@ def render_check(size: int, checked: bool, state: str = "normal", behind: str = 
     if state == "hover":
         border = theme.ACCENT
 
-    c = 3 * SS
+    c = theme.CHECK_CHAMFER * SS
     pts = chamfer_points(W, W, c, 0, c, 0)
     draw.polygon(pts, fill=rgb(theme.ENTRY_FILL), outline=rgb(border), width=max(1, round(1.2 * SS)))
 
@@ -260,7 +265,7 @@ def render_handle(w: int, h: int, state: str = "normal", behind: str = theme.BG_
     if state == "disabled":
         fill = theme.TEXT_DIM
 
-    c = round(min(W, H) * 0.35)
+    c = round(min(W, H) * theme.HANDLE_CHAMFER)
     pts = chamfer_points(W, H, c, c, c, c)
     draw.polygon(pts, fill=rgb(fill), outline=rgb(theme.TEXT_BRIGHT), width=SS)
 
@@ -323,12 +328,8 @@ def render_keyframe(h: int, state: str = "normal", behind: str = theme.BG_DEEP) 
 
 def render_wordmark(text: str, size_px: int, behind: str = theme.BG_DEEP) -> Image.Image:
     """Big glowing display text (landing wordmark, panel headers)."""
-    path = fonts.pil_font_path("Bold")
     W_pad = size_px  # generous padding for the glow
-    try:
-        font = ImageFont.truetype(str(path), size_px * SS) if path else ImageFont.load_default()
-    except Exception:
-        font = ImageFont.load_default()
+    font = fonts.pil_font(size_px * SS, "Bold") or ImageFont.load_default()
 
     probe = Image.new("RGB", (8, 8))
     tw, th = ImageDraw.Draw(probe).textbbox((0, 0), text, font=font)[2:]
@@ -353,13 +354,20 @@ _GLYPHS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 
 def render_background(w: int, h: int) -> Image.Image:
-    """Window background: vignette, faint scanline tick rows, dim glyph strips.
+    """Window background, dispatched on the skin's backdrop style.
 
-    The body is intentionally flat BG_DEEP (only the far edges darken) so that
-    widgets composited against BG_DEEP blend in invisibly. Rendered at 1x —
-    the texture is axis-aligned — and deterministic so re-renders don't
-    shimmer.
+    Both variants keep the body effectively flat BG_DEEP (only the far edges
+    darken or texture) so that widgets composited against BG_DEEP blend in
+    invisibly. Rendered at 1x — the textures are line-based — and
+    deterministic so re-renders don't shimmer.
     """
+    if theme.BACKDROP_STYLE == "reach":
+        return _render_background_reach(w, h)
+    return _render_background_halo2(w, h)
+
+
+def _render_background_halo2(w: int, h: int) -> Image.Image:
+    """H2 backdrop: vignette, faint scanline tick rows, dim glyph strips."""
     h = max(1, h)
     img = Image.new("RGB", (w, h), rgb(theme.BG_DEEP))
     draw = ImageDraw.Draw(img)
@@ -384,17 +392,17 @@ def render_background(w: int, h: int) -> Image.Image:
         y += row_gap
 
     # Two dim "data" glyph strips, like the faded text bands in the menus.
-    path = fonts.pil_font_path("SemiBold")
-    if path is not None and h > 200:
+    if h > 200:
         try:
-            gfont = ImageFont.truetype(str(path), px(15))
-            for band_frac in (0.30, 0.64):
-                by = round(h * band_frac)
-                text = " ".join(
-                    "".join(rng.choice(_GLYPHS) for _ in range(rng.randint(2, 6)))
-                    for _ in range(max(8, w // 60))
-                )
-                draw.text((-rng.randint(0, 40), by), text, font=gfont, fill=glyph_color)
+            gfont = fonts.pil_font(px(15), "SemiBold")
+            if gfont is not None:
+                for band_frac in (0.30, 0.64):
+                    by = round(h * band_frac)
+                    text = " ".join(
+                        "".join(rng.choice(_GLYPHS) for _ in range(rng.randint(2, 6)))
+                        for _ in range(max(8, w // 60))
+                    )
+                    draw.text((-rng.randint(0, 40), by), text, font=gfont, fill=glyph_color)
         except Exception:
             pass
 
@@ -411,6 +419,77 @@ def render_background(w: int, h: int) -> Image.Image:
     return img
 
 
+def _render_background_reach(w: int, h: int) -> Image.Image:
+    """Reach backdrop: diamond-plate weave at the edges, deep vignette.
+
+    The weave fades to nothing toward the center — the flat frames that sit
+    over the canvas (menu, wordmark, detail panel) must never show seams —
+    matching the Armory screens where the pattern lives in the corners.
+    """
+    h = max(1, h)
+    img = Image.new("RGB", (w, h), rgb(theme.BG_DEEP))
+
+    # 45-degree weave both ways, premixed against BG_DEEP.
+    weave = Image.new("RGB", (w, h), rgb(theme.BG_DEEP))
+    wd = ImageDraw.Draw(weave)
+    line_color = mix(theme.BG_DEEP, theme.ACCENT, 0.10)
+    step = max(8, px(24))
+    for x in range(-h, w + h, step):
+        wd.line([(x, 0), (x + h, h)], fill=line_color)
+        wd.line([(x + h, 0), (x, h)], fill=line_color)
+
+    # Edge-weighted mask: full weave at the borders, zero in the middle.
+    edge_mask = Image.new("L", (w, h), 200)
+    md = ImageDraw.Draw(edge_mask)
+    inset_w, inset_h = round(w * 0.18), round(h * 0.18)
+    md.rectangle([inset_w, inset_h, w - inset_w, h - inset_h], fill=0)
+    edge_mask = edge_mask.filter(ImageFilter.GaussianBlur(max(40, w // 14)))
+    img = Image.composite(weave, img, edge_mask)
+
+    # Deep vignette — Reach menus sink to near-black at the frame.
+    vignette = Image.new("L", (w, h), 0)
+    vd = ImageDraw.Draw(vignette)
+    vd.rectangle([0, 0, w, h], fill=96)
+    inset_w, inset_h = round(w * 0.08), round(h * 0.08)
+    vd.rectangle([inset_w, inset_h, w - inset_w, h - inset_h], fill=0)
+    vignette = vignette.filter(ImageFilter.GaussianBlur(max(24, w // 20)))
+    dark = Image.new("RGB", (w, h), rgb(theme.BG_DEEPER))
+    img = Image.composite(dark, img, vignette)
+
+    return img
+
+
+def render_menu_band(w: int, h: int, behind: str = theme.BG_DEEP) -> Image.Image:
+    """Reach menu selection: pale silver band, solid left, fading out right."""
+    W, H = w * SS, h * SS
+    img = Image.new("RGB", (W, H), rgb(behind))
+
+    # Vertical sheen through the band itself.
+    silver = _vgradient(
+        (W, H),
+        "#%02x%02x%02x" % lighten(theme.SELECT_FILL, 0.22),
+        "#%02x%02x%02x" % darken(theme.SELECT_FILL, 0.08),
+    )
+
+    # Horizontal alpha ramp: solid for the text stretch, then a soft falloff.
+    band = Image.new("L", (W, H), 0)
+    bd = ImageDraw.Draw(band)
+    pad = round(H * 0.09)
+    solid_until = 0.58
+    for x in range(W):
+        t = x / max(1, W - 1)
+        if t <= solid_until:
+            alpha = 235
+        else:
+            fall = (t - solid_until) / (1.0 - solid_until)
+            alpha = round(235 * (1.0 - fall) ** 1.7)
+        if alpha:
+            bd.line([(x, pad), (x, H - pad)], fill=alpha)
+
+    img.paste(silver, (0, 0), band)
+    return _finish(img, w, h)
+
+
 # ------------------------------------------------------------------
 # PhotoImage cache
 # ------------------------------------------------------------------
@@ -425,6 +504,7 @@ _RENDERERS = {
     "keyframe": render_keyframe,
     "wordmark": render_wordmark,
     "background": render_background,
+    "menu_band": render_menu_band,
 }
 
 

@@ -4,8 +4,14 @@ Rajdhani (OFL) is the closest free match to Conduit ITC, the typeface used by
 Halo 2's menus. Fonts are registered process-private via AddFontResourceExW
 so nothing is installed system-wide; if loading fails the UI falls back to
 Segoe UI without shifting layout (metrics come from the theme, not the font).
+
+A skin may prefer a system typeface instead (Reach -> Bahnschrift): the
+preference only takes effect once verify_with_tk confirms the family really
+exists, so a missing font degrades to Rajdhani rather than to Tk's silent
+default-family substitution.
 """
 import ctypes
+import os
 from pathlib import Path
 
 from cliptoolbox.constants import IS_WINDOWS
@@ -27,6 +33,34 @@ ASSET_DIR_CANDIDATES = [
 _loaded = False
 _available = False
 _font_files: dict[str, Path] = {}
+
+# Skin typeface preference (set by theme at import; resolved lazily).
+_pref_tk_candidates: tuple[str, ...] = ()
+_pref_tk_family: str | None = None      # candidate confirmed by verify_with_tk
+_pref_pil_path: Path | None = None
+_pref_pil_variations: dict[str, str] = {}
+
+
+def set_skin_preference(tk_candidates, pil_file, pil_variations):
+    """Record the active skin's preferred system typeface.
+
+    Called by cliptoolbox.ui.theme during import, before any widget exists.
+    The Tk side is confirmed later by verify_with_tk; the PIL side just needs
+    the TTF to exist on disk.
+    """
+    global _pref_tk_candidates, _pref_pil_path, _pref_pil_variations
+
+    _pref_tk_candidates = tuple(tk_candidates or ())
+    _pref_pil_variations = dict(pil_variations or {})
+
+    _pref_pil_path = None
+    if pil_file:
+        candidate = Path(pil_file)
+        if not candidate.is_absolute():
+            windir = os.environ.get("WINDIR", r"C:\Windows")
+            candidate = Path(windir) / "Fonts" / candidate
+        if candidate.exists():
+            _pref_pil_path = candidate
 
 
 def assets_dir() -> Path | None:
@@ -72,25 +106,43 @@ def load_private_fonts() -> bool:
 
 def family() -> str:
     """Primary UI family; call after load_private_fonts()."""
+    if _pref_tk_family is not None:
+        return _pref_tk_family
     return FAMILY if _available else FALLBACK_FAMILY
 
 
-def verify_with_tk(root) -> bool:
-    """Confirm Tk can actually see the private family; downgrades on failure."""
-    global _available
+def describe() -> str:
+    """Human-readable credit line for the About section."""
+    active = family()
+    if active == FAMILY:
+        return f"{FAMILY} (OFL)"
+    return f"{active} (system)"
 
-    if not _available:
-        return False
+
+def verify_with_tk(root) -> bool:
+    """Confirm Tk can actually see the expected families; downgrades on failure.
+
+    Resolves the skin's preferred system family against Tk's list, and checks
+    the bundled Rajdhani registration as before.
+    """
+    global _available, _pref_tk_family
 
     try:
         from tkinter import font as tkfont
 
         families = {f.lower() for f in tkfont.families(root)}
-        _available = FAMILY.lower() in families
     except Exception:
         _available = False
+        _pref_tk_family = None
+        return False
 
-    return _available
+    _pref_tk_family = next(
+        (name for name in _pref_tk_candidates if name.lower() in families), None)
+
+    if _available:
+        _available = FAMILY.lower() in families
+
+    return _available or _pref_tk_family is not None
 
 
 def pil_font_path(weight: str = "Medium") -> Path | None:
@@ -103,3 +155,34 @@ def pil_font_path(weight: str = "Medium") -> Path | None:
         return path
 
     return None
+
+
+def pil_font(size: int, weight: str = "Medium"):
+    """ImageFont honoring the skin's typeface preference; None if no TTF.
+
+    The preferred file may be a variable font (Bahnschrift), so the weight is
+    selected via its named instances; the bundled Rajdhani ships per-weight
+    files instead.
+    """
+    from PIL import ImageFont
+
+    if _pref_pil_path is not None:
+        try:
+            font = ImageFont.truetype(str(_pref_pil_path), size)
+            variation = _pref_pil_variations.get(weight)
+            if variation:
+                try:
+                    font.set_variation_by_name(variation)
+                except Exception:
+                    pass
+            return font
+        except Exception:
+            pass
+
+    path = pil_font_path(weight)
+    if path is None:
+        return None
+    try:
+        return ImageFont.truetype(str(path), size)
+    except Exception:
+        return None

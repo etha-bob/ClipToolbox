@@ -1,11 +1,19 @@
 """Widget/skin gallery — a development harness for iterating on the look.
 
     python -m cliptoolbox.ui.gallery
+    python -m cliptoolbox.ui.gallery --skin reach            (any registered skin)
     python -m cliptoolbox.ui.gallery --screenshot out.png   (build, grab, exit)
 
 Not part of the app itself; safe to run alongside it.
 """
+import os
 import sys
+
+# --skin must take effect before the first cliptoolbox.ui import: the theme
+# resolves the active skin once, at import time.
+if "--skin" in sys.argv[:-1]:
+    os.environ["CLIPTOOLBOX_SKIN"] = sys.argv[sys.argv.index("--skin") + 1]
+
 import tkinter as tk
 
 from cliptoolbox.ui import dialogs, dpi, fonts, skin, theme, widgets
@@ -35,7 +43,8 @@ def build(root: tk.Tk) -> None:
     bg = tk.Canvas(root, highlightthickness=0, bd=0, bg=theme.BG_DEEP)
     bg.place(x=0, y=0, relwidth=1, relheight=1)
     bg.create_image(0, 0, image=sk.get("background", w=w, h=h), anchor="nw")
-    bg.create_image(0, 0, image=sk.get("bar", w=px(560), h=px(40), skew_right=-px(22)), anchor="nw")
+    header_skew = -px(22) if theme.BAR_SKEW else 0  # straight bar on skew-less skins
+    bg.create_image(0, 0, image=sk.get("bar", w=px(560), h=px(40), skew_right=header_skew), anchor="nw")
     bg.create_text(px(36), px(20), text="SKIN GALLERY", font=theme.font_title(16),
                    fill=theme.TEXT_BRIGHT, anchor="w")
 
@@ -60,12 +69,12 @@ def build(root: tk.Tk) -> None:
     panel.place(x=px(24), y=px(130), width=px(360), height=px(190))
 
     for i, (name, vol) in enumerate((("Track 1 - eng / AAC / 2 ch", "100%"), ("Track 2 - spa / AAC / 2 ch", "40%"))):
-        row = tk.Frame(panel.body, bg=theme.MAROON)
+        row = tk.Frame(panel.body, bg=theme.ROSTER)
         row.pack(fill=tk.X, pady=(0, px(6)))
         var = tk.BooleanVar(value=True)
-        HaloCheckbox(row, text=name, variable=var, behind=theme.MAROON,
+        HaloCheckbox(row, text=name, variable=var, behind=theme.ROSTER,
                      text_color=theme.TEXT_BRIGHT).pack(side=tk.LEFT, padx=px(6), pady=px(2))
-        tk.Label(row, text=vol, font=theme.font_small(), bg=theme.MAROON,
+        tk.Label(row, text=vol, font=theme.font_small(), bg=theme.ROSTER,
                  fg=theme.TEXT_BRIGHT).pack(side=tk.RIGHT, padx=px(8))
         slider = HaloSlider(panel.body, from_=0.0, to=2.0, resolution=0.01,
                             length=px(320), behind=theme.PANEL_FILL)

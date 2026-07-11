@@ -26,10 +26,10 @@ def _add_recent_row(app, parent, path):
 
     # Fixed 16:9 holder so the row height is stable before the thumb loads.
     thumb_h = px(app.THUMBNAIL_HEIGHT)
-    thumb_holder = tk.Frame(row, bg="#0A1626", width=round(thumb_h * 16 / 9), height=thumb_h)
+    thumb_holder = tk.Frame(row, bg=theme.WELL_FILL, width=round(thumb_h * 16 / 9), height=thumb_h)
     thumb_holder.pack(side=tk.LEFT, padx=(0, px(8)))
     thumb_holder.pack_propagate(False)
-    thumb = tk.Label(thumb_holder, bg="#0A1626", bd=0)
+    thumb = tk.Label(thumb_holder, bg=theme.WELL_FILL, bd=0)
     thumb.pack(fill=tk.BOTH, expand=True)
 
     name_label = tk.Label(
@@ -48,7 +48,7 @@ def _add_recent_row(app, parent, path):
 
     if exists:
         for w in hover_widgets:
-            w.bind("<Enter>", lambda e: set_bg(theme.SELECT_FILL, theme.TEXT_BRIGHT))
+            w.bind("<Enter>", lambda e: set_bg(theme.SELECT_FILL, theme.SELECT_TEXT))
             w.bind("<Leave>", lambda e: set_bg(theme.PANEL_FILL, theme.TEXT))
             w.bind("<ButtonRelease-1>", lambda e, p=path: app.load_video(p))
 

@@ -3,7 +3,7 @@ import tkinter as tk
 
 from cliptoolbox.core import engine_factory
 from cliptoolbox.core.paths import FFMPEG_BIN_DIR, OUTPUTS_DIR, reveal_file
-from cliptoolbox.ui import theme, widgets
+from cliptoolbox.ui import dialogs, fonts, skins, theme, widgets
 from cliptoolbox.ui.theme import px
 from cliptoolbox.ui.views.shell import UI_VERSION
 
@@ -29,11 +29,11 @@ class SettingsOverlay:
         card = tk.Frame(self.card_win, bg=theme.PANEL_FILL)
         card.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
 
-        strip = tk.Frame(card, bg=theme.SELECT_FILL)
+        strip = tk.Frame(card, bg=theme.TITLE_FILL)
         strip.pack(fill=tk.X)
         tk.Frame(strip, bg=theme.ACCENT, width=px(4)).pack(side=tk.LEFT, fill=tk.Y)
         tk.Label(strip, text="SETTINGS", font=theme.font_title(14),
-                 bg=theme.SELECT_FILL, fg=theme.TEXT_BRIGHT).pack(side=tk.LEFT, padx=px(10), pady=px(6))
+                 bg=theme.TITLE_FILL, fg=theme.TITLE_TEXT).pack(side=tk.LEFT, padx=px(10), pady=px(6))
 
         body = tk.Frame(card, bg=theme.PANEL_FILL)
         body.pack(fill=tk.BOTH, expand=True, padx=px(20), pady=px(14))
@@ -41,6 +41,27 @@ class SettingsOverlay:
         def section(text):
             tk.Label(body, text=text.upper(), font=theme.font_title(12),
                      bg=theme.PANEL_FILL, fg=theme.ACCENT, anchor="w").pack(fill=tk.X, pady=(px(10), px(2)))
+
+        # --- interface ---------------------------------------------------
+        section("Interface")
+        skin_row = tk.Frame(body, bg=theme.PANEL_FILL)
+        skin_row.pack(fill=tk.X)
+        tk.Label(skin_row, text="Skin", font=theme.font_body(),
+                 bg=theme.PANEL_FILL, fg=theme.TEXT).pack(side=tk.LEFT)
+        # id <-> segmented label, driven by the registry so new skins appear
+        # here without touching this view.
+        self._skin_labels = {sid: label.upper() for sid, label in skins.available()}
+        self._skin_ids = {label: sid for sid, label in self._skin_labels.items()}
+        current = skins.normalize(app.settings.ui_skin)
+        self.skin_var = tk.StringVar(value=self._skin_labels[current])
+        widgets.HaloSegmented(
+            skin_row, list(self._skin_labels.values()), self.skin_var,
+            behind=theme.PANEL_FILL,
+        ).pack(side=tk.LEFT, padx=(px(12), 0))
+        tk.Label(body, text="Skin changes apply the next time ClipToolbox starts.",
+                 font=theme.font_small(), bg=theme.PANEL_FILL, fg=theme.TEXT_DIM,
+                 anchor="w", wraplength=self._card_w - px(48),
+                 justify=tk.LEFT).pack(fill=tk.X, pady=(px(2), 0))
 
         # --- window ------------------------------------------------------
         section("Window")
@@ -119,9 +140,9 @@ class SettingsOverlay:
         # --- about -------------------------------------------------------
         section("About")
         for line in (
-            f"ClipToolbox v{UI_VERSION} — Halo 2 interface",
+            f"ClipToolbox v{UI_VERSION} — {theme.SKIN_LABEL} interface",
             f"FFmpeg folder: {FFMPEG_BIN_DIR}",
-            "Font: Rajdhani (OFL) · UI rendered by Pillow",
+            f"Font: {fonts.describe()} · UI rendered by Pillow",
         ):
             tk.Label(body, text=line, font=theme.font_small(),
                      bg=theme.PANEL_FILL, fg=theme.TEXT_DIM, anchor="w",
@@ -174,6 +195,10 @@ class SettingsOverlay:
     def close(self):
         self.app.settings.remember_geometry = bool(self.remember_var.get())
         self.app.auto_preview_after_load = bool(self.autoplay_var.get())
+        selected_skin = self._skin_ids.get(self.skin_var.get(), self.app.settings.ui_skin)
+        skin_changed = selected_skin != skins.normalize(self.app.settings.ui_skin)
+        if skin_changed:
+            self.app.settings.ui_skin = selected_skin
         # Only act on the engine choice when mpv is actually available, so a
         # stored "mpv" preference is preserved even while mpv.exe is missing.
         if self._mpv_available:
@@ -205,3 +230,11 @@ class SettingsOverlay:
                 window.destroy()
             except Exception:
                 pass
+
+        if skin_changed:
+            label = dict(skins.available()).get(selected_skin, selected_skin)
+            dialogs.toast(
+                "Skin saved",
+                f"{label} loads the next time ClipToolbox starts.",
+                kind="info",
+            )

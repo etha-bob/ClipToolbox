@@ -1,6 +1,6 @@
 # ClipToolbox
 
-ClipToolbox is a small Windows desktop tool for previewing, mixing, trimming, exporting, and Discord-size-compressing video clips — wearing a Halo 2 (2004) menu interface.
+ClipToolbox is a small Windows desktop tool for previewing, mixing, trimming, exporting, and Discord-size-compressing video clips — wearing a Halo 2 (2004) menu interface, with an optional Halo: Reach skin selectable in Settings.
 
 <img width="2897" height="1681" alt="image" src="https://github.com/user-attachments/assets/bade2f2b-b5fb-4ce6-b03d-6e9f62dd826c" />
 
@@ -10,6 +10,7 @@ ClipToolbox is a small Windows desktop tool for previewing, mixing, trimming, ex
 ## Features
 
 - Halo 2 styled interface: main-menu landing screen, pregame-lobby workspace, custom borderless window chrome (native snap/resize still work)
+- Optional Halo: Reach skin (SETTINGS → Interface, applies on next launch): desaturated slate-and-steel palette, rectangular chrome, the silver selection band, party-roster green track bars, and Bahnschrift type (Windows' DIN — falls back to Rajdhani if missing)
 - Load a video file (dialog, drag-and-drop anywhere, Windows "Open With", or recent-clips list)
 - Detect audio tracks; enable/disable tracks and adjust per-track volume (0–200%), with mute-all (`M`), right-click solo, a RESET button, and double-click a slider to reset it to 100%
 - Live preview with mixed audio, embedded in the window; pause/resume are instant and frame-exact, track toggles and volume changes apply to the running preview without interrupting it, and scrubbing shows frames as you drag
@@ -27,7 +28,7 @@ ClipToolbox is a small Windows desktop tool for previewing, mixing, trimming, ex
 - Recent clips show thumbnails on the landing screen (right-click to reveal or remove); right-click the header to reveal the loaded clip; `Ctrl+,` opens Settings; `Ctrl+Shift+C` copies the current timestamp; hover tooltips on the less-obvious controls
 - Export-complete toast with an OPEN FOLDER button; in-window Halo dialogs instead of native message boxes
 - Activity log inside the app
-- Settings persist between sessions (window position, compression defaults, recent clips) in a portable `config.json`
+- Settings persist between sessions (window position, compression defaults, recent clips, interface skin) in a portable `config.json`
 
 ## Requirements
 
@@ -58,7 +59,8 @@ ClipToolbox/
   cliptoolbox/
     core/                 probing, ffmpeg command building, export/compression
                           tuning, preview pipelines — UI-free logic
-    ui/                   Halo 2 interface (theme, Pillow skin, widgets, views)
+    ui/                   Halo interface (theme, Pillow skin, widgets, views)
+    ui/skins/             skin token modules (halo2, reach) + registry
     app.py                controller wiring core and UI together
     settings.py           config.json persistence
   assets/
@@ -101,7 +103,10 @@ To iterate on the interface there is also a widget gallery:
 
 ```bat
 python -m cliptoolbox.ui.gallery
+python -m cliptoolbox.ui.gallery --skin reach
 ```
+
+(`--skin` — or the `CLIPTOOLBOX_SKIN` environment variable, which also works for the app itself — overrides the configured skin for that run.)
 
 ## Build an EXE manually
 

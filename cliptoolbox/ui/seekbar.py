@@ -359,7 +359,7 @@ class HaloSeekbar(tk.Canvas):
             tx1 = self._x_for(self._trim_end) if self._trim_end is not None else x1
             if tx1 > tx0:
                 self.create_rectangle(tx0, cy - th // 2 - px(2), tx1, cy + th // 2 + px(2),
-                                      fill="#16405F", outline="")
+                                      fill=theme.TRIM_KEEP, outline="")
 
         fill = theme.ACCENT_DEEP if self._state == tk.NORMAL else theme.TEXT_DIM
         self.create_rectangle(x0, cy - th // 2 + 1, max(x0, hx), cy + th // 2 - 1,

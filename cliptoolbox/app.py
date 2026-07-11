@@ -1076,25 +1076,26 @@ class HaloApp:
             lambda *args, row=row_number: self.apply_track_volume(row),
         )
 
-        # Roster-style row: maroon name bar (the lobby player bar) + slider.
-        name_bar = tk.Frame(row, bg=theme.MAROON)
+        # Roster-style row: the lobby player name bar (maroon in H2, party
+        # green in Reach) + slider.
+        name_bar = tk.Frame(row, bg=theme.ROSTER)
         name_bar.grid(row=0, column=0, sticky="ew")
 
         # Left indicator strip — tinted for solo (accent) / silenced (dim).
-        state_strip = tk.Frame(name_bar, bg=theme.MAROON, width=px(4))
+        state_strip = tk.Frame(name_bar, bg=theme.ROSTER, width=px(4))
         state_strip.pack(side=tk.LEFT, fill=tk.Y)
         self.track_state_strips[row_number] = state_strip
 
         checkbox = HaloCheckbox(
             name_bar, text=info["label"], variable=var,
-            behind=theme.MAROON, text_color=theme.TEXT_BRIGHT,
+            behind=theme.ROSTER, text_color=theme.TEXT_BRIGHT,
             font=theme.font_body(13),
         )
         checkbox.pack(side=tk.LEFT, padx=px(6), pady=px(2))
 
         volume_label_var = tk.StringVar(value=f"{int(round(initial_volume * 100))}%")
         tk.Label(name_bar, textvariable=volume_label_var, font=theme.font_small(),
-                 bg=theme.MAROON, fg=theme.TEXT_BRIGHT).pack(side=tk.RIGHT, padx=px(8))
+                 bg=theme.ROSTER, fg=theme.TEXT_BRIGHT).pack(side=tk.RIGHT, padx=px(8))
 
         slider = HaloSlider(row, from_=0.0, to=2.0, resolution=0.01,
                             behind=theme.PANEL_FILL)
@@ -1835,7 +1836,7 @@ class HaloApp:
 
     def update_track_row_styles(self):
         """Recolor each row's left indicator strip: accent when soloed, dim
-        when silenced (muted, or not the soloed row), maroon otherwise."""
+        when silenced (muted, or not the soloed row), roster color otherwise."""
         for row in range(len(self.track_controls)):
             strip = self.track_state_strips.get(row)
             if strip is None:
@@ -1845,7 +1846,7 @@ class HaloApp:
             elif self.effective_volume(row) <= 0.0:
                 color = theme.TEXT_DIM
             else:
-                color = theme.MAROON
+                color = theme.ROSTER
             try:
                 strip.configure(bg=color)
             except Exception:

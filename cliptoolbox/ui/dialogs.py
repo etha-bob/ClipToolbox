@@ -86,13 +86,13 @@ class _DialogWindow:
 
         accent = _KIND_COLORS.get(kind, theme.ACCENT)
 
-        strip = tk.Frame(card, bg=theme.SELECT_FILL)
+        strip = tk.Frame(card, bg=theme.TITLE_FILL)
         strip.pack(fill=tk.X)
         tk.Frame(strip, bg=accent, width=px(4)).pack(side=tk.LEFT, fill=tk.Y)
         tk.Label(strip, text=_KIND_TAGS.get(kind, "NOTICE"), font=theme.font_title(12),
-                 bg=theme.SELECT_FILL, fg=accent).pack(side=tk.LEFT, padx=(px(10), px(6)), pady=px(5))
+                 bg=theme.TITLE_FILL, fg=accent).pack(side=tk.LEFT, padx=(px(10), px(6)), pady=px(5))
         tk.Label(strip, text=title.upper(), font=theme.font_title(13),
-                 bg=theme.SELECT_FILL, fg=theme.TEXT_BRIGHT).pack(side=tk.LEFT, pady=px(5))
+                 bg=theme.TITLE_FILL, fg=theme.TITLE_TEXT).pack(side=tk.LEFT, pady=px(5))
 
         body = tk.Label(card, text=message, font=theme.font_body(),
                         bg=theme.PANEL_FILL, fg=theme.TEXT, justify=tk.LEFT,

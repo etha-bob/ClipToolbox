@@ -26,9 +26,6 @@ from cliptoolbox.ui.widgets import (
     make_log,
 )
 
-PREVIEW_BEZEL_FILL = "#0A1626"
-
-
 def build(app):
     # Screens stack in the container; show_landing/show_workspace lift them.
     app.workspace_frame = tk.Frame(app.screen_container, bg=theme.BG_DEEP)
@@ -79,7 +76,7 @@ def build(app):
     # ------------------------------------------------------------------
     # Left: preview bezel with the real embed target frame
     # ------------------------------------------------------------------
-    bezel = HaloPanel(left, fill=PREVIEW_BEZEL_FILL, border=theme.PANEL_BORDER, pad=px(8))
+    bezel = HaloPanel(left, fill=theme.WELL_FILL, border=theme.PANEL_BORDER, pad=px(8))
     bezel.pack(fill=tk.X)
 
     app.preview_frame = tk.Frame(
