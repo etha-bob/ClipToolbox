@@ -32,6 +32,8 @@ class AppSettings:
     compression_target_mb: str = "9.99"
     compression_resolution: str = "1080p"
     auto_preview_after_load: bool = True
+    playback_engine: str = "ffplay"  # "ffplay" (default) or "mpv" (optional)
+    mpv_cache_mb: int = 100  # RAM demuxer cache for the mpv engine (instant seeks)
     recent_clips: list[str] = field(default_factory=list)
     last_open_dir: str | None = None
 

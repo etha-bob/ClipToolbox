@@ -56,6 +56,68 @@ def probe_frame_rate(filepath: str) -> float | None:
     return None
 
 
+def probe_video_dimensions(filepath: str) -> tuple[int, int] | None:
+    """Return the video's display (width, height) in pixels, or None if unknown.
+
+    Used to map crop rectangles to source pixels. The dimensions are reported
+    as they appear after ffmpeg's automatic rotation: if the stream carries a
+    90/270-degree display rotation, ffmpeg inserts a transpose ahead of any
+    user filter, so the crop editor and crop filter see already-uprighted
+    frames. We swap width/height here to match, reading the rotation from
+    either the legacy tag or the display-matrix side data.
+    """
+    cmd = [
+        paths.FFPROBE,
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height:stream_tags=rotate:stream_side_data=rotation",
+        "-of",
+        "default=noprint_wrappers=1",
+        filepath,
+    ]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+            creationflags=CREATE_NO_WINDOW,
+        )
+    except Exception:
+        return None
+
+    values: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            values[key.strip().lower()] = value.strip()
+
+    try:
+        width = int(values.get("width", ""))
+        height = int(values.get("height", ""))
+    except (TypeError, ValueError):
+        return None
+
+    if width <= 0 or height <= 0:
+        return None
+
+    rotation = values.get("rotation") or values.get("tag:rotate") or values.get("rotate")
+    try:
+        degrees = int(round(float(rotation))) if rotation else 0
+    except (TypeError, ValueError):
+        degrees = 0
+
+    if degrees % 180 != 0:
+        width, height = height, width
+
+    return (width, height)
+
+
 def _parse_rational(text: str | None) -> float | None:
     if not text:
         return None

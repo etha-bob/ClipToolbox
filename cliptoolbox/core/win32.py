@@ -12,6 +12,7 @@ if IS_WINDOWS:
     user32 = ctypes.windll.user32
 
     EnumWindows = user32.EnumWindows
+    EnumChildWindows = user32.EnumChildWindows
     EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
 
     IsWindow = user32.IsWindow
@@ -297,6 +298,36 @@ def find_main_window_for_pid(pid: int) -> int | None:
             return hwnd
 
     return candidates[0][0]
+
+
+def find_child_window_for_pid(parent_hwnd: int, pid: int) -> int | None:
+    """First descendant window of parent_hwnd owned by `pid`, or None.
+
+    mpv launched with --wid=<parent> creates its video window as a CHILD of
+    the given HWND, which find_main_window_for_pid (top-level only) cannot see.
+    Prefers the window whose class is "mpv".
+    """
+    if not IS_WINDOWS or not parent_hwnd:
+        return None
+
+    candidates: list[int] = []
+
+    def callback(hwnd, _):
+        found_pid = ctypes.c_ulong()
+        GetWindowThreadProcessId(hwnd, ctypes.byref(found_pid))
+        if found_pid.value == pid:
+            candidates.append(hwnd)
+        return True
+
+    try:
+        EnumChildWindows(parent_hwnd, EnumWindowsProc(callback), 0)
+    except Exception:
+        return None
+
+    for hwnd in candidates:
+        if _window_class(hwnd) == "mpv":
+            return hwnd
+    return candidates[0] if candidates else None
 
 
 def embed_external_window_hidden(child_hwnd: int, parent_hwnd: int, width: int, height: int):

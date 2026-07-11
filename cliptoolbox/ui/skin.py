@@ -289,6 +289,38 @@ def render_trim_flag(h: int, kind: str, behind: str = theme.BG_DEEP) -> Image.Im
     return _finish(img, w, h)
 
 
+def render_keyframe(h: int, state: str = "normal", behind: str = theme.BG_DEEP) -> Image.Image:
+    """Keyframe marker for the seekbar: a small chamfered diamond.
+
+    states: normal / hover / drag / active (playhead sitting on it)."""
+    w = h
+    W, H = w * SS, h * SS
+    img = Image.new("RGB", (W, H), rgb(behind))
+    draw = ImageDraw.Draw(img)
+
+    if state == "active":
+        fill = theme.ACCENT
+        outline = theme.TEXT_BRIGHT
+    elif state in ("hover", "drag"):
+        fill = theme.ACCENT
+        outline = theme.ACCENT_DEEP
+    else:
+        fill = theme.ACCENT_DEEP
+        outline = theme.ACCENT
+
+    inset = round(1.4 * SS)
+    cx, cy = W / 2, H / 2
+    diamond = [
+        (cx, inset),
+        (W - inset, cy),
+        (cx, H - inset),
+        (inset, cy),
+    ]
+    draw.polygon(diamond, fill=rgb(fill), outline=rgb(outline), width=max(1, round(1.4 * SS)))
+
+    return _finish(img, w, h)
+
+
 def render_wordmark(text: str, size_px: int, behind: str = theme.BG_DEEP) -> Image.Image:
     """Big glowing display text (landing wordmark, panel headers)."""
     path = fonts.pil_font_path("Bold")
@@ -390,6 +422,7 @@ _RENDERERS = {
     "check": render_check,
     "handle": render_handle,
     "trim_flag": render_trim_flag,
+    "keyframe": render_keyframe,
     "wordmark": render_wordmark,
     "background": render_background,
 }

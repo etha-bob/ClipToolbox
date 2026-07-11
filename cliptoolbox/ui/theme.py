@@ -38,6 +38,7 @@ TRIM_IN = "#58C973"        # trim start bracket (was "green")
 TRIM_OUT = "#E0556B"       # trim end bracket (was "red")
 
 SEEK_TRACK = "#0C1E33"
+SEEK_CELL = "#122B47"      # alternating frame cells on the zoomed timeline
 ENTRY_FILL = "#0A1B2E"
 
 # ------------------------------------------------------------------
@@ -54,7 +55,7 @@ BTN_PRIMARY_H = 44
 MENU_ITEM_H = 46
 CHECK_SIZE = 18
 SLIDER_H = 22
-SEEKBAR_H = 30
+SEEKBAR_H = 40  # scrubber occupies the upper band; keyframe diamonds the lower lane
 ENTRY_H = 30
 
 PAD = 12

@@ -38,7 +38,7 @@ import threading
 import time
 from collections import deque
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
 
 from cliptoolbox.constants import CREATE_NO_WINDOW, IS_WINDOWS
 from cliptoolbox.core import filters as core_filters
@@ -96,6 +96,11 @@ class PlaybackCallbacks(Protocol):
 
     def on_pause_slipped(self) -> None: ...
 
+    def on_cache_ranges(self, ranges: list[tuple[float, float]]) -> None:
+        """Cached (instantly seekable) time ranges changed. Only the mpv
+        engine emits this; ffplay has no cache. Fires from a worker thread."""
+        ...
+
     def on_ended(self, at_seconds: float) -> None: ...
 
     def on_error(self, title: str, message: str) -> None: ...
@@ -114,7 +119,12 @@ def ffplay_start_env() -> dict:
     return env
 
 
-def build_playback_filter(tracks: list[tuple[int, float]], width: int, height: int) -> str:
+def build_playback_filter(
+    tracks: list[tuple[int, float]],
+    width: int,
+    height: int,
+    video_chain: str | None = None,
+) -> str:
     """
     Superset preview graph: every audio track (disabled rows arrive here with
     volume 0.0) through the standard build_audio_filter, plus a video scale to
@@ -124,14 +134,22 @@ def build_playback_filter(tracks: list[tuple[int, float]], width: int, height: i
     The audio chains come first so FFmpeg's auto-generated filter instance
     names line up with track rows: row i == Parsed_volume_i, which is what the
     live volume commands target.
+
+    video_chain, when provided, replaces the default fit-scale entirely. A
+    crop/zoom motion chain is built at the preview fit size (see core.motion),
+    so it already produces the correct display geometry and there is nothing
+    left to scale afterwards.
     """
     audio = core_filters.build_audio_filter(tracks)
     width = max(2, int(width))
     height = max(2, int(height))
-    video = (
-        f"[0:v:0]scale={width}:{height}:"
-        f"force_original_aspect_ratio=decrease:force_divisible_by=2[vout]"
-    )
+    if video_chain:
+        video = f"[0:v:0]{video_chain}[vout]"
+    else:
+        video = (
+            f"[0:v:0]scale={width}:{height}:"
+            f"force_original_aspect_ratio=decrease:force_divisible_by=2[vout]"
+        )
     return f"{audio};{video}"
 
 
@@ -203,8 +221,9 @@ def build_frame_extract_cmd(
     input_path: str,
     seconds: float,
     frame_path: str,
+    vf: str | None = None,
 ) -> list[str]:
-    return [
+    cmd = [
         paths.FFMPEG,
         "-hide_banner",
         "-loglevel",
@@ -215,22 +234,34 @@ def build_frame_extract_cmd(
         input_path,
         "-map",
         "0:v:0",
-        "-frames:v",
-        "1",
-        "-an",
-        "-sn",
-        "-dn",
-        "-q:v",
-        "2",
-        "-y",
-        frame_path,
     ]
+    if vf:
+        cmd.extend(["-vf", vf])
+    cmd.extend(
+        [
+            "-frames:v",
+            "1",
+            "-an",
+            "-sn",
+            "-dn",
+            "-q:v",
+            "2",
+            "-y",
+            frame_path,
+        ]
+    )
+    return cmd
 
 
-def build_snapshot_cmd(input_path: str, seconds: float, dest_path: str) -> list[str]:
+def build_snapshot_cmd(
+    input_path: str,
+    seconds: float,
+    dest_path: str,
+    vf: str | None = None,
+) -> list[str]:
     """Full-resolution single-frame extract. The output format follows the
     destination extension (PNG for lossless snapshots)."""
-    return [
+    cmd = [
         paths.FFMPEG,
         "-hide_banner",
         "-loglevel",
@@ -241,14 +272,21 @@ def build_snapshot_cmd(input_path: str, seconds: float, dest_path: str) -> list[
         input_path,
         "-map",
         "0:v:0",
-        "-frames:v",
-        "1",
-        "-an",
-        "-sn",
-        "-dn",
-        "-y",
-        dest_path,
     ]
+    if vf:
+        cmd.extend(["-vf", vf])
+    cmd.extend(
+        [
+            "-frames:v",
+            "1",
+            "-an",
+            "-sn",
+            "-dn",
+            "-y",
+            dest_path,
+        ]
+    )
+    return cmd
 
 
 class _Pipeline:
@@ -309,6 +347,12 @@ def _retire_pipeline(pipeline: "_Pipeline | None"):
 class PlaybackEngine:
     """Owns the preview pipeline. Public methods: UI thread only."""
 
+    # This engine extracts JPEG stills for paused scrubbing (no live seek).
+    # An alternative engine (mpv) sets this True so the app scrubs with real
+    # frames instead. Behavior-neutral for this class.
+    supports_live_scrub = False
+    supports_fast_stills = False  # stills spawn ffmpeg; throttle scrub requests
+
     def __init__(self, callbacks: PlaybackCallbacks):
         self._cb = callbacks
         self._lock = threading.RLock()
@@ -336,6 +380,11 @@ class PlaybackEngine:
 
         self._tracks: list[tuple[int, float]] = []
         self._live_mix_ok = True
+
+        # Optional provider of a video filter chain, re-queried on every spawn
+        # with the actual (start_seconds, width, height). Must be a pure,
+        # thread-tolerant callable (spawns happen off the UI thread).
+        self._video_chain_provider: "Callable[[float, int, int], str | None] | None" = None
 
         self._cmd_lock = threading.Lock()
         self._cmd_pending: dict[int, float] = {}
@@ -371,6 +420,10 @@ class PlaybackEngine:
         return pipeline is not None and pipeline.ffplay.poll() is None
 
     @property
+    def concealed(self) -> bool:
+        return self._concealed
+
+    @property
     def live_mix_ok(self) -> bool:
         return self._live_mix_ok
 
@@ -398,6 +451,18 @@ class PlaybackEngine:
         """Set the current file. Call stop() first when switching files."""
         self._video_path = path
         self._duration = duration
+
+    def set_video_chain_provider(
+        self, provider: "Callable[[float, int, int], str | None] | None"
+    ):
+        """Register a callable that returns the preview video filter chain for
+        a given (start_seconds, width, height), or None for the default fit.
+
+        Re-queried on every spawn so seeks, resume-respawns and loop restarts
+        all pick up the current crop/zoom state at the right time offset. The
+        provider runs on the spawning thread (not the UI thread), so it must be
+        pure and must not touch tkinter."""
+        self._video_chain_provider = provider
 
     def play(self, start_seconds: float, tracks: list[tuple[int, float]], width: int, height: int):
         """
@@ -437,7 +502,13 @@ class PlaybackEngine:
 
         _retire_pipeline(old_pipeline)
 
-        filter_complex = build_playback_filter(self._tracks, *self._size)
+        video_chain = None
+        if self._video_chain_provider is not None:
+            try:
+                video_chain = self._video_chain_provider(start_seconds, *self._size)
+            except Exception:
+                video_chain = None
+        filter_complex = build_playback_filter(self._tracks, *self._size, video_chain=video_chain)
 
         self._set_state(STARTING)
 
@@ -564,9 +635,11 @@ class PlaybackEngine:
         timer.daemon = True
         timer.start()
 
-    def seek_paused(self, seconds: float):
+    def seek_paused(self, seconds: float, exact: bool = True):
         """Move the paused position. The paused pipeline is dropped (it can
-        only continue where it stopped); resume() will respawn at the new spot."""
+        only continue where it stopped); resume() will respawn at the new spot.
+        `exact` is part of the engine contract (mpv snaps drag seeks to video
+        keyframes); position bookkeeping here is exact either way."""
         if self._state != PAUSED:
             return
         self._drop_pipeline()
@@ -699,10 +772,12 @@ class PlaybackEngine:
     # Still frames (pause fallback + scrubbing)
     # ------------------------------------------------------------------
 
-    def save_frame(self, seconds: float, dest_path: str, on_done):
+    def save_frame(self, seconds: float, dest_path: str, on_done, vf: str | None = None):
         """Extract the full-resolution frame at `seconds` to dest_path on a
         worker thread. Calls on_done(success: bool, dest_path: str) when done
-        (on the worker thread — the caller marshals to its UI thread)."""
+        (on the worker thread — the caller marshals to its UI thread).
+
+        vf, when set, bakes a crop/zoom transform into the saved frame."""
         video_path = self._video_path
         if not video_path or not paths.FFMPEG:
             on_done(False, dest_path)
@@ -716,7 +791,7 @@ class PlaybackEngine:
         def worker():
             ok = False
             try:
-                cmd = build_snapshot_cmd(video_path, seconds, dest_path)
+                cmd = build_snapshot_cmd(video_path, seconds, dest_path, vf)
                 process = subprocess.Popen(
                     cmd,
                     stdout=subprocess.DEVNULL,
@@ -736,9 +811,12 @@ class PlaybackEngine:
 
         threading.Thread(target=worker, name="playback-snapshot", daemon=True).start()
 
-    def request_still(self, seconds: float) -> int:
+    def request_still(self, seconds: float, vf: str | None = None) -> int:
         """Extract a single frame asynchronously; emits on_still_frame with the
-        returned request id (stale ids should be ignored by the receiver)."""
+        returned request id (stale ids should be ignored by the receiver).
+
+        vf, when set, applies a video filter (e.g. a static crop) so the still
+        matches what playback would show at that time."""
         self._still_request_id += 1
         request_id = self._still_request_id
 
@@ -753,19 +831,19 @@ class PlaybackEngine:
 
         threading.Thread(
             target=self._still_worker,
-            args=(request_id, video_path, seconds),
+            args=(request_id, video_path, seconds, vf),
             name="playback-still",
             daemon=True,
         ).start()
         return request_id
 
-    def _still_worker(self, request_id: int, video_path: str, seconds: float):
+    def _still_worker(self, request_id: int, video_path: str, seconds: float, vf: str | None = None):
         _kill_process(self._still_process)
 
         frame_path = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg").name
         image_bytes = b""
         try:
-            cmd = build_frame_extract_cmd(video_path, seconds, frame_path)
+            cmd = build_frame_extract_cmd(video_path, seconds, frame_path, vf)
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,

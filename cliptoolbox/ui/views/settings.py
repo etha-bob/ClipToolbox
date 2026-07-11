@@ -1,6 +1,7 @@
 """Settings overlay — a modal Halo card over whichever screen is active."""
 import tkinter as tk
 
+from cliptoolbox.core import engine_factory
 from cliptoolbox.core.paths import FFMPEG_BIN_DIR, OUTPUTS_DIR, reveal_file
 from cliptoolbox.ui import theme, widgets
 from cliptoolbox.ui.theme import px
@@ -56,6 +57,49 @@ class SettingsOverlay:
             body, text="Play the preview automatically when a clip loads",
             variable=self.autoplay_var, behind=theme.PANEL_FILL,
         ).pack(anchor="w")
+
+        engine_row = tk.Frame(body, bg=theme.PANEL_FILL)
+        engine_row.pack(fill=tk.X, pady=(px(8), 0))
+        tk.Label(engine_row, text="Engine", font=theme.font_body(),
+                 bg=theme.PANEL_FILL, fg=theme.TEXT).pack(side=tk.LEFT)
+        self._mpv_available = engine_factory.ENGINE_MPV in engine_factory.available_engines()
+        self.engine_var = tk.StringVar(
+            value="MPV" if app.playback_engine_name == engine_factory.ENGINE_MPV else "FFPLAY")
+        self.engine_combo = widgets.HaloSegmented(
+            engine_row, ["FFPLAY", "MPV"], self.engine_var, behind=theme.PANEL_FILL)
+        self.engine_combo.pack(side=tk.LEFT, padx=(px(12), 0))
+        if not self._mpv_available:
+            self.engine_var.set("FFPLAY")
+            self.engine_combo.config(state=tk.DISABLED)
+            tk.Label(body, text="mpv.exe not found — put an mpv build in the mpv "
+                     "folder next to ffmpeg (see BUILD_NOTES) to enable it.",
+                     font=theme.font_small(), bg=theme.PANEL_FILL, fg=theme.TEXT_DIM,
+                     anchor="w", wraplength=self._card_w - px(48),
+                     justify=tk.LEFT).pack(fill=tk.X, pady=(px(2), 0))
+        else:
+            tk.Label(body, text="mpv gives smoother pausing and live-frame "
+                     "scrubbing for crop keyframing. FFplay is the lightweight default.",
+                     font=theme.font_small(), bg=theme.PANEL_FILL, fg=theme.TEXT_DIM,
+                     anchor="w", wraplength=self._card_w - px(48),
+                     justify=tk.LEFT).pack(fill=tk.X, pady=(px(2), 0))
+
+        cache_row = tk.Frame(body, bg=theme.PANEL_FILL)
+        cache_row.pack(fill=tk.X, pady=(px(8), 0))
+        tk.Label(cache_row, text="Seek cache (mpv)", font=theme.font_body(),
+                 bg=theme.PANEL_FILL, fg=theme.TEXT).pack(side=tk.LEFT)
+        self.cache_var = tk.StringVar(value=str(app.settings.mpv_cache_mb))
+        self.cache_entry = widgets.HaloEntry(cache_row, textvariable=self.cache_var, width=6)
+        self.cache_entry.pack(side=tk.LEFT, padx=(px(12), 0))
+        tk.Label(cache_row, text="MB", font=theme.font_body(),
+                 bg=theme.PANEL_FILL, fg=theme.TEXT_DIM).pack(side=tk.LEFT, padx=(px(6), 0))
+        if not self._mpv_available:
+            self.cache_entry.config(state=tk.DISABLED)
+        else:
+            tk.Label(body, text="RAM buffer for instant seeking — the bright line "
+                     "under the seekbar shows what's cached. Bigger covers longer clips.",
+                     font=theme.font_small(), bg=theme.PANEL_FILL, fg=theme.TEXT_DIM,
+                     anchor="w", wraplength=self._card_w - px(48),
+                     justify=tk.LEFT).pack(fill=tk.X, pady=(px(2), 0))
 
         # --- library -----------------------------------------------------
         section("Library")
@@ -130,6 +174,22 @@ class SettingsOverlay:
     def close(self):
         self.app.settings.remember_geometry = bool(self.remember_var.get())
         self.app.auto_preview_after_load = bool(self.autoplay_var.get())
+        # Only act on the engine choice when mpv is actually available, so a
+        # stored "mpv" preference is preserved even while mpv.exe is missing.
+        if self._mpv_available:
+            selected = (engine_factory.ENGINE_MPV if self.engine_var.get() == "MPV"
+                        else engine_factory.ENGINE_FFPLAY)
+            if selected != self.app.settings.playback_engine:
+                self.app.settings.playback_engine = selected
+                self.app.switch_playback_engine(selected)
+            try:
+                cache_mb = int(float(self.cache_var.get().strip().replace(",", ".")))
+            except (TypeError, ValueError):
+                cache_mb = self.app.settings.mpv_cache_mb
+            cache_mb = max(16, min(4096, cache_mb))
+            if cache_mb != self.app.settings.mpv_cache_mb:
+                self.app.settings.mpv_cache_mb = cache_mb
+                self.app.apply_mpv_cache_size(cache_mb)
         self.app.save_settings()
 
         try:

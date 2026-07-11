@@ -87,6 +87,24 @@ FFMPEG = find_tool("ffmpeg")
 FFPROBE = find_tool("ffprobe")
 FFPLAY = find_tool("ffplay")
 
+# Optional mpv playback backend. Bundled in an mpv/ folder next to ffmpeg/
+# (same convention), or discovered on PATH. Prefer mpv.exe over mpv.com — the
+# .com console wrapper re-execs mpv.exe under a different PID, which breaks the
+# --wid child-window lookup and the IPC pipe.
+MPV_DIR = RESOURCE_DIR / "mpv"
+
+
+def find_mpv() -> str | None:
+    local = MPV_DIR / exe_name("mpv")
+    if local.exists():
+        return str(local)
+    if IS_WINDOWS:
+        return shutil.which("mpv.exe") or shutil.which("mpv")
+    return shutil.which("mpv")
+
+
+MPV = find_mpv()
+
 
 def reveal_file(path: str):
     try:

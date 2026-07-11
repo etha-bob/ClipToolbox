@@ -105,6 +105,8 @@ def run_export_job(
     callbacks: ExportCallbacks,
     is_cancelled: Callable[[], bool],
     register_process: Callable[[subprocess.Popen | None], None],
+    video_filter: str | None = None,
+    video_prefilter: str | None = None,
 ):
     try:
         progress_duration = export_progress_duration(total_duration_seconds, trim_start, trim_end)
@@ -117,9 +119,15 @@ def run_export_job(
                 output_path,
                 trim_start,
                 trim_end,
+                video_filter,
             )
 
-            callbacks.on_log("Starting standard export: video copy + AAC mixed audio.")
+            if video_filter:
+                callbacks.on_log(
+                    "Starting standard export: crop/zoom re-encode (NVENC quality) + AAC mixed audio."
+                )
+            else:
+                callbacks.on_log("Starting standard export: video copy + AAC mixed audio.")
             return_code, stderr_text = run_export_command(
                 cmd,
                 progress_duration,
@@ -200,6 +208,7 @@ def run_export_job(
                         budget_mb,
                         progress_duration,
                         compression_resolution_label,
+                        video_prefilter,
                     )
                 except ValueError as exc:
                     stop_reason = str(exc)

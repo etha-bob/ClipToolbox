@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from cliptoolbox.core import commands, filters, playback
+from cliptoolbox.core import commands, filters, motion, playback, playback_mpv
 from cliptoolbox.core import paths
 
 INPUT = r"C:\clips\example.mp4"
@@ -107,6 +107,139 @@ def main():
     dump("parse target: '9,99 MB'", commands.parse_target_mb("9,99 MB"))
     dump("resolution limit: 720p", list(commands.resolve_resolution_limit("720p")))
     dump("resolution limit: invalid -> default", list(commands.resolve_resolution_limit("nope")))
+
+    dump_motion()
+    dump_mpv()
+
+
+def dump_mpv():
+    """Optional mpv engine builders. Appended so the output above stays
+    byte-identical whether or not mpv is installed."""
+    dump(
+        "mpv lavfi: single track @80%",
+        playback_mpv.build_mpv_lavfi([(1, 0.8)], None),
+    )
+    dump(
+        "mpv lavfi: 3 tracks (100/0/50%)",
+        playback_mpv.build_mpv_lavfi([(1, 1.0), (2, 0.0), (3, 0.5)], None),
+    )
+    dump(
+        "mpv lavfi: single track + crop chain",
+        playback_mpv.build_mpv_lavfi([(1, 1.0)], "crop=1280:720:100:50,scale=1920:1080"),
+    )
+    cmd = playback_mpv.build_mpv_cmd("{MPV}", 123456, r"\\.\pipe\cliptoolbox-mpv-0-1")
+    dump("mpv spawn cmd (wid 123456)", cmd)
+
+
+def make_track(*keyframes: tuple) -> motion.CropTrack:
+    track = motion.CropTrack()
+    track.enabled = True
+    for kf in keyframes:
+        track.keyframes = track.keyframes + (motion.CropKeyframe(*kf),)
+    track.keyframes = tuple(sorted(track.keyframes, key=lambda k: k.t))
+    return track
+
+
+def dump_motion():
+    """Keyframed crop/zoom (motion) golden cases. Appended so the pre-existing
+    output above stays byte-identical."""
+    SRC_W, SRC_H = 1920, 1080
+
+    identity = make_track((0.0, 0.0, 0.0, 1920.0, 1080.0))
+    dump(
+        "motion chain: identity full-frame -> None",
+        motion.build_motion_chain(identity, SRC_W, SRC_H, 1920, 1080),
+    )
+
+    disabled = make_track((0.0, 100.0, 50.0, 640.0, 360.0))
+    disabled.enabled = False
+    dump(
+        "motion chain: disabled track -> None",
+        motion.build_motion_chain(disabled, SRC_W, SRC_H, 1920, 1080),
+    )
+
+    static = make_track((0.0, 100.0, 50.0, 1280.0, 720.0))
+    dump(
+        "motion chain: tier1 static crop, out 1920x1080",
+        motion.build_motion_chain(static, SRC_W, SRC_H, 1920, 1080),
+    )
+
+    pan = make_track(
+        (0.0, 0.0, 0.0, 640.0, 360.0),
+        (5.0, 1280.0, 720.0, 640.0, 360.0),
+    )
+    dump(
+        "motion chain: tier2 pan (constant size), out 1920x1080",
+        motion.build_motion_chain(pan, SRC_W, SRC_H, 1920, 1080),
+    )
+
+    zoom = make_track(
+        (0.0, 0.0, 0.0, 1920.0, 1080.0),
+        (5.0, 0.0, 0.0, 640.0, 360.0),
+        (9.0, 1280.0, 540.0, 640.0, 540.0),
+    )
+    dump(
+        "motion chain: tier3 zoom/stretch, out 1920x1080, no offset",
+        motion.build_motion_chain(zoom, SRC_W, SRC_H, 1920, 1080),
+    )
+    dump(
+        "motion chain: tier3 zoom/stretch, preview fit 674x380, offset 3.0, bilinear",
+        motion.build_motion_chain(zoom, SRC_W, SRC_H, 674, 380, time_offset=3.0, scale_flags="bilinear"),
+    )
+
+    dump(
+        "motion rect_at zoom: t=-1 / 0 / 2.5 / 5 / 7 / 9 / 12",
+        [zoom.rect_at(t) for t in (-1.0, 0.0, 2.5, 5.0, 7.0, 9.0, 12.0)],
+    )
+
+    dump(
+        "still crop vf: rect (640.4, 270.6, 641.2, 451.9) src 1920x1080 out 1920x1080",
+        motion.build_still_crop_vf((640.4, 270.6, 641.2, 451.9), SRC_W, SRC_H, 1920, 1080),
+    )
+
+    dump(
+        "fit_size: 1920x1080 / 1080x1920 / 1280x719 into 676x380 box",
+        [
+            motion.fit_size(1920, 1080, 676, 380),
+            motion.fit_size(1080, 1920, 676, 380),
+            motion.fit_size(1280, 719, 676, 380),
+        ],
+    )
+    dump(
+        "clamp_rect: oversize / negative / min-size on 1920x1080, min 16",
+        [
+            motion.clamp_rect(-10.0, -10.0, 5000.0, 5000.0, 1920, 1080, 16),
+            motion.clamp_rect(1900.0, 1070.0, 8.0, 8.0, 1920, 1080, 16),
+        ],
+    )
+
+    audio = filters.build_audio_filter([(1, 1.0)])
+    static_vf = motion.build_motion_chain(static, SRC_W, SRC_H, 1920, 1080) + ",setsar=1"
+    dump(
+        "standard export with crop video_filter, trim 5->20, mp4 (NVENC re-encode)",
+        mask(commands.build_standard_export_command(INPUT, audio, OUTPUT_MP4, 5.0, 20.0, static_vf)),
+    )
+    dump(
+        "standard export with crop video_filter, no trim, mkv (no hvc1 tag)",
+        mask(commands.build_standard_export_command(INPUT, audio, OUTPUT_MKV, None, None, static_vf)),
+    )
+    prefilter = motion.build_motion_chain(static, SRC_W, SRC_H, 1920, 1080)
+    ccmd, *_ = commands.build_compressed_export_command(
+        INPUT, audio, OUTPUT_MP4, 4.2, 11.8, 9.99, 7.6, "720p", prefilter
+    )
+    dump("compressed export with crop video_prefilter, 9.99 MB @720p, mp4", mask(ccmd))
+
+    preview_chain = motion.build_motion_chain(
+        pan, SRC_W, SRC_H, 674, 380, time_offset=12.0, scale_flags="bilinear"
+    )
+    dump(
+        "playback filter with crop video_chain (pan, fit 674x380, offset 12.0)",
+        playback.build_playback_filter([(1, 1.0)], 674, 380, video_chain=preview_chain),
+    )
+    dump(
+        "paused-frame extract cmd @8.0s with static crop vf",
+        mask(playback.build_frame_extract_cmd(INPUT, 8.0, r"C:\temp\frame.jpg", static_vf)),
+    )
 
 
 if __name__ == "__main__":
