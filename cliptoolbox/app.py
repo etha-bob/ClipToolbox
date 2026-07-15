@@ -808,22 +808,26 @@ class HaloApp:
         self.update_legend()
 
     def update_file_strip(self):
-        """The command strip follows the loaded clip: the ✕ chip is packed
-        only while one is loaded, and EXPORT is disabled without one (or
-        while an export runs)."""
+        """The command strip follows the loaded clip: LOAD CLIP and the ✕
+        chip are packed only while one is loaded (the empty state loads via
+        the hero / recents grid instead). EXPORT lives in the editor body
+        and is disabled without a clip or while an export runs."""
         if not hasattr(self, "close_clip_button"):
             return
-        if self.video_path:
-            if not self.close_clip_button.winfo_ismapped():
-                self.close_clip_button.pack(side=tk.LEFT, padx=(px(8), 0))
-        else:
-            if self.close_clip_button.winfo_ismapped():
-                self.close_clip_button.pack_forget()
+        loaded = bool(self.video_path)
 
-        if self.is_exporting or not self.video_path:
-            self.export_button.config(state=tk.DISABLED)
-        else:
-            self.export_button.config(state=tk.NORMAL)
+        if loaded and not self.load_button.winfo_ismapped():
+            self.load_button.pack(side=tk.LEFT)
+        elif not loaded and self.load_button.winfo_ismapped():
+            self.load_button.pack_forget()
+
+        if loaded and not self.close_clip_button.winfo_ismapped():
+            self.close_clip_button.pack(side=tk.LEFT, padx=(px(8), 0))
+        elif not loaded and self.close_clip_button.winfo_ismapped():
+            self.close_clip_button.pack_forget()
+
+        self.export_button.config(
+            state=tk.DISABLED if (self.is_exporting or not loaded) else tk.NORMAL)
 
     def update_export_actions(self):
         """Show the maroon CANCEL EXPORT button only while exporting."""

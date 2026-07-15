@@ -352,6 +352,25 @@ def build(app):
     app.compression_target_var.trace_add("write", lambda *a: app.update_compression_estimate())
 
     # ------------------------------------------------------------------
+    # Left: EXPORT — the terminal action, pinned to the bottom of the
+    # column right under the compression settings it depends on.
+    # ------------------------------------------------------------------
+    export_row = tk.Frame(left, bg=theme.BG_DEEP)
+    export_row.pack(side=tk.BOTTOM, fill=tk.X, pady=(px(12), 0))
+
+    app.export_button = HaloButton(
+        export_row, text="EXPORT CLIP", variant="primary",
+        command=app.export_video_dialog, width=px(200),
+    )
+    app.export_button.pack(side=tk.LEFT)
+
+    app.stop_export_button = HaloButton(
+        export_row, text="CANCEL EXPORT", variant="danger",
+        command=app.cancel_export, height=px(theme.BTN_PRIMARY_H),
+    )
+    # Packed beside EXPORT by update_export_actions() only while exporting.
+
+    # ------------------------------------------------------------------
     # Right: audio-track roster (lobby player list)
     # ------------------------------------------------------------------
     roster = HaloPanel(right)

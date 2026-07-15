@@ -288,12 +288,12 @@ def build(app):
                                font=theme.font_body(12), fill=theme.ERR_RED,
                                anchor="center")
             canvas.create_text(round(width * 0.5), drop_y + px(24),
-                               text="CTRL+O TO BROWSE",
+                               text="DOUBLE-CLICK OR CTRL+O TO BROWSE",
                                font=theme.font_title(15), fill=theme.TEXT,
                                anchor="center")
         else:
             canvas.create_text(round(width * 0.5), drop_y,
-                               text="DROP A VIDEO ANYWHERE   ·   CTRL+O TO BROWSE",
+                               text="DROP A VIDEO  ·  DOUBLE-CLICK  ·  CTRL+O TO BROWSE",
                                font=theme.font_title(15), fill=theme.TEXT,
                                anchor="center")
             canvas.create_text(round(width * 0.5), drop_y + px(26),
@@ -327,6 +327,10 @@ def build(app):
                                max(2, canvas.winfo_height())))
 
     canvas.bind("<Configure>", schedule_render)
+    # Double-clicking the hero background opens the file browser (the cards
+    # windowed onto the canvas handle their own single-click load, so this
+    # only fires on the empty backdrop / drop-zone text).
+    canvas.bind("<Double-Button-1>", lambda e: app.load_video_dialog())
     app.dnd_hint_var.trace_add("write", schedule_render)
 
     def refresh():

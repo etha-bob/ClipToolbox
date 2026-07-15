@@ -41,26 +41,17 @@ def build(app):
     strip.grid(row=0, column=0, sticky="ew", padx=px(14), pady=(px(6), px(2)))
     strip.columnconfigure(1, weight=1)
 
-    actions = tk.Frame(strip, bg=theme.BG_DEEP)
-    actions.grid(row=0, column=0, sticky="w")
+    app.strip_actions = tk.Frame(strip, bg=theme.BG_DEEP)
+    app.strip_actions.grid(row=0, column=0, sticky="w")
 
+    # LOAD CLIP is editor-only — packed by update_file_strip() while a clip
+    # is loaded (to swap clips). On the empty state you load via the hero
+    # drop-zone / double-click / recents grid, so the strip stays clean.
+    # EXPORT lives at the bottom of the editor body (see workspace.py).
     app.load_button = HaloButton(
-        actions, text="LOAD CLIP", command=app.load_video_dialog,
+        app.strip_actions, text="LOAD CLIP", command=app.load_video_dialog,
         height=px(theme.BTN_H),
     )
-    app.load_button.pack(side=tk.LEFT)
-
-    app.export_button = HaloButton(
-        actions, text="EXPORT CLIP", variant="primary",
-        command=app.export_video_dialog, width=px(170), height=px(theme.BTN_H),
-    )
-    app.export_button.pack(side=tk.LEFT, padx=(px(8), 0))
-
-    app.stop_export_button = HaloButton(
-        actions, text="CANCEL EXPORT", variant="danger",
-        command=app.cancel_export, height=px(theme.BTN_H),
-    )
-    # Packed by update_export_actions() only while an export runs.
 
     # Middle cluster: the loaded clip's name, middle-ellipsized like the
     # status line so long names never crowd their neighbours, + the ✕ chip.

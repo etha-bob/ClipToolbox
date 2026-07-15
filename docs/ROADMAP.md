@@ -104,6 +104,11 @@ XL items get a stage checklist added under their row when work starts (plan-mode
   ~3 s settle before asserting post-probe state. Fixed in passing: duplicated `main()` block at
   the bottom of app.py. `HaloMenuItem` is now app-unused (kept as a gallery/widgets catalog
   entry). No new deps.
+  Post-review tweaks (Ethan): EXPORT CLIP moved off the command strip to a prominent primary
+  button pinned at the bottom of the editor's left column (under the compression settings it
+  depends on); LOAD CLIP is now editor-only too, so the empty state's strip is just filename +
+  status + SETTINGS while the hero owns loading (drop / double-click / Ctrl+O / recents); added
+  double-click-anywhere-on-the-hero to browse. Verified 16/16 both skins.
 - **2026-07-15** — Shipped B3 (command palette) on `feature/command-palette` (stacked on the
   unmerged `feature/q-batch-quick-wins` so the roadmap stays coherent; rebases onto main once the
   Q-batch merges). New `ui/commands.py` is a single registry of ~28 actions — each with a key hint,
