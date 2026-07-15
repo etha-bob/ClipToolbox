@@ -50,6 +50,7 @@ from cliptoolbox.core import engine_factory
 from cliptoolbox.core import mediainfo as core_mediainfo
 from cliptoolbox.core import playback as core_playback
 from cliptoolbox.core import probe as core_probe
+from cliptoolbox.core.render_queue import RenderQueue
 from cliptoolbox.core.paths import (
     FFMPEG,
     FFMPEG_BIN_DIR,
@@ -194,6 +195,10 @@ class HaloApp:
         self.recent_clips: list[str] = list(self.settings.recent_clips)
         self.last_open_dir: str | None = self.settings.last_open_dir
         self.thumbnail_cache: dict = {}  # cache-path -> ImageTk.PhotoImage (ref holder)
+        # Bounded worker pool for short-lived media jobs (thumbnails now; the
+        # B1 filmstrip/waveforms and B4 export drawer later). Results marshal
+        # back to the Tk thread via self.ui.
+        self.render_queue = RenderQueue(self.ui)
 
         self.build_ui()
         self.crop = CropController(self)
@@ -331,6 +336,10 @@ class HaloApp:
         self.update_legend()
 
     def show_editor(self):
+        # The recents grid is gone once the editor is up, so any still-pending
+        # thumbnail extractions are wasted work — drop them and free the pool
+        # for the incoming clip.
+        self.render_queue.cancel_group("thumbnails")
         self.workspace_frame.lift()
         self.update_legend()
 
@@ -677,7 +686,9 @@ class HaloApp:
             on_ready(existing)
             return
 
-        def worker():
+        def work(token):
+            # Runs on a render-queue worker: extract one frame to cache_path.
+            # Only produces the PNG — the Tk PhotoImage is built in done().
             try:
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
                 cmd = [
@@ -690,6 +701,7 @@ class HaloApp:
                     cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     creationflags=CREATE_NO_WINDOW,
                 )
+                token.attach_process(process)  # so cancel_group can kill it
                 assign_process_to_cleanup_job(process)
                 try:
                     process.wait(timeout=6)
@@ -697,9 +709,17 @@ class HaloApp:
                     process.kill()
             except Exception:
                 pass
-            self.ui(lambda: on_ready(self._load_thumbnail(cache_path)))
+            return cache_path
 
-        threading.Thread(target=worker, daemon=True).start()
+        def done(cache_path):
+            on_ready(self._load_thumbnail(cache_path))
+
+        # Dedup on the cache path: two cards wanting the same thumb spawn
+        # ffmpeg once and both get the result. Grouped so a clip load can
+        # cancel any still-pending thumbnails (the grid is gone by then).
+        self.render_queue.submit(
+            str(cache_path), work, done, group="thumbnails",
+        )
 
     def enable_drag_and_drop(self):
         if not DND_AVAILABLE:
@@ -3048,6 +3068,7 @@ class HaloApp:
 
         self.persist_video_session()
         self.save_settings()
+        self.render_queue.shutdown()
         self.playback.shutdown()
         self.root.destroy()
 

@@ -7,10 +7,10 @@ Single source of truth for planned UX/feature work. Seeded from the 2026-07-12 u
 sets items `in-progress`/`done` as it goes, appends a Session log entry, and commits roadmap updates
 in the same commit as the work. Newly discovered work gets a new row, not silent scope creep.
 
-**Now / Next:** T1, the Q1–Q8 batch, B3 (command palette), and B2 (one adaptive screen — pulled
-forward by Ethan ahead of B0) are done. Suggested next is B0 (background render queue — the B1/B4
-prerequisite), then B1 → B4 per the bold sequencing; M1 (export progress) remains the
-highest-value standalone alternative.
+**Now / Next:** T1, the Q1–Q9 batch, B3 (command palette), B2 (one adaptive screen — pulled
+forward by Ethan ahead of B0), and B0 (background render queue) are done. B1 (real timeline) and
+B4 (export drawer) are now unblocked; suggested next is B1 per the bold sequencing. M1 (export
+progress) remains the highest-value standalone alternative.
 
 Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 
@@ -55,7 +55,7 @@ Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 
 | ID | Item | Absorbs | Status |
 |----|------|---------|--------|
-| B0 | Background render queue utility (thumbnails/waveforms off the Tk thread via `ui()` marshaling) — prerequisite for B1/B4 | — | todo |
+| B0 | Background render queue utility (thumbnails/waveforms off the Tk thread via `ui()` marshaling) — prerequisite for B1/B4 | — | done 2026-07-15 |
 | B1 | Real timeline: filmstrip lane, per-track waveforms, fat trim regions, always-visible keyframe lane, progress painted on the strip | F5 F6 F13, M1 M4, most of F7 | todo |
 | B2 | One adaptive screen (landing becomes the workspace empty state; command strip shows filename) | F4 F12, Q1 M3 | done 2026-07-15 |
 | B3 | Command palette Ctrl+K (every action + hidden gestures, searchable, key hints) | F7, M2 | done 2026-07-15 |
@@ -77,11 +77,39 @@ filename+✕ | status·SETTINGS with QUIT dropped, recents grid gets arrows/Ente
       ✕ chip + SETTINGS join `set_busy` lockdown
 - [x] S5 Grid keyboard nav (arrows/Enter/Delete) + legend states + roadmap close-out (M3 dropped)
 
+**B0 stage checklist** (done 2026-07-15):
+
+- [x] S1 `core/render_queue.py`: `RenderQueue` + `CancelToken` (bounded daemon pool,
+      PriorityQueue, dedup/coalesce by key, `cancel_group`, `shutdown`). Pure Python — no Tk.
+- [x] S2 Migrated `get_recent_thumbnail` onto the queue; constructed `render_queue` in
+      `__init__`, `shutdown()` in `on_close`, cancel `"thumbnails"` on clip load (`show_editor`).
+- [x] S3 Verified (pure-Python queue test, app-flow driver both skins, gallery both skins) + close-out.
+
 Bold sequencing if chosen: B3 → B0 → B1 → B4 → B2 → B5/B6 (B2 pulled forward 2026-07-15 by Ethan).
 XL items get a stage checklist added under their row when work starts (plan-mode design first).
 
 ## Session log (newest first)
 
+- **2026-07-15** — B0: added `cliptoolbox/core/render_queue.py`, a pure-Python `RenderQueue`
+  (bounded daemon-worker pool draining a `PriorityQueue`) + `CancelToken`. Results marshal to the
+  Tk thread via a caller-supplied `marshal` (`HaloApp.ui`), so the module never touches Tk and
+  workers only ever produce plain data — the thumbnail's `ImageTk.PhotoImage` is still built on the
+  Tk thread inside `on_done`, unchanged. `submit(key, work, on_done, *, group, priority, on_error)`
+  dedups/coalesces identical in-flight work by `key`, `cancel_group()` drops pending jobs and kills
+  running subprocesses (via the token's attached `Popen`), `shutdown()` cancels all and sentinels
+  the workers out. Migrated `get_recent_thumbnail` off its raw per-call `threading.Thread` onto the
+  queue (group `"thumbnails"`, keyed on the cache path); `show_editor` cancels that group since the
+  recents grid is gone once a clip loads; `on_close` shuts the queue down. No user-visible change —
+  this is the B1/B4 prerequisite. Verified: a 10-assertion pure-Python queue test (bounded
+  concurrency ≤ workers, dedup runs work once + fans out to all waiters, priority ordering,
+  `cancel_group` drops-pending + terminates a running fake process, clean shutdown with no
+  post-shutdown callbacks); an in-process `HaloApp` driver on both skins (4 synthetic clips seeded
+  into recents → all thumbnails render through the queue, screenshot-confirmed; loading a clip
+  cancels `"thumbnails"` without error and workers survive); gallery both skins. Snapshotted/restored
+  `config.json` + `sessions.json` around the run. No new deps. Lesson: closed a dedup/retire race by
+  snapshotting a job's coalesced callbacks under the lock at retire time — a same-key `submit` that
+  lands after `work()` finishes either lands before the registry pop (its callback is in the
+  snapshot) or after it (it sees no live job and enqueues fresh), never dropped.
 - **2026-07-15** — Q9: ported the timestamp watermark from an older `app.py` fork. Recording time
   is pulled from the source filename (six date/time parts, e.g. `2025 04 06 02 06 50`) and burned
   bottom-left via `drawtext`, ramping in then fading out after a chosen visible duration (default
