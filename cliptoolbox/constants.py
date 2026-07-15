@@ -56,6 +56,11 @@ COMPRESSION_BUDGET_EPSILON_MB = 0.05
 COMPRESSION_DEFAULT_AUDIO_KBPS = 64
 DEFAULT_COMPRESSION_RESOLUTION = "1080p"
 
+# Timestamp watermark: pulls the recording time out of the source filename and
+# burns it bottom-left, fading out after a chosen visible duration.
+DEFAULT_TIMESTAMP_WATERMARK_DURATION_MS = 3000
+TIMESTAMP_WATERMARK_FADE_MS = 500
+
 # Keyframed crop/zoom ("pan/crop"). A crop transform forces a video
 # re-encode (the standard export path is otherwise stream-copy), so the
 # standard path switches to NVENC constant-quality when a motion filter is

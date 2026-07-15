@@ -36,6 +36,7 @@ from cliptoolbox.constants import (
     CREATE_NO_WINDOW,
     DEFAULT_COMPRESSION_RESOLUTION,
     DEFAULT_COMPRESSION_TARGET_MB,
+    DEFAULT_TIMESTAMP_WATERMARK_DURATION_MS,
     IS_WINDOWS,
     PREVIEW_HEIGHT,
     PREVIEW_WIDTH,
@@ -153,6 +154,11 @@ class HaloApp:
             value=self.settings.compression_target_mb or f"{DEFAULT_COMPRESSION_TARGET_MB:g}")
         self.compression_resolution_var = tk.StringVar(
             value=self.settings.compression_resolution or DEFAULT_COMPRESSION_RESOLUTION)
+
+        self.timestamp_watermark_enabled_var = tk.BooleanVar(value=False)
+        self.timestamp_watermark_duration_var = tk.StringVar(
+            value=str(DEFAULT_TIMESTAMP_WATERMARK_DURATION_MS))
+
         self.volume_log_after_ids: dict[int, str] = {}
 
         self.export_thread: threading.Thread | None = None
@@ -789,6 +795,10 @@ class HaloApp:
             self.compression_target_entry.config(state=export_state)
         if hasattr(self, "compression_resolution_combo"):
             self.compression_resolution_combo.config(state="readonly" if not self.is_exporting else tk.DISABLED)
+        if hasattr(self, "timestamp_watermark_checkbox"):
+            self.timestamp_watermark_checkbox.config(state=export_state)
+        if hasattr(self, "timestamp_watermark_duration_entry"):
+            self.timestamp_watermark_duration_entry.config(state=export_state)
 
         self.update_file_strip()
 
@@ -1702,6 +1712,49 @@ class HaloApp:
             return None
 
         return core_commands.parse_target_mb(self.compression_target_var.get())
+
+    def on_timestamp_watermark_toggle(self):
+        if not hasattr(self, "timestamp_watermark_options_frame"):
+            return
+
+        if self.timestamp_watermark_enabled_var.get():
+            self.timestamp_watermark_options_frame.pack(side=tk.LEFT, padx=(px(10), 0))
+            self.log("Timestamp watermark enabled for export.")
+        else:
+            self.timestamp_watermark_options_frame.pack_forget()
+            self.log("Timestamp watermark disabled.")
+
+    def get_timestamp_watermark_settings(self) -> tuple[str, float] | None:
+        """Return (timestamp_text, duration_seconds) for the watermark, or None.
+
+        Raises ValueError with a user-facing message when enabled but the
+        filename has no recognizable recording time or the duration is invalid.
+        """
+        if not self.timestamp_watermark_enabled_var.get():
+            return None
+
+        timestamp_text = core_filters.extract_recording_timestamp(
+            Path(self.video_path or "").stem)
+        if timestamp_text is None:
+            raise ValueError(
+                "No recording timestamp was found in the filename. Expected six date/time "
+                "parts like 2025 04 06 02 06 50."
+            )
+
+        raw_duration = (
+            self.timestamp_watermark_duration_var.get().strip().lower().replace("ms", "").strip()
+        )
+        try:
+            duration_ms = int(raw_duration)
+        except Exception as exc:
+            raise ValueError(
+                "Watermark duration must be a whole number of milliseconds, like 3000."
+            ) from exc
+
+        if duration_ms <= 0:
+            raise ValueError("Watermark duration must be larger than 0 milliseconds.")
+
+        return timestamp_text, duration_ms / 1000.0
 
     def update_compression_estimate(self):
         """Live bitrate estimate on the compression card (reuses core math)."""
@@ -2672,6 +2725,12 @@ class HaloApp:
             else None
         )
 
+        try:
+            timestamp_watermark = self.get_timestamp_watermark_settings()
+        except ValueError as exc:
+            messagebox.showwarning("Invalid timestamp watermark", str(exc))
+            return
+
         source = Path(self.video_path)
 
         OUTPUTS_DIR.mkdir(exist_ok=True)
@@ -2682,14 +2741,34 @@ class HaloApp:
         crop_prefilter = self.crop.export_prefilter(trim_start) if self.crop else None
         crop_active = crop_video_filter is not None or crop_prefilter is not None
 
+        # Burn the timestamp on top of any crop transform. In the standard path
+        # the watermark rides the -vf chain (crop or, alone, forcing a re-encode);
+        # in the compressed path it rides the prefilter that runs before scale, so
+        # drawtext's h-relative sizing stays proportional after the downscale.
+        watermark_filter = (
+            core_filters.build_timestamp_watermark_filter(*timestamp_watermark)
+            if timestamp_watermark is not None
+            else None
+        )
+        if watermark_filter:
+            crop_video_filter = (
+                f"{crop_video_filter},{watermark_filter}"
+                if crop_video_filter else watermark_filter
+            )
+            crop_prefilter = (
+                f"{crop_prefilter},{watermark_filter}"
+                if crop_prefilter else watermark_filter
+            )
+
         trim_suffix = "_trimmed" if (trim_start is not None or trim_end is not None) else ""
         crop_suffix = "_crop" if crop_active else ""
+        watermark_suffix = "_timestamp" if timestamp_watermark is not None else ""
         compression_suffix = (
             f"_compressed_{compression_target_mb:g}mb_{compression_resolution_label}"
             if compression_target_mb is not None
             else ""
         )
-        default_output = OUTPUTS_DIR / f"{source.stem}_mixed_audio{trim_suffix}{crop_suffix}{compression_suffix}.mp4"
+        default_output = OUTPUTS_DIR / f"{source.stem}_mixed_audio{trim_suffix}{crop_suffix}{watermark_suffix}{compression_suffix}.mp4"
 
         output_path = filedialog.asksaveasfilename(
             title="Save merged video as",
@@ -2754,6 +2833,13 @@ class HaloApp:
             trim_start_text = self.format_seconds(trim_start) if trim_start is not None else "start"
             trim_end_text = self.format_seconds(trim_end) if trim_end is not None else "end"
             self.log(f"Trim range: {trim_start_text} to {trim_end_text}.")
+
+        if timestamp_watermark is not None:
+            timestamp_text, watermark_duration_seconds = timestamp_watermark
+            self.log(
+                f"Timestamp watermark: {timestamp_text}, bottom-left, "
+                f"fades out after {int(round(watermark_duration_seconds * 1000))} ms."
+            )
 
         self.log(f"Output path: {output_path_obj}")
 

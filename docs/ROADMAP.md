@@ -32,6 +32,7 @@ Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 | Q6 | Reset leaked trim state on clip load | F10 | done 2026-07-15 |
 | Q7 | Supersede stale success toasts when a new export starts | F11 | done 2026-07-15 |
 | Q8 | Roster RESET leaves stale per-track % labels (`HaloSlider.set()` doesn't fire its command; discovered 2026-07-15) | — | done 2026-07-15 |
+| Q9 | Timestamp watermark: burn the filename's recording time bottom-left with fade-out (ported from an older fork; discovered 2026-07-15) | — | done 2026-07-15 |
 
 ## Incremental track — medium (M)
 
@@ -81,6 +82,17 @@ XL items get a stage checklist added under their row when work starts (plan-mode
 
 ## Session log (newest first)
 
+- **2026-07-15** — Q9: ported the timestamp watermark from an older `app.py` fork. Recording time
+  is pulled from the source filename (six date/time parts, e.g. `2025 04 06 02 06 50`) and burned
+  bottom-left via `drawtext`, ramping in then fading out after a chosen visible duration (default
+  3000 ms, 500 ms fade). Kept the fork's filter math verbatim in
+  `core/filters.py` (`extract_recording_timestamp`, `build_timestamp_watermark_filter`); wired it
+  through the existing crop `video_filter`/`video_prefilter` plumbing rather than adding an export
+  arg — watermark-alone forces the standard path's NVENC re-encode, and riding the compressed
+  path's prefilter (before scale) keeps drawtext's `h`-relative sizing proportional post-downscale.
+  New Compression-card row (checkbox + fade-ms entry), locked during export. Verified: real
+  bundled-ffmpeg render + frame grab (timestamp legible bottom-left), live `HaloApp` build
+  exercising the enable/no-timestamp/bad-duration paths, gallery both skins. No new deps.
 - **2026-07-15** — Shipped B2 (one adaptive screen) on `feature/adaptive-single-screen` (stacked
   on the unmerged `feature/command-palette`). The landing/workspace split is gone: the editor is
   the only screen and a new full-body hero (`ui/views/empty_state.py`) lifts over it when no clip

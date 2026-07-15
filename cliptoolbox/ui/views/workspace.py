@@ -352,6 +352,37 @@ def build(app):
     app.compression_target_var.trace_add("write", lambda *a: app.update_compression_estimate())
 
     # ------------------------------------------------------------------
+    # Left: timestamp watermark row (burns the filename's recording time
+    # bottom-left, fading out). Lives under compression since both are
+    # export-only options.
+    # ------------------------------------------------------------------
+    wm_row = tk.Frame(card.body, bg=theme.PANEL_FILL)
+    wm_row.pack(fill=tk.X, pady=(px(8), 0))
+
+    app.timestamp_watermark_checkbox = HaloCheckbox(
+        wm_row, text="TIMESTAMP WATERMARK",
+        variable=app.timestamp_watermark_enabled_var,
+        command=app.on_timestamp_watermark_toggle, behind=theme.PANEL_FILL,
+        font=theme.font_body(13),
+    )
+    app.timestamp_watermark_checkbox.pack(side=tk.LEFT)
+
+    app.timestamp_watermark_options_frame = tk.Frame(wm_row, bg=theme.PANEL_FILL)
+    app.timestamp_watermark_options_frame.pack(side=tk.LEFT, padx=(px(10), 0))
+
+    tk.Label(app.timestamp_watermark_options_frame, text="Fade out after:",
+             font=theme.font_small(), bg=theme.PANEL_FILL, fg=theme.TEXT).pack(side=tk.LEFT)
+    app.timestamp_watermark_duration_entry = HaloEntry(
+        app.timestamp_watermark_options_frame,
+        textvariable=app.timestamp_watermark_duration_var, width=6,
+    )
+    app.timestamp_watermark_duration_entry.pack(side=tk.LEFT, padx=(px(6), px(4)))
+    tk.Label(app.timestamp_watermark_options_frame, text="ms", font=theme.font_small(),
+             bg=theme.PANEL_FILL, fg=theme.TEXT_DIM).pack(side=tk.LEFT)
+
+    app.timestamp_watermark_options_frame.pack_forget()
+
+    # ------------------------------------------------------------------
     # Left: EXPORT — the terminal action, pinned to the bottom of the
     # column right under the compression settings it depends on.
     # ------------------------------------------------------------------
@@ -450,5 +481,6 @@ def build(app):
         (app.reset_volumes_button, "Reset every track to 100% and clear mute/solo"),
         (app.compression_target_entry, "Target size in MB (Windows/Discord MiB)"),
         (app.compression_resolution_combo, "Cap the compressed video resolution"),
+        (app.timestamp_watermark_duration_entry, "How long the timestamp stays fully visible before fading (ms)"),
     ):
         Tooltip(widget, tip)
