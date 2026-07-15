@@ -49,35 +49,8 @@ def build(app):
     right.rowconfigure(1, weight=1)
 
     # ------------------------------------------------------------------
-    # Left: actions (START GAME homage)
-    # ------------------------------------------------------------------
-    actions = tk.Frame(left, bg=theme.BG_DEEP)
-    actions.pack(fill=tk.X, pady=(0, px(8)))
-
-    app.export_button = HaloButton(
-        actions, text="EXPORT CLIP", variant="primary",
-        command=app.export_video_dialog, width=px(190),
-    )
-    app.export_button.pack(side=tk.LEFT)
-
-    app.stop_export_button = HaloButton(
-        actions, text="CANCEL EXPORT", variant="danger",
-        command=app.cancel_export, height=px(theme.BTN_PRIMARY_H),
-    )
-    # Packed by update_export_actions() only while an export runs.
-
-    app.back_button = HaloButton(
-        actions, text="✕ CLOSE CLIP", command=app.close_clip,
-    )
-    app.back_button.pack(side=tk.RIGHT)
-
-    app.load_button = HaloButton(
-        actions, text="LOAD CLIP", command=app.load_video_dialog,
-    )
-    app.load_button.pack(side=tk.RIGHT, padx=(0, px(8)))
-
-    # ------------------------------------------------------------------
     # Left: preview bezel with the real embed target frame
+    # (LOAD/EXPORT/CANCEL live in the shell's command strip since B2.)
     # ------------------------------------------------------------------
     bezel = HaloPanel(left, fill=theme.WELL_FILL, border=theme.PANEL_BORDER, pad=px(8))
     bezel.pack(fill=tk.X)
@@ -460,6 +433,3 @@ def build(app):
         (app.compression_resolution_combo, "Cap the compressed video resolution"),
     ):
         Tooltip(widget, tip)
-
-    # Misc compatibility vars.
-    app.dnd_hint_var = tk.StringVar(value="")

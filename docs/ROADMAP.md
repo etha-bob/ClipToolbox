@@ -72,7 +72,7 @@ filename+✕ | status·SETTINGS with QUIT dropped, recents grid gets arrows/Ente
       right-click menu, selection ring) + full-body hero (wordmark, drop-zone, relocated build line) + gallery card
 - [x] S3 The flip: `show_empty_state`/`show_editor`, `close_clip()`/`reset_clip_state()` with probe
       gates, `active_screen` removed everywhere, palette `file.close` (Ctrl+W), landing.py deleted
-- [ ] S4 Command strip in shell row 0; workspace actions row removed; EXPORT disabled w/o clip;
+- [x] S4 Command strip in shell row 0; workspace actions row removed; EXPORT disabled w/o clip;
       ✕ chip + SETTINGS join `set_busy` lockdown
 - [ ] S5 Grid keyboard nav (arrows/Enter/Delete) + legend states + roadmap close-out (M3 dropped)
 

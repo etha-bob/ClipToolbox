@@ -237,6 +237,7 @@ class HaloApp:
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.bind_shortcuts()
         self.refresh_playback_button_state()
+        self.update_file_strip()
 
         # Restore persisted compression state without the toggle log lines.
         if self.compress_enabled_var.get() and hasattr(self, "compression_options_frame"):
@@ -733,8 +734,12 @@ class HaloApp:
         state = tk.DISABLED if busy else tk.NORMAL
 
         self.load_button.config(state=state)
-        if hasattr(self, "back_button"):
-            self.back_button.config(state=tk.DISABLED if self.is_exporting else tk.NORMAL)
+
+        # Closing a clip / opening Settings stays allowed during playback;
+        # only a running export locks them (matching the Ctrl+W/Ctrl+, guards).
+        export_lock = tk.DISABLED if self.is_exporting else tk.NORMAL
+        self.close_clip_button.config(state=export_lock)
+        self.settings_button.config(state=export_lock)
 
         # Compression settings only affect export, so keep them editable during
         # preview/playback. Lock them only while an export is actually running.
@@ -747,10 +752,7 @@ class HaloApp:
         if hasattr(self, "compression_resolution_combo"):
             self.compression_resolution_combo.config(state="readonly" if not self.is_exporting else tk.DISABLED)
 
-        if self.is_exporting:
-            self.export_button.config(state=tk.DISABLED)
-        else:
-            self.export_button.config(state=tk.NORMAL)
+        self.update_file_strip()
 
         self.refresh_playback_button_state()
 
@@ -766,6 +768,24 @@ class HaloApp:
 
         self.update_export_actions()
         self.update_legend()
+
+    def update_file_strip(self):
+        """The command strip follows the loaded clip: the ✕ chip is packed
+        only while one is loaded, and EXPORT is disabled without one (or
+        while an export runs)."""
+        if not hasattr(self, "close_clip_button"):
+            return
+        if self.video_path:
+            if not self.close_clip_button.winfo_ismapped():
+                self.close_clip_button.pack(side=tk.LEFT, padx=(px(8), 0))
+        else:
+            if self.close_clip_button.winfo_ismapped():
+                self.close_clip_button.pack_forget()
+
+        if self.is_exporting or not self.video_path:
+            self.export_button.config(state=tk.DISABLED)
+        else:
+            self.export_button.config(state=tk.NORMAL)
 
     def update_export_actions(self):
         """Show the maroon CANCEL EXPORT button only while exporting."""
@@ -912,6 +932,7 @@ class HaloApp:
         self.playback.configure_media(self.video_path, None)
         self.file_label_var.set(path_obj.name)
         self.update_window_title(path_obj.name)
+        self.update_file_strip()
         self.clear_tracks()
         self.set_seek_range(0)
         # Trim state must not leak into the next clip: drop the enabled toggle
@@ -1056,6 +1077,7 @@ class HaloApp:
         self.preview_placeholder.place(relx=0.5, rely=0.5, anchor="center")
         self.file_label_var.set("No video loaded")
         self.update_window_title()
+        self.update_file_strip()
         self.refresh_playback_button_state()
 
     def close_clip(self):
