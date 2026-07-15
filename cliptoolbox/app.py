@@ -114,6 +114,13 @@ class HaloApp:
         self.root.after(15, self._pump_ui_queue)
 
         self.video_path: str | None = None
+        # Each load_video bumps the token; probe results and the auto-preview
+        # timer carry it and are dropped when stale, so closing or replacing
+        # a clip mid-probe can't apply the old clip's results. _probe_done
+        # marks that the current clip's probe finished — persisting a session
+        # before that would capture (and store) a default state.
+        self._load_token = 0
+        self._probe_done = False
         # Saved per-video setup for the clip being loaded; applied in
         # after_probe (and read by add_track_row) once probing finishes.
         self._session_to_restore: dict | None = None
@@ -893,6 +900,10 @@ class HaloApp:
         self.persist_video_session()
         self._session_to_restore = video_sessions.load(str(path_obj))
 
+        self._load_token += 1
+        token = self._load_token
+        self._probe_done = False
+
         self.video_path = str(path_obj)
         self.video_fps = None
         self.video_dimensions = None
@@ -922,18 +933,20 @@ class HaloApp:
             try:
                 streams = core_probe.probe_audio_streams(str(path_obj))
             except core_probe.ProbeError as exc:
-                self.ui(self.after_probe_failed, path_obj, str(exc))
+                self.ui(self.after_probe_failed, token, path_obj, str(exc))
                 return
             duration = self.get_media_duration(str(path_obj))
             fps = core_mediainfo.probe_frame_rate(str(path_obj))
             dimensions = core_mediainfo.probe_video_dimensions(str(path_obj))
-            self.ui(self.after_probe, streams, duration, fps, dimensions)
+            self.ui(self.after_probe, token, streams, duration, fps, dimensions)
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def after_probe_failed(self, path_obj: Path, detail: str):
+    def after_probe_failed(self, token: int, path_obj: Path, detail: str):
         """The file couldn't be probed at all (corrupt, or not a video):
         one accurate error, clean state, back to the menu."""
+        if token != self._load_token:
+            return  # a newer load (or a close) superseded this probe
         self.video_path = None
         self._session_to_restore = None
         self.playback.configure_media(None, None)
@@ -946,9 +959,12 @@ class HaloApp:
             "It may be corrupt or in an unsupported format.",
         )
 
-    def after_probe(self, streams: list[dict], duration: float | None,
-                    fps: float | None = None,
+    def after_probe(self, token: int, streams: list[dict],
+                    duration: float | None, fps: float | None = None,
                     dimensions: tuple[int, int] | None = None):
+        if token != self._load_token:
+            return  # a newer load (or a close) superseded this probe
+        self._probe_done = True
         self.audio_metadata = streams
         self.total_duration_seconds = duration
         self.video_fps = fps
@@ -994,7 +1010,14 @@ class HaloApp:
         self.update_compression_estimate()
 
         if self.auto_preview_after_load:
-            self.root.after(300, self.start_preview)
+            self.root.after(300, lambda t=token: self._auto_start_preview(t))
+
+    def _auto_start_preview(self, token: int):
+        """Deferred auto-preview: skip if the clip changed or was closed
+        while the 300 ms grace timer was pending."""
+        if token != self._load_token or not self.video_path:
+            return
+        self.start_preview()
 
     def clear_tracks(self):
         self.track_controls.clear()
@@ -2893,27 +2916,6 @@ def create_root_window():
             pass
 
     return root
-
-
-def main():
-    startup_file = get_startup_file_from_args()
-
-    dpi.init()
-    fonts.load_private_fonts()
-
-    root = create_root_window()
-    fonts.verify_with_tk(root)
-
-    app = HaloApp(root)
-
-    if startup_file:
-        root.after(250, lambda: app.load_video(startup_file))
-
-    root.mainloop()
-
-
-if __name__ == "__main__":
-    main()
 
 
 def main():

@@ -7,9 +7,10 @@ Single source of truth for planned UX/feature work. Seeded from the 2026-07-12 u
 sets items `in-progress`/`done` as it goes, appends a Session log entry, and commits roadmap updates
 in the same commit as the work. Newly discovered work gets a new row, not silent scope creep.
 
-**Now / Next:** T1, the full Q1–Q8 quick-win batch, and B3 (command palette) are done. Per the bold
-sequencing, suggested next is B0 (background render queue — the B1/B4 prerequisite); alternatively
-pick up an M-track item (M1 export progress is the highest-value standalone).
+**Now / Next:** T1, the full Q1–Q8 quick-win batch, and B3 (command palette) are done. Ethan
+reprioritized **B2 (one adaptive screen) next**, ahead of the suggested B0 — in progress on
+`feature/adaptive-single-screen` (B2 has no B0 dependency; its grid reuses the existing off-thread
+thumbnail path). After B2: B0 → B1 → B4 per the bold sequencing.
 
 Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 
@@ -55,13 +56,27 @@ Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 |----|------|---------|--------|
 | B0 | Background render queue utility (thumbnails/waveforms off the Tk thread via `ui()` marshaling) — prerequisite for B1/B4 | — | todo |
 | B1 | Real timeline: filmstrip lane, per-track waveforms, fat trim regions, always-visible keyframe lane, progress painted on the strip | F5 F6 F13, M1 M4, most of F7 | todo |
-| B2 | One adaptive screen (landing becomes the workspace empty state; command strip shows filename) | F4 F12, Q1 M3 | todo |
+| B2 | One adaptive screen (landing becomes the workspace empty state; command strip shows filename) | F4 F12, Q1 M3 | in-progress |
 | B3 | Command palette Ctrl+K (every action + hidden gestures, searchable, key hints) | F7, M2 | done 2026-07-15 |
 | B4 | Export drawer + persistent job history (name patterns, per-job progress/attempts, OPEN/RE-RUN) | F5 F11, Q7 M1 | todo |
 | B5 | Focus/HUD mode (Tab collapses panels, translucent scanline controls per skin) | — | todo |
 | B6 | First-run coach marks overlay | cold-start half of F7 | todo |
 
-Bold sequencing if chosen: B3 → B0 → B1 → B4 → B2 → B5/B6.
+**B2 stage checklist** (design agreed 2026-07-15 in plan mode; decisions: full-body hero empty
+state, Ctrl+W + ✕ chip closes the clip (Esc never unloads), strip = LOAD·EXPORT·CANCEL |
+filename+✕ | status·SETTINGS with QUIT dropped, recents grid gets arrows/Enter/Delete):
+
+- [x] S1 Groundwork: dedupe duplicated `main()`; probe-generation token (`_load_token`/`_probe_done`)
+      guarding `after_probe`/`after_probe_failed`/auto-preview timer (fixes latent leave-within-300ms race)
+- [ ] S2 `ui/views/empty_state.py`: self-contained `RecentsGrid` (thumb cards, session dots,
+      right-click menu, selection ring) + full-body hero (wordmark, drop-zone, relocated build line) + gallery card
+- [ ] S3 The flip: `show_empty_state`/`show_editor`, `close_clip()`/`reset_clip_state()` with probe
+      gates, `active_screen` removed everywhere, palette `file.close` (Ctrl+W), landing.py deleted
+- [ ] S4 Command strip in shell row 0; workspace actions row removed; EXPORT disabled w/o clip;
+      ✕ chip + SETTINGS join `set_busy` lockdown
+- [ ] S5 Grid keyboard nav (arrows/Enter/Delete) + legend states + roadmap close-out (M3 dropped)
+
+Bold sequencing if chosen: B3 → B0 → B1 → B4 → B2 → B5/B6 (B2 pulled forward 2026-07-15 by Ethan).
 XL items get a stage checklist added under their row when work starts (plan-mode design first).
 
 ## Session log (newest first)
