@@ -343,6 +343,10 @@ class HaloApp:
                 ("CTRL+K", "COMMANDS"),
                 ("CTRL+W", "CLOSE"),
             ]
+        elif (getattr(self, "recents_grid", None) is not None
+                and self.recents_grid.has_entries()):
+            hints = [("CTRL+O", "OPEN CLIP"), ("↑↓←→", "BROWSE"),
+                     ("ENTER", "LOAD"), ("CTRL+K", "COMMANDS")]
         else:
             hints = [("CTRL+O", "OPEN CLIP"), ("DROP", "LOAD FILE"),
                      ("CTRL+K", "COMMANDS")]
@@ -358,8 +362,14 @@ class HaloApp:
         root.bind("<space>", lambda e: self.shortcut(self.toggle_preview))
         root.bind("<Key-bracketleft>", lambda e: self.shortcut(self.set_trim_start))
         root.bind("<Key-bracketright>", lambda e: self.shortcut(self.set_trim_end))
-        root.bind("<Left>", lambda e: self.shortcut(lambda: self.seek_relative(-5.0)))
-        root.bind("<Right>", lambda e: self.shortcut(lambda: self.seek_relative(5.0)))
+        root.bind("<Left>", lambda e: self.shortcut_seek_or_grid(-5.0, -1))
+        root.bind("<Right>", lambda e: self.shortcut_seek_or_grid(5.0, 1))
+        root.bind("<Up>", lambda e: self.shortcut_grid(
+            lambda: self.recents_grid.move_selection(0, -1)))
+        root.bind("<Down>", lambda e: self.shortcut_grid(
+            lambda: self.recents_grid.move_selection(0, 1)))
+        root.bind("<Return>", lambda e: self.shortcut_grid(self.activate_recent_selection))
+        root.bind("<Delete>", lambda e: self.shortcut_grid(self.remove_recent_selection))
         root.bind("<Shift-Left>", lambda e: self.shortcut(lambda: self.seek_relative(-1.0)))
         root.bind("<Shift-Right>", lambda e: self.shortcut(lambda: self.seek_relative(1.0)))
         root.bind("<Home>", lambda e: self.shortcut(lambda: self.seek_absolute(0.0)))
@@ -446,6 +456,34 @@ class HaloApp:
         if self.video_path:
             self.close_clip()
         return "break"
+
+    def shortcut_grid(self, action):
+        """Empty-state grid keys (arrows/Enter/Delete): act only when no
+        clip is loaded, nothing is exporting, and focus isn't in an entry.
+        With a clip loaded these keys fall through to their editor roles."""
+        if self.is_exporting:
+            return "break"
+        if self.video_path or self._typing_in_entry():
+            return None
+        if not self.recents_grid.has_entries():
+            return None
+        action()
+        return "break"
+
+    def shortcut_seek_or_grid(self, delta: float, d_col: int):
+        """←/→ seek the loaded clip; with none they browse the grid."""
+        if self.video_path:
+            return self.shortcut(lambda: self.seek_relative(delta))
+        return self.shortcut_grid(
+            lambda: self.recents_grid.move_selection(d_col, 0))
+
+    def activate_recent_selection(self):
+        if self.recents_grid.activate_selected() == "missing":
+            self.set_status("That file is missing on disk.")
+
+    def remove_recent_selection(self):
+        # remove_recent_clip refreshes the grid, which clamps the selection.
+        self.recents_grid.remove_selected()
 
     def seek_relative(self, delta: float):
         duration = self.total_duration_seconds or 0

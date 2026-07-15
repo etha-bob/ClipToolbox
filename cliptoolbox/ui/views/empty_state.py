@@ -338,6 +338,7 @@ def build(app):
             for p in recents
         ])
         schedule_render()  # the panel resizes with its contents
+        app.update_legend()  # grid-nav hints appear/disappear with entries
 
     app.refresh_recents_grid = refresh
     refresh()
