@@ -19,6 +19,7 @@ import tkinter as tk
 from cliptoolbox.ui import dialogs, dpi, fonts, skin, theme, widgets
 from cliptoolbox.ui.seekbar import HaloSeekbar
 from cliptoolbox.ui.theme import px
+from cliptoolbox.ui.views.empty_state import RecentsGrid
 from cliptoolbox.ui.widgets import (
     HaloButton,
     HaloCheckbox,
@@ -33,7 +34,7 @@ from cliptoolbox.ui.widgets import (
 
 
 def build(root: tk.Tk) -> None:
-    w, h = px(960), px(700)
+    w, h = px(960), px(775)
     root.title("ClipToolbox skin gallery")
     root.geometry(f"{w}x{h}")
     root.configure(bg=theme.BG_DEEP)
@@ -158,6 +159,25 @@ def build(root: tk.Tk) -> None:
     crop.set_rect(480, 270, 960, 540)
 
     bg.create_image(px(24), px(560), image=sk.get("wordmark", text="CLIPTOOLBOX", size_px=px(30)), anchor="nw")
+
+    # --- recents grid (B2 empty state) ----------------------------------
+    recents = RecentsGrid(
+        root, thumb_provider=lambda p, cb: cb(None),
+        on_open=lambda p: dialogs.toast("Open", p),
+        on_remove=lambda p: None, on_reveal=lambda p: None,
+        behind=theme.BG_DEEP,
+    )
+    recents.set_entries([
+        {"path": "a", "name": "raid_night_finale.mp4", "exists": True, "has_session": True},
+        {"path": "b", "name": "double_kill_close_call_extended.mp4", "exists": True, "has_session": False},
+        {"path": "c", "name": "deleted_scrim.mp4", "exists": False, "has_session": False},
+        {"path": "d", "name": "clutch.mp4", "exists": True, "has_session": False},
+    ])
+    recents.select_index(0)
+    recents.place(x=px(24), y=px(636))
+    tk.Label(root, text="recents grid (selected · session dot · missing)",
+             font=theme.font_small(), bg=theme.BG_DEEP,
+             fg=theme.TEXT_DIM).place(x=px(620), y=px(676))
 
     legend = LegendBar(root)
     legend.pack(side=tk.BOTTOM, fill=tk.X)

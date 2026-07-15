@@ -68,7 +68,7 @@ filename+✕ | status·SETTINGS with QUIT dropped, recents grid gets arrows/Ente
 
 - [x] S1 Groundwork: dedupe duplicated `main()`; probe-generation token (`_load_token`/`_probe_done`)
       guarding `after_probe`/`after_probe_failed`/auto-preview timer (fixes latent leave-within-300ms race)
-- [ ] S2 `ui/views/empty_state.py`: self-contained `RecentsGrid` (thumb cards, session dots,
+- [x] S2 `ui/views/empty_state.py`: self-contained `RecentsGrid` (thumb cards, session dots,
       right-click menu, selection ring) + full-body hero (wordmark, drop-zone, relocated build line) + gallery card
 - [ ] S3 The flip: `show_empty_state`/`show_editor`, `close_clip()`/`reset_clip_state()` with probe
       gates, `active_screen` removed everywhere, palette `file.close` (Ctrl+W), landing.py deleted
