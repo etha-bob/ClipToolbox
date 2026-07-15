@@ -1,4 +1,5 @@
 import ctypes
+import os
 
 from cliptoolbox.constants import IS_WINDOWS
 
@@ -17,6 +18,9 @@ if IS_WINDOWS:
 
     IsWindow = user32.IsWindow
     IsWindowVisible = user32.IsWindowVisible
+    IsIconic = user32.IsIconic
+    IsIconic.argtypes = [ctypes.c_void_p]
+    IsIconic.restype = ctypes.c_bool
     GetWindowThreadProcessId = user32.GetWindowThreadProcessId
     GetParent = user32.GetParent
     GetWindowTextLengthW = user32.GetWindowTextLengthW
@@ -115,6 +119,27 @@ if IS_WINDOWS:
         ctypes.c_size_t,
         ctypes.c_ssize_t,
     ]
+
+    GetForegroundWindow = user32.GetForegroundWindow
+    GetForegroundWindow.argtypes = []
+    GetForegroundWindow.restype = ctypes.c_void_p
+
+    class _FLASHWINFO(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", ctypes.c_uint),
+            ("hwnd", ctypes.c_void_p),
+            ("dwFlags", ctypes.c_uint),
+            ("uCount", ctypes.c_uint),
+            ("dwTimeout", ctypes.c_uint),
+        ]
+
+    FlashWindowEx = user32.FlashWindowEx
+    FlashWindowEx.argtypes = [ctypes.POINTER(_FLASHWINFO)]
+    FlashWindowEx.restype = ctypes.c_bool
+
+    FLASHW_STOP = 0
+    FLASHW_ALL = 0x00000003
+    FLASHW_TIMERNOFG = 0x0000000C
 
     WM_KEYDOWN = 0x0100
     WM_KEYUP = 0x0101
@@ -463,6 +488,64 @@ def post_pause_key_to_window(hwnd: int | None) -> bool:
         PostMessageW(hwnd, WM_KEYDOWN, VK_SPACE, SPACE_LPARAM_DOWN)
         PostMessageW(hwnd, WM_KEYUP, VK_SPACE, SPACE_LPARAM_UP)
         return True
+    except Exception:
+        return False
+
+
+def is_foreground_process() -> bool:
+    """
+    True when the window the user is working in belongs to this process.
+
+    Embedded player windows are WS_CHILD after SetParent and can never hold
+    foreground themselves — activation lands on their top-level ancestor (the
+    Tk root) — so comparing the foreground window's process id against our own
+    covers the main window, dialog/settings toplevels, and embedded previews.
+
+    A minimized window can still be reported as the foreground window (Windows
+    leaves foreground on it after a programmatic or button minimize until the
+    user activates something else), so iconic counts as "not looking at it".
+    """
+    if not IS_WINDOWS:
+        return True
+
+    try:
+        hwnd = GetForegroundWindow()
+        if not hwnd:
+            return False
+        if IsIconic(hwnd):
+            return False
+
+        pid = ctypes.wintypes.DWORD(0)
+        GetWindowThreadProcessId(ctypes.c_void_p(hwnd), ctypes.byref(pid))
+        return pid.value == os.getpid()
+    except Exception:
+        # Fail toward "focused" so callers never flash spuriously.
+        return True
+
+
+def flash_taskbar(hwnd: int | None, until_focused: bool = True) -> bool:
+    """
+    Flashes the window's caption and taskbar button to request attention.
+
+    With until_focused, Windows keeps the taskbar button lit until the user
+    brings the window to the foreground and then stops it on its own
+    (FLASHW_TIMERNOFG) — no stop bookkeeping needed here. Returns the previous
+    flash state (True if the window was already flashing).
+    """
+    if not IS_WINDOWS or not hwnd:
+        return False
+
+    try:
+        if not IsWindow(hwnd):
+            return False
+
+        info = _FLASHWINFO()
+        info.cbSize = ctypes.sizeof(_FLASHWINFO)
+        info.hwnd = hwnd
+        info.dwFlags = (FLASHW_ALL | FLASHW_TIMERNOFG) if until_focused else FLASHW_ALL
+        info.uCount = 0
+        info.dwTimeout = 0
+        return bool(FlashWindowEx(ctypes.byref(info)))
     except Exception:
         return False
 

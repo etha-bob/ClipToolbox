@@ -71,6 +71,12 @@ class SettingsOverlay:
             variable=self.remember_var, behind=theme.PANEL_FILL,
         ).pack(anchor="w")
 
+        self.flash_var = tk.BooleanVar(value=app.settings.notify_flash_taskbar)
+        widgets.HaloCheckbox(
+            body, text="Flash the taskbar when exports finish in background",
+            variable=self.flash_var, behind=theme.PANEL_FILL,
+        ).pack(anchor="w")
+
         # --- playback ----------------------------------------------------
         section("Playback")
         self.autoplay_var = tk.BooleanVar(value=app.auto_preview_after_load)
@@ -194,6 +200,7 @@ class SettingsOverlay:
 
     def close(self):
         self.app.settings.remember_geometry = bool(self.remember_var.get())
+        self.app.settings.notify_flash_taskbar = bool(self.flash_var.get())
         self.app.auto_preview_after_load = bool(self.autoplay_var.get())
         selected_skin = self._skin_ids.get(self.skin_var.get(), self.app.settings.ui_skin)
         skin_changed = selected_skin != skins.normalize(self.app.settings.ui_skin)

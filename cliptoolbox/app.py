@@ -58,7 +58,12 @@ from cliptoolbox.core.paths import (
     exe_name,
     reveal_file as core_reveal_file,
 )
-from cliptoolbox.core.win32 import assign_process_to_cleanup_job, set_clipboard_dib
+from cliptoolbox.core.win32 import (
+    assign_process_to_cleanup_job,
+    flash_taskbar,
+    is_foreground_process,
+    set_clipboard_dib,
+)
 from cliptoolbox.dnd import DND_AVAILABLE, DND_FILES, TkinterDnD
 from cliptoolbox import settings as app_settings
 from cliptoolbox import sessions as video_sessions
@@ -2517,6 +2522,17 @@ class HaloApp:
     # Export execution (core) bridge
     # ========================================================
 
+    def notify_export_attention(self):
+        """Flashes the taskbar button when an export ends while the app is in
+        the background, so a tabbed-away user knows to come back. Windows
+        stops the flash on its own the moment the app is focused.
+
+        Tk thread only (fetches the root HWND) — callers marshal via ui().
+        """
+        if not self.settings.notify_flash_taskbar or is_foreground_process():
+            return
+        flash_taskbar(chrome.get_root_hwnd(self.root), until_focused=True)
+
     def make_export_callbacks(self):
         """Bridges core export events onto the Tk thread with the same
         messages/dialogs the app has always shown."""
@@ -2533,9 +2549,11 @@ class HaloApp:
                 app.ui(app.set_seek_position, seconds)
 
             def on_error(self, title: str, message: str) -> None:
+                app.ui(app.notify_export_attention)
                 app.ui(messagebox.showerror, title, message)
 
             def on_complete(self, output_path: str, size_bytes: int | None) -> None:
+                app.ui(app.notify_export_attention)
                 # Success is a toast with an action, not a modal — and the
                 # folder opens on request instead of automatically.
                 name = Path(output_path).name
