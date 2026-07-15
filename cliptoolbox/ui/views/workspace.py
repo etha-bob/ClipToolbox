@@ -30,7 +30,7 @@ PLACEHOLDER_DEFAULT = "Load a video, choose tracks, then click Preview."
 
 
 def build(app):
-    # Screens stack in the container; show_landing/show_workspace lift them.
+    # Screens stack in the container; show_empty_state/show_editor lift them.
     app.workspace_frame = tk.Frame(app.screen_container, bg=theme.BG_DEEP)
     app.workspace_frame.place(x=0, y=0, relwidth=1.0, relheight=1.0)
 
@@ -67,7 +67,7 @@ def build(app):
     # Packed by update_export_actions() only while an export runs.
 
     app.back_button = HaloButton(
-        actions, text="◂ MENU", command=app.show_landing,
+        actions, text="✕ CLOSE CLIP", command=app.close_clip,
     )
     app.back_button.pack(side=tk.RIGHT)
 

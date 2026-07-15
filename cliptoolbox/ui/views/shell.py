@@ -20,8 +20,8 @@ def build(app):
     root.columnconfigure(0, weight=1)
     root.rowconfigure(1, weight=1)
 
-    # Set by app.py when a clip loads (and reset on show_landing); rendered
-    # as the status strip's middle column below.
+    # Set by app.py when a clip loads (and reset by reset_clip_state);
+    # rendered as the status strip's middle column below.
     app.file_label_var = tk.StringVar(value="No video loaded")
 
     # ------------------------------------------------------------------

@@ -66,9 +66,9 @@ def build_command_registry(app) -> list[Command]:
     """Build the ordered command list bound to a live ``HaloApp``."""
 
     def workspace_ready() -> bool:
-        return (app.active_screen == "workspace"
-                and bool(app.video_path)
-                and not app.is_exporting)
+        # One adaptive screen (B2): "the editor is ready" simply means a
+        # clip is loaded and no export is running.
+        return bool(app.video_path) and not app.is_exporting
 
     def crop_active() -> bool:
         return workspace_ready() and bool(app.crop_enabled_var.get())
@@ -91,9 +91,9 @@ def build_command_registry(app) -> list[Command]:
         Command("file.outputs", "Open outputs folder", "File",
                 lambda: (OUTPUTS_DIR.mkdir(exist_ok=True), reveal_file(str(OUTPUTS_DIR))),
                 keywords="reveal explorer exports library"),
-        Command("file.menu", "Back to menu", "File", app.show_landing,
-                keys="Esc", enabled=lambda: app.active_screen == "workspace" and not app.is_exporting,
-                keywords="landing home close clip"),
+        Command("file.close", "Close clip", "File", app.close_clip,
+                keys="Ctrl+W", enabled=workspace_ready,
+                keywords="back menu home eject unload landing"),
         Command("file.quit", "Quit ClipToolbox", "File", app.on_close,
                 keywords="exit close"),
 

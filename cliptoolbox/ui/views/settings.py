@@ -188,8 +188,8 @@ class SettingsOverlay:
         self._cleared_recents_backup = list(self.app.recent_clips)
         self.app.recent_clips.clear()
         self.app.save_settings()
-        if hasattr(self.app, "refresh_landing_detail"):
-            self.app.refresh_landing_detail()
+        if hasattr(self.app, "refresh_recents_grid"):
+            self.app.refresh_recents_grid()
         self._clear_recents_btn.config(text="UNDO CLEAR", command=self._undo_clear_recents)
 
     def _undo_clear_recents(self):
@@ -198,8 +198,8 @@ class SettingsOverlay:
         self.app.recent_clips[:] = self._cleared_recents_backup
         self._cleared_recents_backup = None
         self.app.save_settings()
-        if hasattr(self.app, "refresh_landing_detail"):
-            self.app.refresh_landing_detail()
+        if hasattr(self.app, "refresh_recents_grid"):
+            self.app.refresh_recents_grid()
         self._clear_recents_btn.config(text="CLEAR RECENT CLIPS", command=self._clear_recents)
 
     def _reposition(self, _event=None):

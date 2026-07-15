@@ -72,7 +72,7 @@ from cliptoolbox.ui.crop_controller import CropController
 from cliptoolbox.ui.wheel import WheelRouter
 from cliptoolbox.ui import dialogs as messagebox  # ported call sites unchanged
 from cliptoolbox.ui.theme import px
-from cliptoolbox.ui.views import landing, shell, workspace
+from cliptoolbox.ui.views import empty_state, shell, workspace
 from cliptoolbox.ui.views.palette import CommandPalette
 from cliptoolbox.ui.views.settings import SettingsOverlay
 
@@ -188,7 +188,6 @@ class HaloApp:
         self.recent_clips: list[str] = list(self.settings.recent_clips)
         self.last_open_dir: str | None = self.settings.last_open_dir
         self.thumbnail_cache: dict = {}  # cache-path -> ImageTk.PhotoImage (ref holder)
-        self.active_screen = "landing"
 
         self.build_ui()
         self.crop = CropController(self)
@@ -211,9 +210,9 @@ class HaloApp:
 
         dialogs.attach(self.root)
 
-        shell.build(self)      # header, status strip, legend, screen container
-        workspace.build(self)  # the lobby screen
-        landing.build(self)    # the main-menu screen
+        shell.build(self)        # header, status strip, legend, screen container
+        workspace.build(self)    # the editor
+        empty_state.build(self)  # the no-clip hero (stacked above at start)
 
         self.wheel = WheelRouter(self.root)
         self.wheel.register(self.seekbar, self.on_wheel_seek)
@@ -244,7 +243,7 @@ class HaloApp:
             self.compression_options_frame.pack(side=tk.LEFT, padx=(px(10), 0))
 
         self.update_compression_estimate()
-        self.show_landing()
+        self.show_empty_state()
 
     # ========================================================
     # Settings persistence
@@ -298,8 +297,6 @@ class HaloApp:
         # Not while exporting, mid-typing, or over a modal (Settings / dialog).
         if self.is_exporting or self._typing_in_entry():
             return "break"
-        if self.active_screen not in ("landing", "workspace"):
-            return "break"
         if dialogs.a_modal_is_open():
             return "break"
         self.command_palette = CommandPalette(self)
@@ -315,20 +312,19 @@ class HaloApp:
         base = f"{APP_NAME} - {APP_VERSION}" if APP_VERSION else APP_NAME
         self.root.title(f"{clip_name} — {base}" if clip_name else base)
 
-    def show_landing(self):
+    def show_empty_state(self):
+        """Lift the no-clip hero over the editor. Clip-state resets are
+        reset_clip_state's job; playback is stopped defensively (callers
+        that unload — close_clip — already did)."""
         self.stop_preview()
-        self.landing_frame.lift()
-        self.active_screen = "landing"
-        self.file_label_var.set("No video loaded")
-        self.update_window_title()
+        self.empty_state_frame.lift()
+        if hasattr(self, "refresh_recents_grid"):
+            self.refresh_recents_grid()
         self.set_status("Ready.")
-        if hasattr(self, "refresh_landing_detail"):
-            self.refresh_landing_detail()
         self.update_legend()
 
-    def show_workspace(self):
+    def show_editor(self):
         self.workspace_frame.lift()
-        self.active_screen = "workspace"
         self.update_legend()
 
     def update_legend(self):
@@ -337,9 +333,6 @@ class HaloApp:
 
         if self.is_exporting:
             hints = [("ESC", "CANCEL EXPORT")]
-        elif self.active_screen == "landing":
-            hints = [("CTRL+O", "OPEN CLIP"), ("DROP", "LOAD FILE"),
-                     ("CTRL+K", "COMMANDS")]
         elif self.video_path:
             hints = [
                 ("SPACE", "PLAY/PAUSE"),
@@ -347,10 +340,11 @@ class HaloApp:
                 ("WHEEL", "SEEK · VOLUME"),
                 ("[ ]", "TRIM"),
                 ("CTRL+K", "COMMANDS"),
-                ("ESC", "MENU"),
+                ("CTRL+W", "CLOSE"),
             ]
         else:
-            hints = [("CTRL+O", "OPEN CLIP"), ("ESC", "MENU")]
+            hints = [("CTRL+O", "OPEN CLIP"), ("DROP", "LOAD FILE"),
+                     ("CTRL+K", "COMMANDS")]
 
         self.legend.set_hints(hints)
 
@@ -386,6 +380,8 @@ class HaloApp:
                       lambda e, n=digit: self.shortcut(lambda: self.seek_to_fraction(n / 10.0)))
         root.bind("<Control-o>", lambda e: self.shortcut_load())
         root.bind("<Control-e>", lambda e: self.shortcut(self.export_video_dialog))
+        root.bind("<Control-w>", lambda e: self.shortcut_close())
+        root.bind("<Control-W>", lambda e: self.shortcut_close())
         root.bind("<Control-comma>", lambda e: self.shortcut_settings())
         root.bind("<Control-k>", lambda e: self.toggle_command_palette())
         root.bind("<Control-K>", lambda e: self.toggle_command_palette())
@@ -400,9 +396,9 @@ class HaloApp:
         return isinstance(focus, (tk.Entry, tk.Text))
 
     def shortcut(self, action):
-        """Workspace shortcut with the standard guards."""
-        if self.active_screen != "workspace" or self.is_exporting:
-            return "break" if self.is_exporting else None
+        """Editor shortcut with the standard guards (needs a loaded clip)."""
+        if self.is_exporting:
+            return "break"
         if self._typing_in_entry():
             return None
         if not self.video_path:
@@ -433,16 +429,22 @@ class HaloApp:
         self.log(f"Copied timestamp {text}.")
 
     def shortcut_escape(self):
+        """Esc cancels an export or leaves a text entry — it never unloads
+        the clip (that's Ctrl+W), so it can't yank the screen away."""
         if self.is_exporting:
             self.cancel_export()
             return "break"
         if self._typing_in_entry():
             self.root.focus_set()
             return "break"
-        if self.active_screen == "workspace":
-            self.show_landing()
-            return "break"
         return None
+
+    def shortcut_close(self):
+        if self.is_exporting or self._typing_in_entry():
+            return "break"
+        if self.video_path:
+            self.close_clip()
+        return "break"
 
     def seek_relative(self, delta: float):
         duration = self.total_duration_seconds or 0
@@ -486,7 +488,7 @@ class HaloApp:
     def on_wheel_zoom(self, steps: int, x_px: int):
         """Ctrl+wheel over the seekbar: zoom the timeline view, anchored at
         the cursor (Vegas/LosslessCut-style)."""
-        if self.active_screen != "workspace" or not self.video_path:
+        if not self.video_path:
             return
         self.seekbar.zoom_at(steps, x_px)
 
@@ -499,8 +501,6 @@ class HaloApp:
         commits shortly after the last notch so spinning the wheel doesn't
         spawn a pipeline per click."""
         if self.is_exporting or not self.video_path or self.user_is_seeking:
-            return
-        if self.active_screen != "workspace":
             return
 
         state = self.playback.state
@@ -570,16 +570,16 @@ class HaloApp:
             self.recent_clips.remove(path)
         self.recent_clips.insert(0, path)
         del self.recent_clips[8:]
-        if hasattr(self, "refresh_landing_detail"):
-            self.refresh_landing_detail()
+        if hasattr(self, "refresh_recents_grid"):
+            self.refresh_recents_grid()
         self.save_settings()
 
     def remove_recent_clip(self, path: str):
         if path in self.recent_clips:
             self.recent_clips.remove(path)
             self.save_settings()
-            if hasattr(self, "refresh_landing_detail"):
-                self.refresh_landing_detail()
+            if hasattr(self, "refresh_recents_grid"):
+                self.refresh_recents_grid()
 
     # ------------------------------------------------------------------
     # Recent-clip thumbnails (cached beside the config)
@@ -590,15 +590,14 @@ class HaloApp:
         root = Path(base) / "ClipToolbox" if base else Path.home() / ".cliptoolbox"
         return root / "thumbs"
 
-    THUMBNAIL_HEIGHT = 36  # logical px; landing sizes its holder to match
+    THUMBNAIL_HEIGHT = 36  # logical px default; callers may ask for taller
 
-    def _thumb_cache_path(self, path: str) -> Path:
+    def _thumb_cache_path(self, path: str, height_px: int) -> Path:
         try:
             mtime = int(Path(path).stat().st_mtime)
         except Exception:
             mtime = 0
-        height = px(self.THUMBNAIL_HEIGHT)
-        key = hashlib.md5(f"{path}|{mtime}|{height}".encode("utf-8")).hexdigest()
+        key = hashlib.md5(f"{path}|{mtime}|{height_px}".encode("utf-8")).hexdigest()
         return self._thumb_dir() / f"{key}.png"
 
     def _load_thumbnail(self, cache_path: Path):
@@ -617,14 +616,17 @@ class HaloApp:
         except Exception:
             return None
 
-    def get_recent_thumbnail(self, path: str, on_ready):
+    def get_recent_thumbnail(self, path: str, on_ready, height: int | None = None):
         """Deliver a cached PhotoImage for a recent clip (or None). Extraction
-        runs on a worker and calls on_ready on the Tk thread when done."""
+        runs on a worker and calls on_ready on the Tk thread when done.
+        height is in logical px (defaults to THUMBNAIL_HEIGHT); it is part of
+        the cache key, so different surfaces can ask for different sizes."""
         if not PIL_AVAILABLE or not FFMPEG or not Path(path).exists():
             on_ready(None)
             return
 
-        cache_path = self._thumb_cache_path(path)
+        height_px = px(height if height is not None else self.THUMBNAIL_HEIGHT)
+        cache_path = self._thumb_cache_path(path, height_px)
         existing = self._load_thumbnail(cache_path)
         if existing is not None:
             on_ready(existing)
@@ -636,7 +638,7 @@ class HaloApp:
                 cmd = [
                     FFMPEG, "-hide_banner", "-loglevel", "error",
                     "-ss", "1", "-i", path,
-                    "-vf", f"scale=-2:{px(self.THUMBNAIL_HEIGHT)}", "-frames:v", "1",
+                    "-vf", f"scale=-2:{height_px}", "-frames:v", "1",
                     "-y", str(cache_path),
                 ]
                 process = subprocess.Popen(
@@ -890,7 +892,7 @@ class HaloApp:
             messagebox.showerror("File not found", str(path_obj))
             return
 
-        self.show_workspace()
+        self.show_editor()
 
         self.stop_preview()
 
@@ -944,15 +946,12 @@ class HaloApp:
 
     def after_probe_failed(self, token: int, path_obj: Path, detail: str):
         """The file couldn't be probed at all (corrupt, or not a video):
-        one accurate error, clean state, back to the menu."""
+        one accurate error, clean state, back to the empty state."""
         if token != self._load_token:
             return  # a newer load (or a close) superseded this probe
-        self.video_path = None
-        self._session_to_restore = None
-        self.playback.configure_media(None, None)
-        self.preview_placeholder_var.set(workspace.PLACEHOLDER_DEFAULT)
         self.log(f"Could not read {path_obj.name}: " + " ".join(detail.split()))
-        self.show_landing()
+        self.reset_clip_state()
+        self.show_empty_state()
         messagebox.showerror(
             "Could not read file",
             f"{path_obj.name} could not be read as a video.\n"
@@ -1031,6 +1030,53 @@ class HaloApp:
             widget.destroy()
 
         self.update_track_area_height(0)
+
+    def reset_clip_state(self):
+        """Return every clip-scoped var and widget to the no-video state.
+        Shared by close_clip and after_probe_failed; the editor widgets are
+        all null-safe against this (PLAY disables, estimate goes back to its
+        load-a-clip line, seekbar parks at zero)."""
+        self.video_path = None
+        self._session_to_restore = None
+        self._probe_done = False
+        self.audio_metadata = []
+        self.total_duration_seconds = None
+        self.video_fps = None
+        self.video_dimensions = None
+        self.playback.configure_media(None, None)
+        self.clear_tracks()
+        self.trim_enabled_var.set(False)
+        self.clear_trim_points(silent=True)
+        self.update_trim_controls()  # also resets the compression estimate
+        if self.crop:
+            self.crop.reset()
+        self.set_seek_range(0)
+        self.seekbar.set_fps(None)
+        self.preview_placeholder_var.set(workspace.PLACEHOLDER_DEFAULT)
+        self.preview_placeholder.place(relx=0.5, rely=0.5, anchor="center")
+        self.file_label_var.set("No video loaded")
+        self.update_window_title()
+        self.refresh_playback_button_state()
+
+    def close_clip(self):
+        """Ctrl+W / the ✕ chip / the palette: unload the clip and return to
+        the empty state. The clip's setup is persisted first, so reopening
+        it restores trim/crop/mix exactly like a relaunch would."""
+        if self.is_exporting or not self.video_path:
+            return
+        self._load_token += 1  # orphan any in-flight probe + auto-preview timer
+        name = Path(self.video_path).name
+        self.stop_preview()
+        # A mid-probe close must NOT persist: capture_video_session would see
+        # load_video's cleared defaults, and saving a default state prunes
+        # the clip's stored session entry.
+        if self._probe_done:
+            self.persist_video_session()
+        dialogs.dismiss_tagged("session-restore")
+        self.reset_clip_state()
+        self.root.focus_set()  # focus must not linger in a destroyed-adjacent entry
+        self.show_empty_state()
+        self.log(f"Closed {name}.")
 
     # ========================================================
     # Per-video sessions (trim / crop keyframes / track mix)
@@ -1134,6 +1180,7 @@ class HaloApp:
                 action_label="RESET",
                 action=lambda: self.reset_restored_session(restored_path),
                 duration_ms=8000,
+                tag="session-restore",  # dismissed if the clip closes
             )
 
     def reset_restored_session(self, path: str):

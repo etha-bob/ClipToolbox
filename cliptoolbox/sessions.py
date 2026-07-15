@@ -97,7 +97,7 @@ def is_default_state(state: dict) -> bool:
 def paths_with_sessions(video_paths) -> set[str]:
     """Subset of video_paths that currently have a restorable session — the
     same key and size-match rules as load(), but one file read for the whole
-    list (the landing screen marks its recent rows with this)."""
+    list (the recents grid marks its cards with this)."""
     sessions = _read_all()
     matched = set()
     for video_path in video_paths:
