@@ -8,16 +8,18 @@ target; dropping a clip jumps straight into the workspace.
 import tkinter as tk
 from pathlib import Path
 
+from cliptoolbox import sessions as video_sessions
 from cliptoolbox.ui import skin, theme
 from cliptoolbox.ui.theme import px
-from cliptoolbox.ui.widgets import HaloMenuItem
+from cliptoolbox.ui.widgets import HaloMenuItem, Tooltip
 
 SUPPORTED_LINE = "MP4 · MOV · MKV · AVI · WebM · M4V"
 
 
-def _add_recent_row(app, parent, path):
+def _add_recent_row(app, parent, path, has_session=False):
     """One recent-clip entry: thumbnail (lazy) + name, clickable to load, with
-    a right-click menu to reveal or remove."""
+    a right-click menu to reveal or remove. Clips with a saved session get an
+    accent dot so a restore never arrives unannounced."""
     name = Path(path).name
     exists = Path(path).exists()
 
@@ -32,6 +34,13 @@ def _add_recent_row(app, parent, path):
     thumb = tk.Label(thumb_holder, bg=theme.WELL_FILL, bd=0)
     thumb.pack(fill=tk.BOTH, expand=True)
 
+    session_dot = None
+    if has_session and exists:
+        session_dot = tk.Label(row, text="●", font=theme.font_small(11),
+                               bg=theme.PANEL_FILL, fg=theme.ACCENT)
+        session_dot.pack(side=tk.RIGHT, padx=(px(4), px(6)))
+        Tooltip(session_dot, "Saved setup — trim/crop/mix restore on load")
+
     name_label = tk.Label(
         row, text=("▸ " if exists else "✕ ") + name,
         font=theme.font_body(13), bg=theme.PANEL_FILL,
@@ -39,12 +48,17 @@ def _add_recent_row(app, parent, path):
     )
     name_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-    hover_widgets = (row, thumb_holder, thumb, name_label)
+    hover_widgets = (row, thumb_holder, thumb, name_label) + (
+        (session_dot,) if session_dot is not None else ())
 
     def set_bg(color, fg):
         for w in (row, name_label):
             w.configure(bg=color)
         name_label.configure(fg=fg)
+        if session_dot is not None:
+            session_dot.configure(
+                bg=color,
+                fg=fg if color == theme.SELECT_FILL else theme.ACCENT)
 
     if exists:
         for w in hover_widgets:
@@ -130,8 +144,9 @@ def build(app):
                 tk.Label(detail_body, text="No recent clips yet.",
                          font=theme.font_body(), bg=theme.PANEL_FILL,
                          fg=theme.TEXT_DIM, anchor="w", justify=tk.LEFT).pack(fill=tk.X)
+            saved = video_sessions.paths_with_sessions(recents[:6])
             for path in recents[:6]:
-                _add_recent_row(app, detail_body, path)
+                _add_recent_row(app, detail_body, path, has_session=path in saved)
         else:
             tk.Label(detail_body, text=body, font=theme.font_body(),
                      bg=theme.PANEL_FILL, fg=theme.TEXT,

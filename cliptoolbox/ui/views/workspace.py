@@ -26,6 +26,9 @@ from cliptoolbox.ui.widgets import (
     make_log,
 )
 
+PLACEHOLDER_DEFAULT = "Load a video, choose tracks, then click Preview."
+
+
 def build(app):
     # Screens stack in the container; show_landing/show_workspace lift them.
     app.workspace_frame = tk.Frame(app.screen_container, bg=theme.BG_DEEP)
@@ -91,9 +94,7 @@ def build(app):
     app.mpv_host_frame = tk.Frame(app.preview_frame, bg="black")
     app.mpv_host_frame.place(x=0, y=0, relwidth=1.0, relheight=1.0)
 
-    app.preview_placeholder_var = tk.StringVar(
-        value="Load a video, choose tracks, then click Preview."
-    )
+    app.preview_placeholder_var = tk.StringVar(value=PLACEHOLDER_DEFAULT)
     app.preview_placeholder = tk.Label(
         app.preview_frame,
         textvariable=app.preview_placeholder_var,

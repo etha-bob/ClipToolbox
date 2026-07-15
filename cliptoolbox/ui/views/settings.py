@@ -158,10 +158,10 @@ class SettingsOverlay:
         buttons.pack(fill=tk.X, padx=px(20), pady=(0, px(16)))
         widgets.HaloButton(buttons, text="DONE", variant="primary",
                            behind=theme.PANEL_FILL, width=px(110), height=px(30),
-                           command=self.close).pack(side=tk.RIGHT)
+                           command=self.save_and_close).pack(side=tk.RIGHT)
 
-        self.card_win.bind("<Return>", lambda e: self.close())
-        self.card_win.bind("<Escape>", lambda e: self.close())
+        self.card_win.bind("<Return>", lambda e: self.save_and_close())
+        self.card_win.bind("<Escape>", lambda e: self.cancel())
 
         self._configure_bind = root.bind("<Configure>", self._reposition, add="+")
         self._reposition()
@@ -198,7 +198,12 @@ class SettingsOverlay:
         except Exception:
             pass
 
-    def close(self):
+    def cancel(self):
+        """Esc: discard every pending choice — nothing here applies until
+        DONE. (The Library buttons act immediately and are not undone.)"""
+        self._teardown()
+
+    def save_and_close(self):
         self.app.settings.remember_geometry = bool(self.remember_var.get())
         self.app.settings.notify_flash_taskbar = bool(self.flash_var.get())
         self.app.auto_preview_after_load = bool(self.autoplay_var.get())
@@ -224,6 +229,17 @@ class SettingsOverlay:
                 self.app.apply_mpv_cache_size(cache_mb)
         self.app.save_settings()
 
+        self._teardown()
+
+        if skin_changed:
+            label = dict(skins.available()).get(selected_skin, selected_skin)
+            dialogs.toast(
+                "Skin saved",
+                f"{label} loads the next time ClipToolbox starts.",
+                kind="info",
+            )
+
+    def _teardown(self):
         try:
             self.card_win.grab_release()
         except Exception:
@@ -237,11 +253,3 @@ class SettingsOverlay:
                 window.destroy()
             except Exception:
                 pass
-
-        if skin_changed:
-            label = dict(skins.available()).get(selected_skin, selected_skin)
-            dialogs.toast(
-                "Skin saved",
-                f"{label} loads the next time ClipToolbox starts.",
-                kind="info",
-            )

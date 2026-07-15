@@ -188,7 +188,7 @@ class HaloApp:
     # ========================================================
 
     def build_ui(self):
-        self.root.title(f"{APP_NAME} - {APP_VERSION}" if APP_VERSION else APP_NAME)
+        self.update_window_title()
         self.root.configure(bg=theme.BG_DEEP)
         self.root.geometry(f"{px(1150)}x{px(780)}")
         self.root.minsize(px(980), px(700))
@@ -282,10 +282,18 @@ class HaloApp:
     # Screen routing
     # ========================================================
 
+    def update_window_title(self, clip_name: str | None = None):
+        """Window/taskbar title: the loaded clip's name first, so the taskbar
+        button is identifiable (and the export flash points at something)."""
+        base = f"{APP_NAME} - {APP_VERSION}" if APP_VERSION else APP_NAME
+        self.root.title(f"{clip_name} — {base}" if clip_name else base)
+
     def show_landing(self):
         self.stop_preview()
         self.landing_frame.lift()
         self.active_screen = "landing"
+        self.file_label_var.set("No video loaded")
+        self.update_window_title()
         self.set_status("Ready.")
         if hasattr(self, "refresh_landing_detail"):
             self.refresh_landing_detail()
@@ -867,6 +875,7 @@ class HaloApp:
         self.video_dimensions = None
         self.playback.configure_media(self.video_path, None)
         self.file_label_var.set(path_obj.name)
+        self.update_window_title(path_obj.name)
         self.clear_tracks()
         self.set_seek_range(0)
         self.clear_trim_points(silent=True)
@@ -880,13 +889,34 @@ class HaloApp:
         self.log("Reading audio streams and duration...")
 
         def worker():
-            streams = self.get_audio_streams(str(path_obj))
+            # A probe failure means the file itself is unreadable — report
+            # that alone, never the misleading "no audio tracks" cascade.
+            try:
+                streams = core_probe.probe_audio_streams(str(path_obj))
+            except core_probe.ProbeError as exc:
+                self.ui(self.after_probe_failed, path_obj, str(exc))
+                return
             duration = self.get_media_duration(str(path_obj))
             fps = core_mediainfo.probe_frame_rate(str(path_obj))
             dimensions = core_mediainfo.probe_video_dimensions(str(path_obj))
             self.ui(self.after_probe, streams, duration, fps, dimensions)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def after_probe_failed(self, path_obj: Path, detail: str):
+        """The file couldn't be probed at all (corrupt, or not a video):
+        one accurate error, clean state, back to the menu."""
+        self.video_path = None
+        self._session_to_restore = None
+        self.playback.configure_media(None, None)
+        self.preview_placeholder_var.set(workspace.PLACEHOLDER_DEFAULT)
+        self.log(f"Could not read {path_obj.name}: " + " ".join(detail.split()))
+        self.show_landing()
+        messagebox.showerror(
+            "Could not read file",
+            f"{path_obj.name} could not be read as a video.\n"
+            "It may be corrupt or in an unsupported format.",
+        )
 
     def after_probe(self, streams: list[dict], duration: float | None,
                     fps: float | None = None,
@@ -1026,7 +1056,10 @@ class HaloApp:
 
         crop_state = state.get("crop") or {}
         if self.crop and crop_state.get("keyframes"):
-            if self.crop.restore_state(crop_state):
+            if self.crop.restore_state(crop_state) and self.crop.active:
+                # Keyframes restored with crop off are inert until the user
+                # re-enables crop — counting them here would claim an effect
+                # the export doesn't have.
                 count = len(crop_state["keyframes"])
                 restored.append(f"{count} crop keyframe(s)")
 
@@ -1041,7 +1074,54 @@ class HaloApp:
             self.set_seek_position(position)
 
         if restored:
-            self.log("Restored saved setup: " + ", ".join(restored) + ".")
+            summary = ", ".join(restored)
+            self.log("Restored saved setup: " + summary + ".")
+            restored_path = self.video_path
+            dialogs.toast(
+                "Restored saved setup", summary + ".",
+                action_label="RESET",
+                action=lambda: self.reset_restored_session(restored_path),
+                duration_ms=8000,
+            )
+
+    def reset_restored_session(self, path: str):
+        """RESET on the restore toast: discard the saved setup and put this
+        clip back to a fresh-load state (trim off, no crop, every track at
+        100%, playhead at 0)."""
+        if self.is_exporting or path != self.video_path:
+            return  # the clip changed since the toast appeared
+        self._session_to_restore = None
+
+        self.trim_enabled_var.set(False)
+        self.clear_trim_points(silent=True)
+        self.update_trim_controls()
+
+        if self.crop:
+            self.crop.reset()
+            self.crop.set_source(self.video_dimensions,
+                                 self.total_duration_seconds, self.video_fps)
+
+        # Rebuild the roster the same way a fresh load does; with the session
+        # gone the rows come back enabled at 100%.
+        self.clear_tracks()
+        for row_number, info in enumerate(self.audio_metadata):
+            self.add_track_row(row_number, info)
+        self.update_track_area_height(len(self.audio_metadata))
+        self.update_track_row_styles()
+        self.apply_all_track_volumes()
+
+        # Routes through the normal seek path, which also rebuilds/refreshes
+        # any live pipeline without the restored crop and mix.
+        self.seek_absolute(0.0)
+
+        try:
+            # Default state — this removes the stored entry.
+            video_sessions.save(path, self.capture_video_session())
+        except Exception:
+            pass
+
+        self.set_status("Saved setup reset.")
+        self.log("Saved setup reset: trim, crop and track mix back to defaults.")
 
     def update_track_area_height(self, track_count: int):
         # Keep the roster only as tall as the rows it actually needs; beyond
@@ -1158,17 +1238,6 @@ class HaloApp:
     # ========================================================
     # ffprobe
     # ========================================================
-
-    def get_audio_streams(self, filepath: str) -> list[dict]:
-        try:
-            return core_probe.probe_audio_streams(filepath)
-        except core_probe.ProbeError as exc:
-            self.ui(
-                messagebox.showerror,
-                "FFprobe Error",
-                str(exc),
-            )
-            return []
 
     def get_media_duration(self, filepath: str) -> float | None:
         return core_probe.probe_duration(filepath)
