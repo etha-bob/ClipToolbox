@@ -226,7 +226,7 @@ def build(app):
         entry.entry.bind("<FocusOut>", lambda e, k=kind: app.commit_trim_entry(k), add="+")
 
     app.clear_trim_button = HaloButton(
-        app.trim_buttons_frame, text="CLEAR", command=app.clear_trim_points,
+        app.trim_buttons_frame, text="CLEAR", command=app.clear_trim_points_action,
         variant="danger", height=px(28), font=theme.font_small(12),
     )
     app.clear_trim_button.pack(side=tk.LEFT, padx=(px(8), 0))

@@ -206,7 +206,7 @@ def askyesno(title, message) -> bool:
 
 
 def toast(title, message=None, kind="info", action_label=None, action=None,
-          duration_ms=6000):
+          duration_ms=6000, tag=None):
     if _root is None:
         return
 
@@ -214,6 +214,9 @@ def toast(title, message=None, kind="info", action_label=None, action=None,
 
     frame = tk.Frame(_root, bg=theme.PANEL_FILL_HI,
                      highlightthickness=1, highlightbackground=theme.PANEL_BORDER)
+    # Optional grouping label so callers can supersede their own stale toasts
+    # (e.g. a new export dismissing a lingering "Export complete").
+    frame._toast_tag = tag
     tk.Frame(frame, bg=accent, width=px(4)).pack(side=tk.LEFT, fill=tk.Y)
 
     content = tk.Frame(frame, bg=theme.PANEL_FILL_HI)
@@ -252,6 +255,13 @@ def toast(title, message=None, kind="info", action_label=None, action=None,
 
     if duration_ms:
         frame.after(duration_ms, lambda: _dismiss(frame))
+
+
+def dismiss_tagged(tag):
+    """Dismiss every live toast created with this tag. Safe on the Tk thread."""
+    for frame in list(_toasts):
+        if getattr(frame, "_toast_tag", None) == tag:
+            _dismiss(frame)
 
 
 def _dismiss(frame):

@@ -137,11 +137,13 @@ class SettingsOverlay:
             height=px(26), font=theme.font_small(12),
             command=self._open_outputs,
         ).pack(side=tk.LEFT)
-        widgets.HaloButton(
+        self._clear_recents_btn = widgets.HaloButton(
             row, text="CLEAR RECENT CLIPS", behind=theme.PANEL_FILL,
             height=px(26), font=theme.font_small(12), variant="danger",
             command=self._clear_recents,
-        ).pack(side=tk.LEFT, padx=(px(8), 0))
+        )
+        self._clear_recents_btn.pack(side=tk.LEFT, padx=(px(8), 0))
+        self._cleared_recents_backup = None
 
         # --- about -------------------------------------------------------
         section("About")
@@ -179,10 +181,26 @@ class SettingsOverlay:
         reveal_file(str(OUTPUTS_DIR))
 
     def _clear_recents(self):
+        # A toast's UNDO button would be unclickable behind this overlay's grab,
+        # so the button flips to UNDO CLEAR in place instead (roadmap Q5).
+        if not self.app.recent_clips:
+            return
+        self._cleared_recents_backup = list(self.app.recent_clips)
         self.app.recent_clips.clear()
         self.app.save_settings()
         if hasattr(self.app, "refresh_landing_detail"):
             self.app.refresh_landing_detail()
+        self._clear_recents_btn.config(text="UNDO CLEAR", command=self._undo_clear_recents)
+
+    def _undo_clear_recents(self):
+        if self._cleared_recents_backup is None:
+            return
+        self.app.recent_clips[:] = self._cleared_recents_backup
+        self._cleared_recents_backup = None
+        self.app.save_settings()
+        if hasattr(self.app, "refresh_landing_detail"):
+            self.app.refresh_landing_detail()
+        self._clear_recents_btn.config(text="CLEAR RECENT CLIPS", command=self._clear_recents)
 
     def _reposition(self, _event=None):
         try:

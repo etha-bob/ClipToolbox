@@ -133,6 +133,9 @@ class HaloApp:
         self.preview_muted = False
         self.solo_row: int | None = None
         self.track_state_strips: dict[int, tk.Frame] = {}
+        # Per-row "NN%" label vars — HaloSlider.set() doesn't fire its command,
+        # so bulk resets have to refresh these labels themselves.
+        self.track_volume_labels: dict[int, tk.StringVar] = {}
 
         self.crop_enabled_var = tk.BooleanVar(value=False)
         self.crop = None  # CropController, constructed after build_ui
@@ -878,7 +881,12 @@ class HaloApp:
         self.update_window_title(path_obj.name)
         self.clear_tracks()
         self.set_seek_range(0)
+        # Trim state must not leak into the next clip: drop the enabled toggle
+        # and its full-range values now, before the probe. A restored session
+        # re-enables trim in after_probe; a failed load leaves this clean slate.
+        self.trim_enabled_var.set(False)
         self.clear_trim_points(silent=True)
+        self.update_trim_controls()
         if self.crop:
             self.crop.reset()
         self.preview_placeholder_var.set("Preparing file...")
@@ -971,6 +979,7 @@ class HaloApp:
     def clear_tracks(self):
         self.track_controls.clear()
         self.track_state_strips.clear()
+        self.track_volume_labels.clear()
         self.preview_muted = False
         self.solo_row = None
 
@@ -1179,6 +1188,7 @@ class HaloApp:
         checkbox.pack(side=tk.LEFT, padx=px(6), pady=px(2))
 
         volume_label_var = tk.StringVar(value=f"{int(round(initial_volume * 100))}%")
+        self.track_volume_labels[row_number] = volume_label_var
         tk.Label(name_bar, textvariable=volume_label_var, font=theme.font_small(),
                  bg=theme.ROSTER, fg=theme.TEXT_BRIGHT).pack(side=tk.RIGHT, padx=px(8))
 
@@ -1629,6 +1639,25 @@ class HaloApp:
             self.set_status("Trim points cleared.")
             self.log("Trim points cleared.")
 
+    def clear_trim_points_action(self):
+        """Trim CLEAR button: wipe the IN/OUT points but offer a one-tap UNDO
+        toast (the workspace holds no grab, so toast buttons are clickable)."""
+        old_start, old_end = self.trim_start_seconds, self.trim_end_seconds
+        self.clear_trim_points()
+        if old_start is None and old_end is None:
+            return  # nothing was set — no undo to offer
+
+        def undo(s=old_start, e=old_end):
+            self.trim_start_seconds = s
+            self.trim_end_seconds = e
+            self.update_trim_info()
+            self.update_trim_markers()
+            self.set_status("Trim points restored.")
+            self.log("Trim points restored.")
+
+        dialogs.toast("Trim points cleared", "Removed the IN / OUT points.",
+                      "info", action_label="UNDO", action=undo, duration_ms=6000)
+
     def get_active_trim_points(self) -> tuple[float | None, float | None]:
         if not self.trim_enabled_var.get():
             return None, None
@@ -1900,9 +1929,13 @@ class HaloApp:
             return
         self.preview_muted = False
         self.solo_row = None
-        for _, var, slider in self.track_controls:
+        for row, (_, var, slider) in enumerate(self.track_controls):
             var.set(True)
             slider.set(1.0)
+            # slider.set() is silent, so the "NN%" label won't follow on its own.
+            label = self.track_volume_labels.get(row)
+            if label is not None:
+                label.set("100%")
         self.apply_all_track_volumes()
         self.update_track_row_styles()
         self.set_status("All track volumes reset to 100%.")
@@ -2541,6 +2574,10 @@ class HaloApp:
                 "H.265 NVENC (constant quality)."
             )
 
+        # A lingering "Export complete" from the last run must not sit on screen
+        # (reading COMPLETE) while this new export is compressing.
+        dialogs.dismiss_tagged("export")
+
         self.is_exporting = True
         self.stop_export_button.config(state=tk.NORMAL)
         self.set_busy(True)
@@ -2631,13 +2668,11 @@ class HaloApp:
                 else:
                     message = f"{name}\n{format_windows_discord_size(size_bytes)}"
                 app.ui(
-                    dialogs.toast,
-                    "Export complete",
-                    message,
-                    "success",
-                    "OPEN FOLDER",
-                    lambda: app.reveal_file(output_path),
-                    12000,
+                    lambda: dialogs.toast(
+                        "Export complete", message, "success",
+                        "OPEN FOLDER", lambda: app.reveal_file(output_path),
+                        12000, tag="export",
+                    )
                 )
 
             def on_finished(self) -> None:

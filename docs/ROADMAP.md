@@ -7,8 +7,8 @@ Single source of truth for planned UX/feature work. Seeded from the 2026-07-12 u
 sets items `in-progress`/`done` as it goes, appends a Session log entry, and commits roadmap updates
 in the same commit as the work. Newly discovered work gets a new row, not silent scope creep.
 
-**Now / Next:** T1 + the Q1–Q4 batch are done. Suggested next: B3 (command palette), then decide
-B1 vs. staying incremental. Q5–Q8 remain as small fillers.
+**Now / Next:** T1 + the full Q1–Q8 quick-win batch are done. Suggested next: B3 (command palette),
+then decide B1 vs. staying incremental (or pick up an M-track item).
 
 Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 
@@ -26,10 +26,10 @@ Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 | Q2 | One accurate error for unreadable files, return to landing (no dialog cascade) | F3 | done 2026-07-15 |
 | Q3 | Settings: Esc cancels, DONE saves (split `close()`) | F9 | done 2026-07-15 |
 | Q4 | Session-restore toast with RESET action; don't count inert crop keyframes; session dot on recent rows | F6, F14 | done 2026-07-15 |
-| Q5 | UNDO-toast for trim CLEAR / CLEAR RECENTS (grab_set caveat: flip button label in-place inside Settings) | F8 | todo |
-| Q6 | Reset leaked trim state on clip load | F10 | todo |
-| Q7 | Supersede stale success toasts when a new export starts | F11 | todo |
-| Q8 | Roster RESET leaves stale per-track % labels (`HaloSlider.set()` doesn't fire its command; discovered 2026-07-15) | — | todo |
+| Q5 | UNDO-toast for trim CLEAR / CLEAR RECENTS (grab_set caveat: flip button label in-place inside Settings) | F8 | done 2026-07-15 |
+| Q6 | Reset leaked trim state on clip load | F10 | done 2026-07-15 |
+| Q7 | Supersede stale success toasts when a new export starts | F11 | done 2026-07-15 |
+| Q8 | Roster RESET leaves stale per-track % labels (`HaloSlider.set()` doesn't fire its command; discovered 2026-07-15) | — | done 2026-07-15 |
 
 ## Incremental track — medium (M)
 
@@ -65,6 +65,16 @@ XL items get a stage checklist added under their row when work starts (plan-mode
 
 ## Session log (newest first)
 
+- **2026-07-15** — Shipped the rest of the Q-batch (Q5–Q8) on `feature/q-batch-quick-wins`:
+  trim CLEAR now posts an UNDO toast that restores the IN/OUT points, and CLEAR RECENT CLIPS
+  (unreachable by a toast button behind the Settings grab) flips to "UNDO CLEAR" in place (Q5);
+  loading a clip drops the trim toggle + full-range values before the probe so nothing leaks
+  into the next clip or lingers after a failed load (Q6); a new export dismisses any stale
+  "Export complete" toast via a new `tag`/`dialogs.dismiss_tagged` mechanism (Q7); roster RESET
+  now refreshes the per-track "NN%" labels itself, since `HaloSlider.set()` is deliberately
+  silent — added `app.track_volume_labels` keyed by row, cleared alongside `track_state_strips`
+  (Q8). Verified: widget gallery both skins + a 20-assertion in-process driver (real ffprobe,
+  real 2-track/1-track synthetic clips, real toasts, real SettingsOverlay). No new deps.
 - **2026-07-15** — Shipped the Q-batch (Q1–Q4) on `feature/q-batch-quick-wins`: filename in
   title + status-strip middle column; corrupt files now show one accurate error and return to
   the menu; Settings Esc cancels / DONE saves; session restores announce via toast with a
