@@ -56,6 +56,15 @@ def set_toast_offset(pixels: int):
     _toast_margin_bottom = pixels
 
 
+def a_modal_is_open() -> bool:
+    """True while a Halo dialog (info/error/confirm) is grabbing input.
+
+    Lets callers avoid stacking another overlay (e.g. the command palette)
+    on top of a modal. Settings uses its own grab, which already blocks
+    root key bindings, so it needs no separate flag here."""
+    return _open_dialog is not None
+
+
 # ----------------------------------------------------------------------
 # Dialogs
 # ----------------------------------------------------------------------

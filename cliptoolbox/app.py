@@ -73,6 +73,7 @@ from cliptoolbox.ui.wheel import WheelRouter
 from cliptoolbox.ui import dialogs as messagebox  # ported call sites unchanged
 from cliptoolbox.ui.theme import px
 from cliptoolbox.ui.views import landing, shell, workspace
+from cliptoolbox.ui.views.palette import CommandPalette
 from cliptoolbox.ui.views.settings import SettingsOverlay
 
 
@@ -172,6 +173,7 @@ class HaloApp:
 
         self.user_is_seeking = False
         self.is_exporting = False
+        self.command_palette = None
         self.auto_preview_after_load = bool(self.settings.auto_preview_after_load)
         self.preview_width = px(PREVIEW_WIDTH)
         self.preview_height = px(PREVIEW_HEIGHT)
@@ -281,6 +283,21 @@ class HaloApp:
     def open_settings(self):
         SettingsOverlay(self)
 
+    def toggle_command_palette(self):
+        """Ctrl+K: open the command palette, or close it if already open."""
+        if getattr(self, "command_palette", None) is not None:
+            self.command_palette.close()
+            return "break"
+        # Not while exporting, mid-typing, or over a modal (Settings / dialog).
+        if self.is_exporting or self._typing_in_entry():
+            return "break"
+        if self.active_screen not in ("landing", "workspace"):
+            return "break"
+        if dialogs.a_modal_is_open():
+            return "break"
+        self.command_palette = CommandPalette(self)
+        return "break"
+
     # ========================================================
     # Screen routing
     # ========================================================
@@ -314,14 +331,15 @@ class HaloApp:
         if self.is_exporting:
             hints = [("ESC", "CANCEL EXPORT")]
         elif self.active_screen == "landing":
-            hints = [("CTRL+O", "OPEN CLIP"), ("DROP", "LOAD FILE")]
+            hints = [("CTRL+O", "OPEN CLIP"), ("DROP", "LOAD FILE"),
+                     ("CTRL+K", "COMMANDS")]
         elif self.video_path:
             hints = [
                 ("SPACE", "PLAY/PAUSE"),
                 ("← →", "SEEK"),
                 ("WHEEL", "SEEK · VOLUME"),
                 ("[ ]", "TRIM"),
-                ("CTRL+E", "EXPORT"),
+                ("CTRL+K", "COMMANDS"),
                 ("ESC", "MENU"),
             ]
         else:
@@ -362,6 +380,8 @@ class HaloApp:
         root.bind("<Control-o>", lambda e: self.shortcut_load())
         root.bind("<Control-e>", lambda e: self.shortcut(self.export_video_dialog))
         root.bind("<Control-comma>", lambda e: self.shortcut_settings())
+        root.bind("<Control-k>", lambda e: self.toggle_command_palette())
+        root.bind("<Control-K>", lambda e: self.toggle_command_palette())
         root.bind("<Control-C>", lambda e: self.shortcut(self.copy_timestamp))
         root.bind("<Escape>", lambda e: self.shortcut_escape())
 

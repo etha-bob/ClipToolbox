@@ -7,8 +7,9 @@ Single source of truth for planned UX/feature work. Seeded from the 2026-07-12 u
 sets items `in-progress`/`done` as it goes, appends a Session log entry, and commits roadmap updates
 in the same commit as the work. Newly discovered work gets a new row, not silent scope creep.
 
-**Now / Next:** T1 + the full Q1–Q8 quick-win batch are done. Suggested next: B3 (command palette),
-then decide B1 vs. staying incremental (or pick up an M-track item).
+**Now / Next:** T1, the full Q1–Q8 quick-win batch, and B3 (command palette) are done. Per the bold
+sequencing, suggested next is B0 (background render queue — the B1/B4 prerequisite); alternatively
+pick up an M-track item (M1 export progress is the highest-value standalone).
 
 Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 
@@ -36,7 +37,7 @@ Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 | ID | Item | Fixes | Status |
 |----|------|-------|--------|
 | M1 | Determinate export progress strip via new `on_progress(percent, attempt, attempts_max)` callback; honest per-attempt display; no ETA | F5 | todo |
-| M2 | F1/? shortcut cheat-sheet overlay + legend hint (obsolete if B3 lands) | F7 | todo |
+| M2 | F1/? shortcut cheat-sheet overlay + legend hint (obsolete if B3 lands) | F7 | dropped (absorbed by B3 2026-07-15) |
 | M3 | Landing menu keyboard navigation (obsolete if B2 lands) | F12 | todo |
 | M4 | Animated "starting preview" cue | F13 | todo |
 
@@ -55,7 +56,7 @@ Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 | B0 | Background render queue utility (thumbnails/waveforms off the Tk thread via `ui()` marshaling) — prerequisite for B1/B4 | — | todo |
 | B1 | Real timeline: filmstrip lane, per-track waveforms, fat trim regions, always-visible keyframe lane, progress painted on the strip | F5 F6 F13, M1 M4, most of F7 | todo |
 | B2 | One adaptive screen (landing becomes the workspace empty state; command strip shows filename) | F4 F12, Q1 M3 | todo |
-| B3 | Command palette Ctrl+K (every action + hidden gestures, searchable, key hints) | F7, M2 | todo |
+| B3 | Command palette Ctrl+K (every action + hidden gestures, searchable, key hints) | F7, M2 | done 2026-07-15 |
 | B4 | Export drawer + persistent job history (name patterns, per-job progress/attempts, OPEN/RE-RUN) | F5 F11, Q7 M1 | todo |
 | B5 | Focus/HUD mode (Tab collapses panels, translucent scanline controls per skin) | — | todo |
 | B6 | First-run coach marks overlay | cold-start half of F7 | todo |
@@ -65,6 +66,24 @@ XL items get a stage checklist added under their row when work starts (plan-mode
 
 ## Session log (newest first)
 
+- **2026-07-15** — Shipped B3 (command palette) on `feature/command-palette` (stacked on the
+  unmerged `feature/q-batch-quick-wins` so the roadmap stays coherent; rebases onto main once the
+  Q-batch merges). New `ui/commands.py` is a single registry of ~28 actions — each with a key hint,
+  an `enabled()` predicate mirroring the `shortcut()` guards, and search keywords — plus a
+  subsequence fuzzy `score()`. New `ui/views/palette.py` (`CommandPalette`) reuses the
+  SettingsOverlay pattern (dim scrim + grabbed card Toplevel, `<Configure>` reposition): a HaloEntry
+  search box over a scrolled results list; runnable commands render bright and are keyboard-navigable
+  (Up/Down wrap across enabled rows only, Enter runs, Esc/Ctrl+K close), unavailable ones render
+  greyed **but keep their shortcut visible** so the palette doubles as the cheat-sheet — this is why
+  M2 is dropped and F7 is covered. Wired Ctrl+K in `app.py` (toggle, guarded against export/modals/
+  typing; works on landing *and* workspace) and added a `CTRL+K COMMANDS` legend hint to both
+  screens (dropped the redundant `CTRL+E EXPORT` legend chip since the palette surfaces export).
+  Verified: widget gallery both skins + a 17-assertion in-process driver (real ffprobe on a synthetic
+  clip) exercising landing/workspace open, greyed-vs-enabled rows, `exp` fuzzy filter ranking Export
+  first, arrow nav skipping greyed rows, and Enter-runs-then-teardown — screenshotted in halo2 and
+  reach. Lesson: `_scroll_into_view` fired during `__init__` before the canvas was mapped, so
+  `winfo_height()==1` scrolled the selected top row out of view — guard with the configured height and
+  a "fits, stay at top" early-out. No new deps.
 - **2026-07-15** — Shipped the rest of the Q-batch (Q5–Q8) on `feature/q-batch-quick-wins`:
   trim CLEAR now posts an UNDO toast that restores the IN/OUT points, and CLEAR RECENT CLIPS
   (unreachable by a toast button behind the Settings grab) flips to "UNDO CLEAR" in place (Q5);
