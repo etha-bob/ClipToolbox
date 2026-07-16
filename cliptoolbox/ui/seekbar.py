@@ -93,6 +93,9 @@ class HaloSeekbar(tk.Canvas):
         self._view_to: float | None = None
         self._fps: float | None = None
 
+        # Export progress overlay: (percent, attempt, attempts_max) or None.
+        self._export_progress: tuple[int, int, int] | None = None
+
         # Lane data (pushed by the app; plain PIL images / state strings).
         # _data_gen bumps on every change so the composed base cache misses.
         self._filmstrip: Image.Image | None = None
@@ -227,6 +230,18 @@ class HaloSeekbar(tk.Canvas):
         if states != self._wave_states:
             self._wave_states = states
             self._data_gen += 1
+            self._redraw()
+
+    def set_export_progress(self, percent, attempt: int = 1, attempts_max: int = 1):
+        """Paint export progress onto the strip (None clears). The fill
+        sweeps the trimmed region only — the span actually being exported —
+        and resets honestly at the start of every compression attempt."""
+        if percent is None:
+            new = None
+        else:
+            new = (max(0, min(100, int(percent))), int(attempt), int(attempts_max))
+        if new != self._export_progress:
+            self._export_progress = new
             self._redraw()
 
     # ------------------------------------------------------------------
@@ -723,6 +738,37 @@ class HaloSeekbar(tk.Canvas):
                     state = "normal"
                 self.create_image(self._x_for(t), kf_cy,
                                   image=sk.get("keyframe", h=kf_h, state=state, behind=self.behind))
+
+        # Export progress: fill sweeping the trimmed region in the ruler, a
+        # bright full-height sweep line, and an honest per-attempt counter.
+        # Drawn last so the counter text stays on top of every lane.
+        if self._export_progress is not None:
+            pct, attempt, attempts_max = self._export_progress
+            r0 = self._trim_start if self._trim_start is not None else self._from
+            r1 = self._trim_end if self._trim_end is not None else self._to
+            if r1 > r0:
+                sweep_t = r0 + (pct / 100.0) * (r1 - r0)
+                fx0 = self._x_for(max(r0, v0))
+                fx1 = self._x_for(min(sweep_t, v1))
+                if sweep_t >= v0 and fx1 > fx0:
+                    self.create_rectangle(fx0, ruler_top + 1, fx1, ruler_bot - 2,
+                                          fill=theme.ACCENT_DEEP, width=0)
+                if v0 <= sweep_t <= v1:
+                    sx = self._x_for(sweep_t)
+                    self.create_line(sx, ruler_top, sx, self._hpx - px(1),
+                                     fill=theme.ACCENT, width=max(1, px(2)))
+                    if attempts_max > 1:
+                        label = f"ATTEMPT {attempt}/{attempts_max}"
+                        text_y = (self._film_top() + self._film_bot()) // 2
+                        # Flip sides near the right edge so it never clips.
+                        if sx > (x0 + x1) // 2:
+                            self.create_text(sx - px(8), text_y, text=label,
+                                             anchor="e", font=theme.font_small(),
+                                             fill=theme.TEXT_BRIGHT)
+                        else:
+                            self.create_text(sx + px(8), text_y, text=label,
+                                             anchor="w", font=theme.font_small(),
+                                             fill=theme.TEXT_BRIGHT)
 
     def _on_var_write(self, *_):
         if self._suspend_var_sync:

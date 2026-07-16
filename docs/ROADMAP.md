@@ -99,7 +99,8 @@ STARTING scanner cue in the ruler band; branch `feature/real-timeline`, one comm
       token), mix-state dim/solo mirroring the roster, 0/1/2/3/4+ band division + "+N" tag
 - [x] S5 Keyframe lane: inert (ghosted) diamond state, always-visible when keyframes exist,
       right-click delete; inert edits skip the pipeline; only-inert restores stay silent (Q4)
-- [ ] S6 Export progress: `on_progress` protocol + sweep + attempt counter + seekbar-disable gap (M1/F5)
+- [x] S6 Export progress: `on_progress(percent, attempt, attempts_max)` + sweep over the trimmed
+      region + attempt counter + seekbar disabled during export (M1/F5; real 2-attempt NVENC run)
 - [ ] S7 STARTING cue (M4/F13)
 - [ ] S8 Cleanup + close-out: delete `trim_flag`, gallery timeline demos, roadmap done + log
 

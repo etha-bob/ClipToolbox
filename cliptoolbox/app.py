@@ -915,6 +915,11 @@ class HaloApp:
         export_lock = tk.DISABLED if self.is_exporting else tk.NORMAL
         self.close_clip_button.config(state=export_lock)
         self.settings_button.config(state=export_lock)
+        # The timeline is read-only while an export renders: scrubbing or
+        # dragging trim mid-export would misrepresent the in-flight render.
+        # (Linked-var updates still flow — _state only gates interaction —
+        # so the progress sweep and end-of-export seek still paint.)
+        self.seekbar.config(state=export_lock)
 
         # Compression settings only affect export, so keep them editable during
         # preview/playback. Lock them only while an export is actually running.
@@ -3033,6 +3038,9 @@ class HaloApp:
             def on_status(self, text: str) -> None:
                 app.ui(app.set_status, text)
 
+            def on_progress(self, percent: int, attempt: int, attempts_max: int) -> None:
+                app.ui(app.seekbar.set_export_progress, percent, attempt, attempts_max)
+
             def on_log(self, text: str) -> None:
                 app.ui(app.log, text)
 
@@ -3062,6 +3070,7 @@ class HaloApp:
 
             def on_finished(self) -> None:
                 app.is_exporting = False
+                app.ui(app.seekbar.set_export_progress, None)
                 app.ui(app.stop_export_button.config, state=tk.DISABLED)
                 app.ui(app.set_busy, False)
 
@@ -3079,6 +3088,7 @@ class HaloApp:
                 pass
 
         self.is_exporting = False
+        self.seekbar.set_export_progress(None)
         self.stop_export_button.config(state=tk.DISABLED)
         self.set_status("Export cancelled.")
 
