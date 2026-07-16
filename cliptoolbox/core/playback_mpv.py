@@ -154,6 +154,7 @@ class MpvPlaybackEngine:
 
         self._position = 0.0
         self._pause_position: float | None = None
+        self._rate = 1.0  # playback speed (M10); mpv applies it live
         self._last_emit = 0.0
         self._stderr_tail: deque[str] = deque(maxlen=12)
 
@@ -204,6 +205,23 @@ class MpvPlaybackEngine:
         if duration:
             value = min(value, duration)
         return max(0.0, value)
+
+    @property
+    def rate(self) -> float:
+        return self._rate
+
+    def set_rate(self, rate: float) -> bool:
+        """Set the playback speed live over IPC (mpv reports time-pos in
+        source seconds regardless, so no position math changes). Returns
+        True — the rate is applied in place, no respawn needed."""
+        rate = min(4.0, max(0.25, float(rate)))
+        self._rate = rate
+        try:
+            if self._ipc and self._ipc.alive:
+                self._ipc.set_property("speed", rate)
+        except Exception:
+            pass
+        return True
 
     # ------------------------------------------------------------------
     # Media / lifecycle
@@ -309,6 +327,8 @@ class MpvPlaybackEngine:
         self._ipc.set_property("start", f"{start_seconds:.3f}")
         self._ipc.command_async("loadfile", self._video_path, "replace")
         self._ipc.set_property("pause", False)
+        if abs(self._rate - 1.0) > 1e-9:  # fresh process defaults to 1x
+            self._ipc.set_property("speed", self._rate)
         self._loaded = True
         self._position = start_seconds
 
@@ -317,6 +337,10 @@ class MpvPlaybackEngine:
         while gen == self._generation and time.monotonic() < deadline:
             hwnd = win32.find_child_window_for_pid(wid, self._process.pid)
             if hwnd:
+                # Input-transparent embed (M10): clicks over live video fall
+                # through to the Tk preview frame's gesture bindings. mpv is
+                # driven purely over IPC, so it never needs system input.
+                win32.disable_window_input(hwnd)
                 self._child_hwnd = hwnd
                 self._cb.on_window_ready(hwnd)
                 return
@@ -403,6 +427,8 @@ class MpvPlaybackEngine:
 
     def stop(self):
         self._generation += 1
+        if self._rate != 1.0:  # never leak a held 2x into the next clip
+            self.set_rate(1.0)
         if self._ipc and self._ipc.alive:
             try:
                 self._ipc.command_async("stop")

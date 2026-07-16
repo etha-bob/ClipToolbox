@@ -206,6 +206,10 @@ class HaloApp:
         self.command_palette = None
         # Focus/HUD mode (B5): transient view state, never persisted.
         self.focus_mode = False
+        # Preview mouse gestures (M10): hold-to-2x bookkeeping.
+        self.preview_hold_after_id: str | None = None
+        self.preview_hold_active = False
+        self.preview_hold_was_paused = False
         self.coach_marks: CoachMarks | None = None
         self.auto_preview_after_load = bool(self.settings.auto_preview_after_load)
         self.preview_width = px(PREVIEW_WIDTH)
@@ -2636,6 +2640,98 @@ class HaloApp:
     # ========================================================
     # Embedded preview
     # ========================================================
+
+    # ========================================================
+    # Preview mouse gestures (M10)
+    # ========================================================
+    # The embedded player windows are input-disabled (win32), so clicks over
+    # live video fall through to the Tk preview surfaces these bind on.
+
+    PREVIEW_HOLD_MS = 450  # press this long = hold gesture, shorter = click
+
+    def bind_preview_gestures(self, widget):
+        widget.bind("<ButtonPress-1>", self.on_preview_press)
+        widget.bind("<ButtonRelease-1>", self.on_preview_release)
+        widget.bind("<Double-Button-1>", self.on_preview_double_click)
+        widget.bind("<ButtonPress-3>", self.on_preview_right_click)
+
+    def _preview_gestures_allowed(self) -> bool:
+        return bool(self.video_path) and not self.is_exporting
+
+    def _cancel_preview_hold_timer(self):
+        if self.preview_hold_after_id is not None:
+            try:
+                self.root.after_cancel(self.preview_hold_after_id)
+            except Exception:
+                pass
+            self.preview_hold_after_id = None
+
+    def on_preview_press(self, _event=None):
+        if not self._preview_gestures_allowed():
+            return
+        self._cancel_preview_hold_timer()
+        self.preview_hold_after_id = self.root.after(
+            self.PREVIEW_HOLD_MS, self._begin_preview_hold)
+
+    def _begin_preview_hold(self):
+        """The press outlived the click window: play at 2x while held."""
+        self.preview_hold_after_id = None
+        if not self._preview_gestures_allowed():
+            return
+        state = self.playback.state
+        if state == core_playback.PLAYING:
+            self.preview_hold_was_paused = False
+        elif state == core_playback.PAUSED:
+            self.preview_hold_was_paused = True
+        else:
+            return  # STARTING/IDLE: nothing sensible to speed up
+        self.preview_hold_active = True
+        applied_live = self.playback.set_rate(2.0)
+        if self.preview_hold_was_paused:
+            self.resume_playback()
+        elif not applied_live:
+            # ffplay: the rate only takes effect on a respawn — reuse the
+            # conceal-aware restart path so the switch doesn't flash.
+            self.restart_playback_at(self.playback.position)
+        self.set_status("Playing at 2× — release to drop back.")
+
+    def on_preview_release(self, _event=None):
+        self._cancel_preview_hold_timer()
+        if not self.preview_hold_active:
+            return  # short press: a plain click does nothing
+        self.preview_hold_active = False
+        was_paused = self.preview_hold_was_paused
+        self.preview_hold_was_paused = False
+        if was_paused:
+            # Skimmed from pause: park paused wherever the 2x run got to.
+            if self.playback.state in (core_playback.PLAYING, core_playback.STARTING):
+                self.pause_playback()
+            self.playback.set_rate(1.0)  # ffplay drops the paused 2x pipeline
+            pos = self.playback.position
+            self.set_seek_position(pos)
+            self.request_scrub_frame(pos)
+            self.set_status(f"Paused at {self.format_seconds(pos)}.")
+        else:
+            applied_live = self.playback.set_rate(1.0)
+            if not applied_live and self.playback.state in (
+                    core_playback.PLAYING, core_playback.STARTING):
+                self.restart_playback_at(self.playback.position)
+            self.set_status("Back to 1× speed.")
+
+    def on_preview_double_click(self, _event=None):
+        # The second press re-armed the hold timer; a slow first press may
+        # even have gone 2x already — unwind both before flipping focus.
+        self._cancel_preview_hold_timer()
+        if self.preview_hold_active:
+            self.on_preview_release()
+        if dialogs.a_modal_is_open() or not self.video_path:
+            return
+        self.toggle_focus_mode()
+
+    def on_preview_right_click(self, _event=None):
+        if not self._preview_gestures_allowed() or self.preview_hold_active:
+            return
+        self.toggle_preview()
 
     def toggle_preview(self):
         if self.is_exporting:

@@ -47,7 +47,7 @@ Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 | M7 | Timeline: zoomed-view navigation (Ethan 2026-07-16) — the 2px zoom indicator grows into a draggable navigator scrollbar (drag thumb pans the window, click jumps it), middle-mouse drag pans the strip 1:1, persistent filmstrip tile cache keeps pan recomposes cheap | — | done 2026-07-16 |
 | M8 | Timeline: edge auto-scroll (Ethan 2026-07-16) — dragging the playhead/trim bracket/keyframe to the edge of a zoomed view pans the view so the drag continues past it (M7 follow-up) | — | done 2026-07-16 |
 | M9 | Focus + crop compatibility (Ethan 2026-07-16) — Tab focus works with crop on: crop toolbar stays usable inside focus (preview/edit, add/delete, key nav, reset, clear) and the crop box drags in Edit mode; C inside focus toggles crop without leaving focus. Supersedes B5's mutual-exclusion decision | — | done 2026-07-16 |
-| M10 | Preview mouse gestures (Ethan 2026-07-16) — hold left-click on the preview = play at 2x while held, double-click = toggle focus mode, right-click = play/pause | — | todo |
+| M10 | Preview mouse gestures (Ethan 2026-07-16) — hold left-click on the preview = play at 2x while held, double-click = toggle focus mode, right-click = play/pause | — | done 2026-07-16 |
 | M11 | Watermark expansion (Ethan 2026-07-16) — Settings section for the timestamp watermark: text source (parsed filename timestamp / file creation date / full filename), date-only vs date+time, date format presets | — | todo |
 
 ## Incremental track — large (L)

@@ -28,6 +28,8 @@ if IS_WINDOWS:
     GetClassNameW = user32.GetClassNameW
 
     SetParent = user32.SetParent
+    EnableWindow = user32.EnableWindow
+    EnableWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
     MoveWindow = user32.MoveWindow
     ShowWindow = user32.ShowWindow
     BringWindowToTop = user32.BringWindowToTop
@@ -405,6 +407,14 @@ def embed_external_window_hidden(child_hwnd: int, parent_hwnd: int, width: int, 
 
     SetParent(child_hwnd, parent_hwnd)
 
+    # Input-transparent embed (M10): a disabled child window is skipped by
+    # the system's mouse routing, so clicks over live video fall through to
+    # the Tk preview frame underneath (which owns the preview gestures) and
+    # FFplay's own built-in mouse seeking/fullscreen can never fire. Posted
+    # messages (the pause spacebar) still reach a disabled window's wndproc,
+    # and it can no longer steal keyboard focus from Tk.
+    disable_window_input(child_hwnd)
+
     SetWindowPos(
         child_hwnd,
         0,
@@ -470,6 +480,19 @@ def raise_window_to_top(hwnd: int | None):
         if IsWindow(hwnd):
             SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0,
                          SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS)
+    except Exception:
+        pass
+
+
+def disable_window_input(hwnd: int | None):
+    """Make an embedded child window input-transparent: the system skips
+    disabled windows when routing mouse input, so clicks land on the Tk
+    parent instead. Posted messages still arrive at its wndproc."""
+    if not IS_WINDOWS or not hwnd:
+        return
+    try:
+        if IsWindow(hwnd):
+            EnableWindow(hwnd, 0)
     except Exception:
         pass
 

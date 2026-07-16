@@ -124,6 +124,14 @@ def build(app):
 
     app.preview_frame.bind("<Configure>", app.on_preview_frame_resize)
 
+    # Preview mouse gestures (M10): hold = 2x, double-click = focus mode,
+    # right-click = play/pause. The embedded player windows are input-
+    # disabled, so clicks over live video land on these Tk surfaces (the
+    # cropbox stays unbound — the crop editor owns its own clicks).
+    for surface in (app.preview_frame, app.mpv_host_frame,
+                    app.preview_placeholder, app.paused_frame_label):
+        app.bind_preview_gestures(surface)
+
     # ------------------------------------------------------------------
     # Left: timeline
     # ------------------------------------------------------------------
