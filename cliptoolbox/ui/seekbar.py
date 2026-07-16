@@ -112,6 +112,12 @@ class HaloSeekbar(tk.Canvas):
         self._pan_anchor_x: int | None = None
         self._pan_anchor_v0 = 0.0
 
+        # Edge auto-scroll: dragging the playhead / a trim bracket / a
+        # keyframe against the edge of a zoomed view pans the view so the
+        # drag can continue past it.
+        self._drag_last_x = 0
+        self._edge_scroll_after_id: str | None = None
+
         # Export progress overlay: (percent, attempt, attempts_max) or None.
         self._export_progress: tuple[int, int, int] | None = None
 
@@ -305,6 +311,7 @@ class HaloSeekbar(tk.Canvas):
     def _on_destroy(self, _event=None):
         self._starting = False
         self._cancel_starting_timer()
+        self._cancel_edge_scroll()
 
     def set_export_progress(self, percent, attempt: int = 1, attempts_max: int = 1):
         """Paint export progress onto the strip (None clears). The fill
@@ -1033,6 +1040,73 @@ class HaloSeekbar(tk.Canvas):
         self._pan_anchor_x = None
         self._set_cursor("")
 
+    # -- edge auto-scroll (zoomed drags against the view edge) -----------
+
+    EDGE_SCROLL_ZONE = 4   # logical px inside the usable edge that arm it
+    EDGE_SCROLL_MS = 50
+
+    def _edge_scroll_active_drag(self) -> bool:
+        """A drag that should push a zoomed view at its edges is live."""
+        return (self._dragging
+                or (self._trim_drag_kind is not None and self._trim_moved)
+                or (self._kf_drag_index is not None and self._kf_moved))
+
+    def _cancel_edge_scroll(self):
+        if self._edge_scroll_after_id is not None:
+            try:
+                self.after_cancel(self._edge_scroll_after_id)
+            except Exception:
+                pass
+            self._edge_scroll_after_id = None
+
+    def _update_edge_scroll(self, x: int):
+        """Arm/disarm the auto-scroll timer from the latest drag event."""
+        if self._view_from is None or not self._edge_scroll_active_drag():
+            self._cancel_edge_scroll()
+            return
+        x0, x1 = self._usable()
+        zone = px(self.EDGE_SCROLL_ZONE)
+        if x <= x0 + zone or x >= x1 - zone:
+            if self._edge_scroll_after_id is None:
+                self._edge_scroll_after_id = self.after(
+                    self.EDGE_SCROLL_MS, self._tick_edge_scroll)
+        else:
+            self._cancel_edge_scroll()
+
+    def _tick_edge_scroll(self):
+        self._edge_scroll_after_id = None
+        if (self._view_from is None or self._state != tk.NORMAL
+                or not self.winfo_exists()
+                or not self._edge_scroll_active_drag()):
+            return
+        x = self._drag_last_x
+        x0, x1 = self._usable()
+        zone = px(self.EDGE_SCROLL_ZONE)
+        span = self._view_to - self._view_from
+        if x <= x0 + zone:
+            overshoot, direction = (x0 + zone) - x, -1
+        elif x >= x1 - zone:
+            overshoot, direction = x - (x1 - zone), 1
+        else:
+            return
+        # 2.5% of the span per tick at the edge, ramping to 10% when the
+        # pointer is dragged well past it (0.5–2 spans/second at 50 ms).
+        frac = 0.025 + 0.075 * min(1.0, overshoot / max(1, px(60)))
+        old_v0 = self._view_from
+        self._pan_view_to(old_v0 + direction * span * frac)
+        if self._view_from == old_v0:
+            return  # clamped at the clip edge; a new drag event re-arms
+        # Re-apply the live drag at the same pointer x — under the panned
+        # view it maps to a new time, so the dragged item keeps moving.
+        if self._trim_drag_kind is not None and self._trim_moved:
+            self._apply_trim_drag(x - self._trim_grab_dx)
+        elif self._kf_drag_index is not None and self._kf_moved:
+            self._apply_keyframe_drag(x)
+        elif self._dragging:
+            self._apply_drag(x)
+        self._edge_scroll_after_id = self.after(
+            self.EDGE_SCROLL_MS, self._tick_edge_scroll)
+
     def _on_press(self, event):
         if self._state != tk.NORMAL:
             return
@@ -1138,6 +1212,7 @@ class HaloSeekbar(tk.Canvas):
             if self._view_from is not None:
                 self._pan_view_to(self._full_time_at(event.x) - self._minimap_grab_dt)
             return
+        self._drag_last_x = event.x
         if self._trim_drag_kind is not None:
             if (not self._trim_moved and self._trim_press_x is not None
                     and abs(event.x - self._trim_press_x) > px(3)):
@@ -1151,8 +1226,10 @@ class HaloSeekbar(tk.Canvas):
                 self._apply_keyframe_drag(event.x)
         elif self._dragging:
             self._apply_drag(event.x)
+        self._update_edge_scroll(event.x)
 
     def _on_release(self, event):
+        self._cancel_edge_scroll()
         if self._minimap_drag:
             self._minimap_drag = False
             self._redraw()
