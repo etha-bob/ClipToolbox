@@ -11,6 +11,7 @@ import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from cliptoolbox.constants import DEFAULT_EXPORT_NAME_PATTERN
 from cliptoolbox.core.paths import BASE_DIR
 
 CONFIG_NAME = "config.json"
@@ -38,6 +39,9 @@ class AppSettings:
     notify_flash_taskbar: bool = True  # flash the taskbar when exports finish unfocused
     recent_clips: list[str] = field(default_factory=list)
     last_open_dir: str | None = None
+    # Export drawer (B4): output name pattern + destination (None = outputs/).
+    export_name_pattern: str = DEFAULT_EXPORT_NAME_PATTERN
+    export_destination: str | None = None
 
 
 def _candidates() -> list[Path]:

@@ -1,16 +1,16 @@
 """The workspace screen — ClipToolbox's take on the Halo 2 pregame lobby.
 
 Left column: action buttons (START GAME position), preview bezel, timeline,
-transport/trim controls, and the compression quick-options card. Right
-column: the audio-track roster (styled like the lobby player list) and the
-activity log (the lobby chat box position).
+transport/trim controls, and the pinned EXPORT row. Right column: the
+audio-track roster (styled like the lobby player list) and the activity log
+(the lobby chat box position). Export options live in the drawer (B4).
 
 This module only builds widgets and assigns them onto the app object under
 the attribute names the ported state machine expects.
 """
 import tkinter as tk
 
-from cliptoolbox.constants import COMPRESSION_RESOLUTION_PRESETS, PREVIEW_HEIGHT
+from cliptoolbox.constants import PREVIEW_HEIGHT
 from cliptoolbox.ui import theme
 from cliptoolbox.ui.cropbox import CropBoxCanvas
 from cliptoolbox.ui.seekbar import HaloSeekbar
@@ -21,7 +21,6 @@ from cliptoolbox.ui.widgets import (
     HaloEntry,
     HaloPanel,
     HaloScrollbar,
-    HaloSegmented,
     Tooltip,
     make_log,
 )
@@ -60,9 +59,10 @@ def build(app):
 
     app.export_button = HaloButton(
         export_row, text="EXPORT CLIP", variant="primary",
-        command=app.export_video_dialog, width=px(200),
+        command=app.toggle_export_drawer, width=px(200),
     )
     app.export_button.pack(side=tk.LEFT)
+    Tooltip(app.export_button, "Open the export drawer (Ctrl+E)")
 
     app.stop_export_button = HaloButton(
         export_row, text="CANCEL EXPORT", variant="danger",
@@ -328,82 +328,9 @@ def build(app):
     )
     app.frame_copy_button.pack(side=tk.LEFT, padx=(px(6), 0))
 
-    # ------------------------------------------------------------------
-    # Left: compression quick-options card
-    # ------------------------------------------------------------------
-    card = HaloPanel(left, title="Compression")
-    card.pack(fill=tk.X, pady=(px(10), 0))
-
-    comp_row = tk.Frame(card.body, bg=theme.PANEL_FILL)
-    comp_row.pack(fill=tk.X)
-
-    app.compress_checkbox = HaloCheckbox(
-        comp_row, text="COMPRESS TO TARGET SIZE", variable=app.compress_enabled_var,
-        command=app.on_compression_toggle, behind=theme.PANEL_FILL,
-        font=theme.font_body(13),
-    )
-    app.compress_checkbox.pack(side=tk.LEFT)
-
-    app.compression_options_frame = tk.Frame(comp_row, bg=theme.PANEL_FILL)
-    app.compression_options_frame.pack(side=tk.LEFT, padx=(px(10), 0))
-
-    tk.Label(app.compression_options_frame, text="Target:", font=theme.font_small(),
-             bg=theme.PANEL_FILL, fg=theme.TEXT).pack(side=tk.LEFT)
-    app.compression_target_entry = HaloEntry(
-        app.compression_options_frame, textvariable=app.compression_target_var, width=6,
-    )
-    app.compression_target_entry.pack(side=tk.LEFT, padx=(px(6), px(4)))
-    tk.Label(app.compression_options_frame, text="MB", font=theme.font_small(),
-             bg=theme.PANEL_FILL, fg=theme.TEXT_DIM).pack(side=tk.LEFT)
-
-    tk.Label(app.compression_options_frame, text="Max res:", font=theme.font_small(),
-             bg=theme.PANEL_FILL, fg=theme.TEXT).pack(side=tk.LEFT, padx=(px(14), px(4)))
-    app.compression_resolution_combo = HaloSegmented(
-        app.compression_options_frame,
-        list(COMPRESSION_RESOLUTION_PRESETS.keys()),
-        app.compression_resolution_var,
-        command=app.on_compression_resolution_changed,
-    )
-    app.compression_resolution_combo.pack(side=tk.LEFT)
-
-    app.compression_options_frame.pack_forget()
-
-    app.compression_estimate_var = tk.StringVar(value="")
-    tk.Label(card.body, textvariable=app.compression_estimate_var, font=theme.font_small(),
-             bg=theme.PANEL_FILL, fg=theme.TEXT_DIM, anchor="w").pack(fill=tk.X, pady=(px(6), 0))
-
-    app.compression_target_var.trace_add("write", lambda *a: app.update_compression_estimate())
-
-    # ------------------------------------------------------------------
-    # Left: timestamp watermark row (burns the filename's recording time
-    # bottom-left, fading out). Lives under compression since both are
-    # export-only options.
-    # ------------------------------------------------------------------
-    wm_row = tk.Frame(card.body, bg=theme.PANEL_FILL)
-    wm_row.pack(fill=tk.X, pady=(px(8), 0))
-
-    app.timestamp_watermark_checkbox = HaloCheckbox(
-        wm_row, text="TIMESTAMP WATERMARK",
-        variable=app.timestamp_watermark_enabled_var,
-        command=app.on_timestamp_watermark_toggle, behind=theme.PANEL_FILL,
-        font=theme.font_body(13),
-    )
-    app.timestamp_watermark_checkbox.pack(side=tk.LEFT)
-
-    app.timestamp_watermark_options_frame = tk.Frame(wm_row, bg=theme.PANEL_FILL)
-    app.timestamp_watermark_options_frame.pack(side=tk.LEFT, padx=(px(10), 0))
-
-    tk.Label(app.timestamp_watermark_options_frame, text="Fade out after:",
-             font=theme.font_small(), bg=theme.PANEL_FILL, fg=theme.TEXT).pack(side=tk.LEFT)
-    app.timestamp_watermark_duration_entry = HaloEntry(
-        app.timestamp_watermark_options_frame,
-        textvariable=app.timestamp_watermark_duration_var, width=6,
-    )
-    app.timestamp_watermark_duration_entry.pack(side=tk.LEFT, padx=(px(6), px(4)))
-    tk.Label(app.timestamp_watermark_options_frame, text="ms", font=theme.font_small(),
-             bg=theme.PANEL_FILL, fg=theme.TEXT_DIM).pack(side=tk.LEFT)
-
-    app.timestamp_watermark_options_frame.pack_forget()
+    # (The compression + timestamp-watermark cards moved into the export
+    # drawer with B4 — they're export-only options, and the move frees
+    # left-column height, the M5 pressure point.)
 
     # ------------------------------------------------------------------
     # Right: audio-track roster (lobby player list)
@@ -483,8 +410,5 @@ def build(app):
         (app.frame_saveas_button, "Save the current frame to a chosen location"),
         (app.frame_copy_button, "Copy the current frame to the clipboard"),
         (app.reset_volumes_button, "Reset every track to 100% and clear mute/solo"),
-        (app.compression_target_entry, "Target size in MB (Windows/Discord MiB)"),
-        (app.compression_resolution_combo, "Cap the compressed video resolution"),
-        (app.timestamp_watermark_duration_entry, "How long the timestamp stays fully visible before fading (ms)"),
     ):
         Tooltip(widget, tip)

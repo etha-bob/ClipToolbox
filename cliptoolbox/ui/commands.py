@@ -153,8 +153,9 @@ def build_command_registry(app) -> list[Command]:
                 enabled=crop_active, keywords="remove all animate"),
 
         # --- Export ------------------------------------------------------
-        Command("export.run", "Export video", "Export", app.export_video_dialog,
-                keys="Ctrl+E", enabled=workspace_ready, keywords="render save mp4 encode"),
+        Command("export.run", "Export video", "Export", app.open_export_drawer,
+                keys="Ctrl+E", enabled=workspace_ready,
+                keywords="render save mp4 encode drawer"),
         Command("export.cancel", "Cancel export", "Export", app.cancel_export,
                 keys="Esc", enabled=lambda: app.is_exporting, keywords="stop abort"),
 

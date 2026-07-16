@@ -36,6 +36,7 @@ from cliptoolbox.constants import (
     CREATE_NO_WINDOW,
     DEFAULT_COMPRESSION_RESOLUTION,
     DEFAULT_COMPRESSION_TARGET_MB,
+    DEFAULT_EXPORT_NAME_PATTERN,
     DEFAULT_TIMESTAMP_WATERMARK_DURATION_MS,
     IS_WINDOWS,
     PREVIEW_HEIGHT,
@@ -46,6 +47,7 @@ from cliptoolbox.constants import (
 from cliptoolbox.core import commands as core_commands
 from cliptoolbox.core import export as core_export
 from cliptoolbox.core import filters as core_filters
+from cliptoolbox.core import jobs as core_jobs
 from cliptoolbox.core import engine_factory
 from cliptoolbox.core import mediainfo as core_mediainfo
 from cliptoolbox.core import playback as core_playback
@@ -76,6 +78,7 @@ from cliptoolbox.ui.wheel import WheelRouter
 from cliptoolbox.ui import dialogs as messagebox  # ported call sites unchanged
 from cliptoolbox.ui.theme import px
 from cliptoolbox.ui.views import empty_state, shell, workspace
+from cliptoolbox.ui.views.drawer import ExportDrawer
 from cliptoolbox.ui.views.palette import CommandPalette
 from cliptoolbox.ui.views.settings import SettingsOverlay
 
@@ -162,6 +165,14 @@ class HaloApp:
         self.timestamp_watermark_duration_var = tk.StringVar(
             value=str(DEFAULT_TIMESTAMP_WATERMARK_DURATION_MS))
 
+        # Export drawer (B4): name pattern + destination, and the persistent
+        # job history (jobs.json). The drawer itself is built in build_ui.
+        self.export_name_pattern_var = tk.StringVar(
+            value=self.settings.export_name_pattern or DEFAULT_EXPORT_NAME_PATTERN)
+        self.export_destination: str | None = self.settings.export_destination
+        self.export_drawer: ExportDrawer | None = None
+        self.job_history = core_jobs.JobHistory()
+
         self.volume_log_after_ids: dict[int, str] = {}
 
         self.export_thread: threading.Thread | None = None
@@ -230,6 +241,7 @@ class HaloApp:
         shell.build(self)        # header, status strip, legend, screen container
         workspace.build(self)    # the editor
         empty_state.build(self)  # the no-clip hero (stacked above at start)
+        self.export_drawer = ExportDrawer(self)  # slides over both (B4)
 
         self.wheel = WheelRouter(self.root)
         self.wheel.register(self.seekbar, self.on_wheel_seek)
@@ -302,6 +314,9 @@ class HaloApp:
         s.auto_preview_after_load = bool(self.auto_preview_after_load)
         s.recent_clips = list(self.recent_clips)
         s.last_open_dir = self.last_open_dir
+        s.export_name_pattern = (
+            self.export_name_pattern_var.get().strip() or DEFAULT_EXPORT_NAME_PATTERN)
+        s.export_destination = self.export_destination
         app_settings.save(s)
 
     def open_settings(self):
@@ -355,6 +370,8 @@ class HaloApp:
 
         if self.is_exporting:
             hints = [("ESC", "CANCEL EXPORT")]
+        elif self.export_drawer is not None and self.export_drawer.visible:
+            hints = [("ESC", "CLOSE DRAWER"), ("CTRL+K", "COMMANDS")]
         elif self.video_path:
             hints = [
                 ("SPACE", "PLAY/PAUSE"),
@@ -411,7 +428,7 @@ class HaloApp:
             root.bind(f"<Key-{digit}>",
                       lambda e, n=digit: self.shortcut(lambda: self.seek_to_fraction(n / 10.0)))
         root.bind("<Control-o>", lambda e: self.shortcut_load())
-        root.bind("<Control-e>", lambda e: self.shortcut(self.export_video_dialog))
+        root.bind("<Control-e>", lambda e: self.shortcut(self.toggle_export_drawer))
         root.bind("<Control-w>", lambda e: self.shortcut_close())
         root.bind("<Control-W>", lambda e: self.shortcut_close())
         root.bind("<Control-comma>", lambda e: self.shortcut_settings())
@@ -461,13 +478,17 @@ class HaloApp:
         self.log(f"Copied timestamp {text}.")
 
     def shortcut_escape(self):
-        """Esc cancels an export or leaves a text entry — it never unloads
-        the clip (that's Ctrl+W), so it can't yank the screen away."""
+        """Esc cancels an export, leaves a text entry, or closes the export
+        drawer — it never unloads the clip (that's Ctrl+W), so it can't yank
+        the screen away."""
         if self.is_exporting:
             self.cancel_export()
             return "break"
         if self._typing_in_entry():
             self.root.focus_set()
+            return "break"
+        if self.export_drawer is not None and self.export_drawer.visible:
+            self.export_drawer.close()
             return "break"
         return None
 
@@ -935,6 +956,10 @@ class HaloApp:
             self.timestamp_watermark_checkbox.config(state=export_state)
         if hasattr(self, "timestamp_watermark_duration_entry"):
             self.timestamp_watermark_duration_entry.config(state=export_state)
+        # The drawer manages its own inputs (pattern/destination/GO) from the
+        # same is_exporting flag.
+        if self.export_drawer is not None:
+            self.export_drawer.refresh()
 
         self.update_file_strip()
 
@@ -972,8 +997,9 @@ class HaloApp:
         elif not loaded and self.close_clip_button.winfo_ismapped():
             self.close_clip_button.pack_forget()
 
-        self.export_button.config(
-            state=tk.DISABLED if (self.is_exporting or not loaded) else tk.NORMAL)
+        # EXPORT toggles the drawer now, so it stays live during an export —
+        # that's how you get back to the in-flight job's progress row.
+        self.export_button.config(state=tk.NORMAL if loaded else tk.DISABLED)
 
     def update_export_actions(self):
         """Show the maroon CANCEL EXPORT button only while exporting."""
@@ -1293,6 +1319,8 @@ class HaloApp:
         if self._probe_done:
             self.persist_video_session()
         dialogs.dismiss_tagged("session-restore")
+        if self.export_drawer is not None:
+            self.export_drawer.hide()  # the hero lifts over it; don't strand it open
         self.reset_clip_state()
         self.root.focus_set()  # focus must not linger in a destroyed-adjacent entry
         self.show_empty_state()
@@ -1873,6 +1901,9 @@ class HaloApp:
             self.timestamp_watermark_options_frame.pack_forget()
             self.log("Timestamp watermark disabled.")
 
+        if self.export_drawer is not None:
+            self.export_drawer.refresh()  # {stamp} token in the name preview
+
     def get_timestamp_watermark_settings(self) -> tuple[str, float] | None:
         """Return (timestamp_text, duration_seconds) for the watermark, or None.
 
@@ -1906,7 +1937,11 @@ class HaloApp:
         return timestamp_text, duration_ms / 1000.0
 
     def update_compression_estimate(self):
-        """Live bitrate estimate on the compression card (reuses core math)."""
+        """Live bitrate estimate on the compression card (reuses core math).
+        Every call site that can change the estimate can also change the
+        resolved output name, so the drawer preview rides along."""
+        if self.export_drawer is not None:
+            self.export_drawer.refresh()
         if not hasattr(self, "compression_estimate_var"):
             return
 
@@ -2854,26 +2889,80 @@ class HaloApp:
     # Export
     # ========================================================
 
-    def export_video_dialog(self):
+    def toggle_export_drawer(self):
+        if self.export_drawer is None:
+            return
+        self.export_drawer.toggle()
+
+    def open_export_drawer(self):
+        if self.export_drawer is None:
+            return
+        self.export_drawer.open()
+
+    # ---------------------------------------------- destination + naming
+
+    def resolved_export_dir(self) -> Path:
+        return Path(self.export_destination) if self.export_destination else OUTPUTS_DIR
+
+    def resolved_export_stem(self) -> str:
+        """The name pattern resolved against the current editor state."""
+        trim_start, trim_end = self.get_active_trim_points()
+        try:
+            size_mb = self.get_compression_target_mb()
+        except ValueError:
+            size_mb = None  # invalid target: preview the name without it
+        return core_jobs.resolve_name_pattern(
+            self.export_name_pattern_var.get() or DEFAULT_EXPORT_NAME_PATTERN,
+            Path(self.video_path).stem if self.video_path else "clip",
+            trim=trim_start is not None or trim_end is not None,
+            crop=bool(self.crop and self.crop.will_reencode()),
+            stamp=bool(self.timestamp_watermark_enabled_var.get()),
+            size_mb=size_mb,
+            res=self.get_compression_resolution_label() if size_mb is not None else None,
+        )
+
+    def browse_export_destination(self):
+        chosen = filedialog.askdirectory(
+            title="Export destination", initialdir=str(self.resolved_export_dir()))
+        if not chosen:
+            return
+        if Path(chosen).resolve() == OUTPUTS_DIR.resolve():
+            self.export_destination = None
+        else:
+            self.export_destination = str(Path(chosen))
+        self.export_drawer.refresh()
+        self.log(f"Export destination set to {self.resolved_export_dir()}.")
+
+    def reset_export_destination(self):
+        self.export_destination = None
+        self.export_drawer.refresh()
+        self.log("Export destination reset to the outputs folder.")
+
+    # -------------------------------------------------------- job launch
+
+    def build_export_spec(self) -> core_jobs.ExportJobSpec | None:
+        """Validate the editor state and snapshot it as an ExportJobSpec
+        (output_path left empty — the caller names it). Shows the failing
+        validation dialog and returns None when the export can't start."""
         if not self.video_path:
             messagebox.showwarning("No video loaded", "Please load a video file first.")
-            return
+            return None
 
         if not FFMPEG:
             messagebox.showerror("Missing ffmpeg", "ffmpeg was not found.")
-            return
+            return None
 
         try:
             filter_complex = self.build_audio_filter()
         except ValueError as exc:
             messagebox.showwarning("No tracks selected", str(exc))
-            return
+            return None
 
         try:
             compression_target_mb = self.get_compression_target_mb()
         except ValueError as exc:
             messagebox.showwarning("Invalid compression target", str(exc))
-            return
+            return None
 
         compression_resolution_label = (
             self.get_compression_resolution_label()
@@ -2885,17 +2974,12 @@ class HaloApp:
             timestamp_watermark = self.get_timestamp_watermark_settings()
         except ValueError as exc:
             messagebox.showwarning("Invalid timestamp watermark", str(exc))
-            return
-
-        source = Path(self.video_path)
-
-        OUTPUTS_DIR.mkdir(exist_ok=True)
+            return None
 
         trim_start, trim_end = self.get_active_trim_points()
 
         crop_video_filter = self.crop.export_video_chain(trim_start) if self.crop else None
         crop_prefilter = self.crop.export_prefilter(trim_start) if self.crop else None
-        crop_active = crop_video_filter is not None or crop_prefilter is not None
 
         # Burn the timestamp on top of any crop transform. In the standard path
         # the watermark rides the -vf chain (crop or, alone, forcing a re-encode);
@@ -2916,20 +3000,68 @@ class HaloApp:
                 if crop_prefilter else watermark_filter
             )
 
-        trim_suffix = "_trimmed" if (trim_start is not None or trim_end is not None) else ""
-        crop_suffix = "_crop" if crop_active else ""
-        watermark_suffix = "_timestamp" if timestamp_watermark is not None else ""
-        compression_suffix = (
-            f"_compressed_{compression_target_mb:g}mb_{compression_resolution_label}"
-            if compression_target_mb is not None
-            else ""
+        return core_jobs.ExportJobSpec(
+            input_path=self.video_path,
+            filter_complex=filter_complex,
+            output_path="",
+            trim_start=trim_start,
+            trim_end=trim_end,
+            compression_target_mb=compression_target_mb,
+            compression_resolution_label=compression_resolution_label,
+            total_duration_seconds=self.total_duration_seconds,
+            video_filter=crop_video_filter,
+            video_prefilter=crop_prefilter,
+            clip_name=Path(self.video_path).name,
         )
-        default_output = OUTPUTS_DIR / f"{source.stem}_mixed_audio{trim_suffix}{crop_suffix}{watermark_suffix}{compression_suffix}.mp4"
+
+    def export_go(self):
+        """START EXPORT: straight to the destination folder under the
+        pattern-resolved name — no save dialog (B4)."""
+        if self.is_exporting:
+            return
+        spec = self.build_export_spec()
+        if spec is None:
+            return
+
+        out_dir = self.resolved_export_dir()
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            messagebox.showerror(
+                "Invalid destination",
+                f"The export destination could not be created:\n\n{out_dir}\n\n{exc}",
+            )
+            return
+
+        output = core_jobs.unique_path(out_dir / f"{self.resolved_export_stem()}.mp4").resolve()
+        if output == Path(spec.input_path).resolve():
+            messagebox.showerror(
+                "Invalid output",
+                "The output file cannot be the same as the source video.",
+            )
+            return
+
+        spec.output_path = str(output)
+        self.start_export(spec)
+
+    def export_save_as(self):
+        """SAVE AS…: the classic save dialog, prefilled from the pattern."""
+        if self.is_exporting:
+            return
+        spec = self.build_export_spec()
+        if spec is None:
+            return
+
+        out_dir = self.resolved_export_dir()
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            out_dir = OUTPUTS_DIR
 
         output_path = filedialog.asksaveasfilename(
             title="Save merged video as",
-            initialdir=str(OUTPUTS_DIR),
-            initialfile=default_output.name,
+            initialdir=str(out_dir),
+            initialfile=f"{self.resolved_export_stem()}.mp4",
             defaultextension=".mp4",
             filetypes=[
                 ("MP4 video", "*.mp4"),
@@ -2942,12 +3074,21 @@ class HaloApp:
             return
 
         output_path_obj = Path(output_path).resolve()
-
-        if output_path_obj == source:
+        if output_path_obj == Path(spec.input_path).resolve():
             messagebox.showerror(
                 "Invalid output",
                 "The output file cannot be the same as the source video.",
             )
+            return
+
+        spec.output_path = str(output_path_obj)
+        self.start_export(spec)
+
+    def start_export(self, spec: core_jobs.ExportJobSpec):
+        """Launch the export worker for a fully-named spec. Everything here
+        derives from the spec alone, so a RE-RUN from the job history goes
+        through the exact same door."""
+        if self.is_exporting:
             return
 
         if self.crop and self.crop.editing:
@@ -2957,9 +3098,9 @@ class HaloApp:
 
         self.update_trim_info()
 
-        if crop_active:
+        if spec.compression_target_mb is None and (spec.video_filter or spec.video_prefilter):
             self.log(
-                "Crop/zoom keyframes active: video will be re-encoded with "
+                "Crop/zoom or watermark active: video will be re-encoded with "
                 "H.265 NVENC (constant quality)."
             )
 
@@ -2971,50 +3112,44 @@ class HaloApp:
         self.stop_export_button.config(state=tk.NORMAL)
         self.set_busy(True)
 
-        if compression_target_mb is not None:
-            self.set_status(f"Compressing merged video to under {compression_target_mb:g} MB (Windows/Explorer/Discord)...")
+        if spec.compression_target_mb is not None:
+            self.set_status(
+                f"Compressing merged video to under {spec.compression_target_mb:g} MB (Windows/Explorer/Discord)...")
             self.log(
-                f"Export requested with compression target under {compression_target_mb:g} MB "
-                f"(Windows/Explorer/Discord) using H.265 NVENC, {compression_resolution_label} max resolution, "
+                f"Export requested with compression target under {spec.compression_target_mb:g} MB "
+                f"(Windows/Explorer/Discord) using H.265 NVENC, {spec.compression_resolution_label} max resolution, "
                 f"preserved FPS, and 64 kbps AAC audio."
             )
-        elif trim_start is not None or trim_end is not None:
+        elif spec.trim_start is not None or spec.trim_end is not None:
             self.set_status("Exporting trimmed merged video...")
             self.log("Export requested with trim enabled.")
         else:
             self.set_status("Exporting merged video...")
             self.log("Export requested.")
 
-        if trim_start is not None or trim_end is not None:
-            trim_start_text = self.format_seconds(trim_start) if trim_start is not None else "start"
-            trim_end_text = self.format_seconds(trim_end) if trim_end is not None else "end"
+        if spec.trim_start is not None or spec.trim_end is not None:
+            trim_start_text = self.format_seconds(spec.trim_start) if spec.trim_start is not None else "start"
+            trim_end_text = self.format_seconds(spec.trim_end) if spec.trim_end is not None else "end"
             self.log(f"Trim range: {trim_start_text} to {trim_end_text}.")
 
-        if timestamp_watermark is not None:
-            timestamp_text, watermark_duration_seconds = timestamp_watermark
-            self.log(
-                f"Timestamp watermark: {timestamp_text}, bottom-left, "
-                f"fades out after {int(round(watermark_duration_seconds * 1000))} ms."
-            )
-
-        self.log(f"Output path: {output_path_obj}")
+        self.log(f"Output path: {spec.output_path}")
 
         self.export_thread = threading.Thread(
             target=core_export.run_export_job,
             args=(
-                self.video_path,
-                filter_complex,
-                str(output_path_obj),
-                trim_start,
-                trim_end,
-                compression_target_mb,
-                compression_resolution_label,
-                self.total_duration_seconds,
+                spec.input_path,
+                spec.filter_complex,
+                spec.output_path,
+                spec.trim_start,
+                spec.trim_end,
+                spec.compression_target_mb,
+                spec.compression_resolution_label,
+                spec.total_duration_seconds,
                 self.make_export_callbacks(),
                 lambda: not self.is_exporting,
                 self.register_export_process,
-                crop_video_filter,
-                crop_prefilter,
+                spec.video_filter,
+                spec.video_prefilter,
             ),
             daemon=True,
         )
