@@ -62,7 +62,7 @@ Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 | B3 | Command palette Ctrl+K (every action + hidden gestures, searchable, key hints) | F7, M2 | done 2026-07-15 |
 | B4 | Export drawer + persistent job history (name patterns, per-job progress/attempts, OPEN/RE-RUN) | F5 F11, Q7 M1 | done 2026-07-16 |
 | B5 | Focus/HUD mode (Tab collapses panels, translucent scanline controls per skin) | — | done 2026-07-16 |
-| B6 | First-run coach marks overlay | cold-start half of F7 | todo |
+| B6 | First-run coach marks overlay | cold-start half of F7 | in-progress |
 
 **B2 stage checklist** (design agreed 2026-07-15 in plan mode; decisions: full-body hero empty
 state, Ctrl+W + ✕ chip closes the clip (Esc never unloads), strip = LOAD·EXPORT·CANCEL |
@@ -77,6 +77,28 @@ filename+✕ | status·SETTINGS with QUIT dropped, recents grid gets arrows/Ente
 - [x] S4 Command strip in shell row 0; workspace actions row removed; EXPORT disabled w/o clip;
       ✕ chip + SETTINGS join `set_busy` lockdown
 - [x] S5 Grid keyboard nav (arrows/Enter/Delete) + legend states + roadmap close-out (M3 dropped)
+
+**B6 stage checklist** (designed 2026-07-16, autonomous session; decisions: fires once per
+install ~700 ms after the FIRST successful probe — that's when the pointed-at controls exist —
+gated by new `coach_marks_seen` setting; skipped silently if a modal is up (no-audio-tracks
+dialog) so it retries next load; re-invocable via palette `help.coach` (workspace-ready only —
+the legend's CTRL+K hint closes the discoverability loop, and the report's re-invocable ask);
+look = SettingsOverlay's alpha-scrim pattern + a `-transparentcolor` overlay canvas so five
+chamfered skin-panel callouts w/ keycap hint lines + accent connector lines float over the
+dimmed editor, targets updated to TODAY'S surfaces (timeline gestures incl. Ctrl+wheel zoom &
+[ ] trim; transport Space/C/K + toolbar toggles; EXPORT CLIP → Ctrl+E drawer; roster's
+zero-affordance gestures right-click solo / double-click reset / wheel volume; legend card
+covering Ctrl+K palette + Tab focus) + a GOT IT card; Esc / any click / GOT IT dismiss and
+persist; showing exits focus mode and closes the drawer first; card drawing factored into a
+reusable helper so the gallery demos it per skin; magic transparent color = near-black so
+chamfer AA fringes read as dark edges):
+
+- [x] S1 `ui/views/coach.py` (scrim + transparent overlay + callout renderer + connectors +
+      dismissal paths), `coach_marks_seen` setting, first-probe trigger + modal guard, palette
+      `help.coach`, gallery callout demo; driver both skins (20 checks: fires once, Esc/GOT
+      IT/click dismissals, disk persistence, no re-fire, palette re-invoke, focus interlock)
+- [ ] S2 Acceptance: minsize-window clamping, focus/drawer interlocks, persistence round-trip
+      across an app rebuild, S1 driver re-run on final code, roadmap close-out
 
 **B5 stage checklist** (designed 2026-07-16, autonomous session per Ethan's standing direction;
 decisions: Tab toggles focus with a clip loaded (not typing, no modal; allowed during export so

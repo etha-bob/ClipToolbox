@@ -176,4 +176,9 @@ def build_command_registry(app) -> list[Command]:
                 keys="Tab",
                 enabled=lambda: workspace_ready() and not app.crop_enabled_var.get(),
                 keywords="hud collapse panels cinema fullscreen distraction free"),
+
+        # --- Help --------------------------------------------------------
+        Command("help.coach", "Show coach marks (tour)", "Help", app.show_coach_marks,
+                enabled=workspace_ready,
+                keywords="tutorial onboarding first run hints gestures learn keys"),
     ]

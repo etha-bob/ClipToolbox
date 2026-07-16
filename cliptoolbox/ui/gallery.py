@@ -34,7 +34,7 @@ from cliptoolbox.ui.widgets import (
 
 
 def build(root: tk.Tk) -> None:
-    w, h = px(960), px(890)
+    w, h = px(960), px(985)
     root.title("ClipToolbox skin gallery")
     root.geometry(f"{w}x{h}")
     root.configure(bg=theme.BG_DEEP)
@@ -268,6 +268,19 @@ def build(root: tk.Tk) -> None:
     tk.Label(root, text="focus HUD chips (letterbox-blended scanline)",
              font=theme.font_small(), bg=theme.BG_DEEP,
              fg=theme.TEXT_DIM).place(x=px(24), y=px(831))
+
+    # --- coach mark callout (B6) -----------------------------------------
+    from cliptoolbox.ui.views.coach import draw_callout
+
+    coach_canvas = tk.Canvas(root, bg=theme.BG_DEEP, highlightthickness=0, bd=0)
+    coach_canvas.place(x=px(24), y=px(862), width=px(400), height=px(100))
+    draw_callout(coach_canvas, px(4), px(2), "EXPORT", [
+        [("k", "CTRL+E"), ("t", "EXPORT DRAWER")],
+        [("t", "naming · compression · job history")],
+    ], behind=theme.BG_DEEP)
+    tk.Label(root, text="coach mark callout (keycaps · chamfered card)",
+             font=theme.font_small(), bg=theme.BG_DEEP,
+             fg=theme.TEXT_DIM).place(x=px(620), y=px(880))
 
     legend = LegendBar(root)
     legend.pack(side=tk.BOTTOM, fill=tk.X)

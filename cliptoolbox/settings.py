@@ -42,6 +42,8 @@ class AppSettings:
     # Export drawer (B4): output name pattern + destination (None = outputs/).
     export_name_pattern: str = DEFAULT_EXPORT_NAME_PATTERN
     export_destination: str | None = None
+    # Coach marks (B6): flipped after the first-run tour is dismissed.
+    coach_marks_seen: bool = False
 
 
 def _candidates() -> list[Path]:

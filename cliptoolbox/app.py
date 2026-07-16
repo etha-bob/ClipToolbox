@@ -78,6 +78,7 @@ from cliptoolbox.ui.wheel import WheelRouter
 from cliptoolbox.ui import dialogs as messagebox  # ported call sites unchanged
 from cliptoolbox.ui.theme import px
 from cliptoolbox.ui.views import empty_state, shell, workspace
+from cliptoolbox.ui.views.coach import CoachMarks
 from cliptoolbox.ui.views.drawer import ExportDrawer
 from cliptoolbox.ui.views.hud import FocusHud
 from cliptoolbox.ui.views.palette import CommandPalette
@@ -205,6 +206,7 @@ class HaloApp:
         self.command_palette = None
         # Focus/HUD mode (B5): transient view state, never persisted.
         self.focus_mode = False
+        self.coach_marks: CoachMarks | None = None
         self.auto_preview_after_load = bool(self.settings.auto_preview_after_load)
         self.preview_width = px(PREVIEW_WIDTH)
         self.preview_height = px(PREVIEW_HEIGHT)
@@ -1388,8 +1390,48 @@ class HaloApp:
 
         self.update_compression_estimate()
 
+        # First-run coach marks (B6): fire once the editor has settled —
+        # this is the first moment the pointed-at controls all exist.
+        if not self.settings.coach_marks_seen:
+            self.root.after(700, lambda t=token: self._maybe_show_coach_marks(t))
+
         if self.auto_preview_after_load:
             self.root.after(300, lambda t=token: self._auto_start_preview(t))
+
+    def _maybe_show_coach_marks(self, token: int):
+        """Deferred first-run trigger: skip if the clip changed/closed, a
+        modal or grab is up (e.g. the no-audio-tracks dialog — the flag
+        stays unset so the tour retries on the next load), or it already
+        showed."""
+        if token != self._load_token or not self.video_path:
+            return
+        if self.settings.coach_marks_seen or self.coach_marks is not None:
+            return
+        if dialogs.a_modal_is_open():
+            return
+        try:
+            if self.root.grab_current() is not None:
+                return
+        except Exception:
+            pass
+        self.show_coach_marks()
+
+    def show_coach_marks(self):
+        """The B6 tour — first run automatically, palette `help.coach` after.
+        It anchors to the standard editor layout, so focus mode and the
+        drawer step aside first."""
+        if self.coach_marks is not None or not self.video_path:
+            return
+        self.exit_focus_mode()
+        if self.export_drawer is not None and self.export_drawer.visible:
+            self.export_drawer.hide()
+        self.coach_marks = CoachMarks(self, on_dismiss=self._on_coach_dismissed)
+
+    def _on_coach_dismissed(self):
+        self.coach_marks = None
+        if not self.settings.coach_marks_seen:
+            self.settings.coach_marks_seen = True
+            self.save_settings()
 
     def _auto_start_preview(self, token: int):
         """Deferred auto-preview: skip if the clip changed or was closed
