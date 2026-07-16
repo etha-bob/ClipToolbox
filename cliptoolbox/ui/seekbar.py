@@ -189,6 +189,15 @@ class HaloSeekbar(tk.Canvas):
         self._keyframes = sorted(float(t) for t in times)
         self._redraw()
 
+    def set_filmstrip(self, strip, count: int = 0):
+        """Push the filmstrip source: a PIL image of `count` equal-width
+        tiles side by side, covering [_from, _to] evenly. None clears the
+        lane back to an empty well."""
+        self._filmstrip = strip
+        self._filmstrip_count = int(count) if strip is not None else 0
+        self._data_gen += 1
+        self._redraw()
+
     # ------------------------------------------------------------------
     # Zoomed view window
     # ------------------------------------------------------------------
@@ -413,9 +422,11 @@ class HaloSeekbar(tk.Canvas):
         draw.rectangle([x0, ruler_top, x1, ruler_bot - 1],
                        fill=theme.SEEK_TRACK, outline=theme.PANEL_BORDER_DIM)
 
-        # Filmstrip well (tiles pasted here from S3 on).
+        # Filmstrip well + slotted tiles.
         draw.rectangle([x0, film_top + 1, x1, film_bot - 1],
                        fill=theme.WELL_FILL)
+        if self._filmstrip is not None and self._filmstrip_count > 0:
+            self._paste_filmstrip(img, x0, x1, film_top + 1, film_bot - 1)
 
         # Audio band well (waveform lanes from S4 on).
         if film_bot < audio_bot:
@@ -444,6 +455,42 @@ class HaloSeekbar(tk.Canvas):
                           fill=theme.PANEL_BORDER_DIM)
 
         return img
+
+    def _paste_filmstrip(self, img: Image.Image, x0: int, x1: int,
+                         top: int, bot: int):
+        """Slot-fill the filmstrip lane: walk the visible x-range in steps of
+        one tile-aspect slot, pasting the nearest-in-time tile per slot.
+        Never stretches — zooming just re-slots from the same tiles (past the
+        tile temporal resolution neighbours repeat, under the frame grid)."""
+        strip = self._filmstrip
+        n = self._filmstrip_count
+        lane_h = bot - top
+        total = self._to - self._from
+        if lane_h <= 2 or total <= 0:
+            return
+        tile_w_src = strip.width // n
+        tile_h_src = strip.height
+        if tile_w_src <= 0 or tile_h_src <= 0:
+            return
+        slot_w = max(px(8), round(lane_h * tile_w_src / tile_h_src))
+
+        scaled_cache: dict[int, Image.Image] = {}
+        sx = x0
+        while sx < x1:
+            t = self._time_at(sx + slot_w // 2)
+            t = min(t, self._to - 1e-6)  # VFR tail-tile guard
+            idx = min(n - 1, max(0, int((t - self._from) / total * n)))
+            tile = scaled_cache.get(idx)
+            if tile is None:
+                tile = strip.crop((idx * tile_w_src, 0,
+                                   (idx + 1) * tile_w_src, tile_h_src))
+                tile = tile.convert("RGB").resize((slot_w, lane_h), Image.LANCZOS)
+                scaled_cache[idx] = tile
+            sw = min(slot_w, x1 - sx)
+            if sw < slot_w:
+                tile = tile.crop((0, 0, sw, lane_h))
+            img.paste(tile, (sx, top))
+            sx += slot_w
 
     # -- tier 2: display PhotoImage (base + trim dimming, cached) --------
 

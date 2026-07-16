@@ -50,6 +50,7 @@ from cliptoolbox.core import engine_factory
 from cliptoolbox.core import mediainfo as core_mediainfo
 from cliptoolbox.core import playback as core_playback
 from cliptoolbox.core import probe as core_probe
+from cliptoolbox.core import strips as core_strips
 from cliptoolbox.core.render_queue import RenderQueue
 from cliptoolbox.core.paths import (
     FFMPEG,
@@ -725,6 +726,48 @@ class HaloApp:
             str(cache_path), work, done, group="thumbnails",
         )
 
+    # ------------------------------------------------------------------
+    # Timeline strip assets (filmstrip; waveforms arrive with B1 S4)
+    # ------------------------------------------------------------------
+
+    def build_timeline_assets(self, streams):
+        """Kick off timeline strip extraction for the loaded clip on the
+        render queue. Results land on the Tk thread and are dropped if the
+        clip changed meanwhile (load-token guard); cancel_group("timeline")
+        kills a mid-decode ffmpeg on load/close."""
+        self.seekbar.set_filmstrip(None, 0)
+        duration = self.total_duration_seconds
+        if not (PIL_AVAILABLE and FFMPEG and self.video_path and duration):
+            return
+        token = self._load_token
+        video_path = self.video_path
+        n = core_strips.filmstrip_tile_count(duration)
+        # The filmstrip lane absorbs the audio band when the clip has no
+        # tracks; extract at the height the lane will actually render.
+        h_phys = px(76 if not streams else 44)
+        cache_path = core_strips.filmstrip_cache_path(video_path, h_phys, n)
+
+        def apply(cache_path):
+            if token != self._load_token:
+                return  # a newer load (or a close) superseded this job
+            try:
+                image = Image.open(cache_path)
+                image.load()
+            except Exception:
+                return
+            self.seekbar.set_filmstrip(image, n)
+
+        if cache_path.exists():
+            apply(cache_path)
+            return
+
+        self.render_queue.submit(
+            str(cache_path),
+            core_strips.filmstrip_work(video_path, cache_path, h_phys, n, duration),
+            apply, group="timeline", priority=1,
+            on_error=lambda exc: self.log(f"Timeline filmstrip failed: {exc}"),
+        )
+
     def enable_drag_and_drop(self):
         if not DND_AVAILABLE:
             return
@@ -1002,6 +1045,11 @@ class HaloApp:
         token = self._load_token
         self._probe_done = False
 
+        # Kill any timeline extraction still running for the outgoing clip
+        # and blank the lanes before the new probe kicks off.
+        self.render_queue.cancel_group("timeline")
+        self.seekbar.set_filmstrip(None, 0)
+
         self.video_path = str(path_obj)
         self.video_fps = None
         self.video_dimensions = None
@@ -1068,6 +1116,8 @@ class HaloApp:
         self.playback.configure_media(self.video_path, duration)
         self.set_seek_range(duration)
         self.seekbar.set_fps(fps)  # enables the zoomed-in frame grid
+        # Before the no-streams early-return: video-only clips get a strip.
+        self.build_timeline_assets(streams)
         self.update_trim_controls()
         if self.crop:
             self.crop.set_source(dimensions, duration, fps)
@@ -1149,6 +1199,8 @@ class HaloApp:
             self.crop.reset()
         self.set_seek_range(0)
         self.seekbar.set_fps(None)
+        self.render_queue.cancel_group("timeline")
+        self.seekbar.set_filmstrip(None, 0)
         self.preview_placeholder_var.set(workspace.PLACEHOLDER_DEFAULT)
         self.preview_placeholder.place(relx=0.5, rely=0.5, anchor="center")
         self.file_label_var.set("No video loaded")
