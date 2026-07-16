@@ -49,6 +49,28 @@ def build(app):
     right.rowconfigure(1, weight=1)
 
     # ------------------------------------------------------------------
+    # Left: EXPORT — the terminal action, pinned to the bottom of the
+    # column right under the compression settings it depends on. Packed
+    # FIRST: pack gives earlier slaves their space first, so when the
+    # column overflows a short window the middle content clips instead
+    # of the export button silently vanishing.
+    # ------------------------------------------------------------------
+    export_row = tk.Frame(left, bg=theme.BG_DEEP)
+    export_row.pack(side=tk.BOTTOM, fill=tk.X, pady=(px(12), 0))
+
+    app.export_button = HaloButton(
+        export_row, text="EXPORT CLIP", variant="primary",
+        command=app.export_video_dialog, width=px(200),
+    )
+    app.export_button.pack(side=tk.LEFT)
+
+    app.stop_export_button = HaloButton(
+        export_row, text="CANCEL EXPORT", variant="danger",
+        command=app.cancel_export, height=px(theme.BTN_PRIMARY_H),
+    )
+    # Packed beside EXPORT by update_export_actions() only while exporting.
+
+    # ------------------------------------------------------------------
     # Left: preview bezel with the real embed target frame
     # (LOAD/EXPORT/CANCEL live in the shell's command strip since B2.)
     # ------------------------------------------------------------------
@@ -98,7 +120,7 @@ def build(app):
     # Left: timeline
     # ------------------------------------------------------------------
     timeline = tk.Frame(left, bg=theme.BG_DEEP)
-    timeline.pack(fill=tk.X, pady=(px(6), 0))
+    timeline.pack(fill=tk.X, pady=(px(4), 0))
 
     app.time_left_var = tk.StringVar(value="0:00")
     app.time_right_var = tk.StringVar(value="0:00")
@@ -282,7 +304,7 @@ def build(app):
     # Left: frame snapshot actions
     # ------------------------------------------------------------------
     frame_row = tk.Frame(left, bg=theme.BG_DEEP)
-    frame_row.pack(fill=tk.X, pady=(px(6), 0))
+    frame_row.pack(fill=tk.X, pady=(px(4), 0))
 
     tk.Label(frame_row, text="FRAME", font=theme.font_title(12),
              bg=theme.BG_DEEP, fg=theme.TEXT_DIM).pack(side=tk.LEFT, padx=(0, px(8)))
@@ -381,25 +403,6 @@ def build(app):
              bg=theme.PANEL_FILL, fg=theme.TEXT_DIM).pack(side=tk.LEFT)
 
     app.timestamp_watermark_options_frame.pack_forget()
-
-    # ------------------------------------------------------------------
-    # Left: EXPORT — the terminal action, pinned to the bottom of the
-    # column right under the compression settings it depends on.
-    # ------------------------------------------------------------------
-    export_row = tk.Frame(left, bg=theme.BG_DEEP)
-    export_row.pack(side=tk.BOTTOM, fill=tk.X, pady=(px(12), 0))
-
-    app.export_button = HaloButton(
-        export_row, text="EXPORT CLIP", variant="primary",
-        command=app.export_video_dialog, width=px(200),
-    )
-    app.export_button.pack(side=tk.LEFT)
-
-    app.stop_export_button = HaloButton(
-        export_row, text="CANCEL EXPORT", variant="danger",
-        command=app.cancel_export, height=px(theme.BTN_PRIMARY_H),
-    )
-    # Packed beside EXPORT by update_export_actions() only while exporting.
 
     # ------------------------------------------------------------------
     # Right: audio-track roster (lobby player list)

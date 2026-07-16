@@ -212,7 +212,11 @@ class HaloApp:
     def build_ui(self):
         self.update_window_title()
         self.root.configure(bg=theme.BG_DEEP)
-        self.root.geometry(f"{px(1150)}x{px(780)}")
+        # 900: the editor's left column (preview + timeline strip + card +
+        # EXPORT, with trim row + crop toolbar open) requests ~884 logical
+        # px of window; the old 780 clipped the column even without the
+        # toolbars once the B1 timeline landed.
+        self.root.geometry(f"{px(1150)}x{px(900)}")
         self.root.minsize(px(980), px(700))
 
         chrome.apply_dark_titlebar(self.root)

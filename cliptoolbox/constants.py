@@ -28,7 +28,7 @@ WINDOW_AUTO_HEIGHT_BASE = 760
 # Height scale lets you fine-tune the preview box aspect ratio.
 # 1.05 means 5% taller than strict 16:9.
 PREVIEW_WIDTH_INSET = 64
-PREVIEW_HEIGHT_SCALE = 1.042
+PREVIEW_HEIGHT_SCALE = 0.965  # B1: reclaim pure letterbox for the timeline strip
 
 # These can also limit how narrow the app feels. Lower them only if the
 # audio slider area is forcing the window wider than you want.

@@ -1,7 +1,7 @@
-"""HaloSeekbar — the timeline scrubber with integrated trim brackets.
+"""HaloSeekbar — the timeline strip: scrubber, filmstrip, waveforms, keyframes.
 
-Replaces the old tk.Scale + overlay-label ▼ markers. Keeps the tk.Scale
-behavioral subset the preview state machine relies on:
+Grown from the original thin scrubber into the B1 multi-lane timeline while
+keeping the tk.Scale behavioral subset the preview state machine relies on:
 
 - linked DoubleVar: external .set() on the variable moves the playhead and
   invokes `command` (exactly like tk.Scale), which on_seek_drag ignores while
@@ -11,13 +11,37 @@ behavioral subset the preview state machine relies on:
   .bind("<ButtonPress-1>"/"<ButtonRelease-1>") wiring;
 - .configure(to=duration).
 
-Trim points render as green/red brackets with the kept range brightened.
+Lane stack (top to bottom, logical px; total = theme.SEEKBAR_H):
+    2   minimap — zoom position indicator
+    14  ruler   — scrub track, elapsed fill, frame grid, mpv cache line
+    44  filmstrip — clip thumbnails (grows over the audio band when no tracks)
+    32  audio   — per-track waveform lanes
+    12  keyframe lane — crop keyframe diamonds
+
+Rendering is split into three tiers so the 10 Hz playback position updates
+never touch PIL:
+
+1. ``_base``   — a PIL image of everything static per view (lane wells,
+   filmstrip tiles, tinted waveforms, frame grid). Cached one-deep, keyed on
+   (size, view, data generation, fps); recomposed only on resize/zoom/data.
+2. ``_display`` — the PhotoImage blitted each redraw (base + trim dimming).
+3. ``_redraw`` — deletes/creates only cheap native canvas items on top:
+   playhead, trim handles, diamonds, cache segments, minimap, overlays.
 """
 import math
 import tkinter as tk
 
+from PIL import Image, ImageDraw, ImageTk
+
 from cliptoolbox.ui import skin, theme
 from cliptoolbox.ui.theme import px
+
+# Lane heights (logical px; consumers scale through theme.px). The keyframe
+# lane hangs from the bottom so the audio band absorbs any rounding slack.
+LANE_MINIMAP_H = 2
+LANE_RULER_H = 14
+LANE_AUDIO_H = 32
+LANE_KF_H = 12
 
 
 class HaloSeekbar(tk.Canvas):
@@ -65,6 +89,21 @@ class HaloSeekbar(tk.Canvas):
         self._view_from: float | None = None
         self._view_to: float | None = None
         self._fps: float | None = None
+
+        # Lane data (pushed by the app; plain PIL images / state strings).
+        # _data_gen bumps on every change so the composed base cache misses.
+        self._filmstrip: Image.Image | None = None
+        self._filmstrip_count = 0
+        self._waveforms: list[Image.Image | None] = []
+        self._wave_states: list[str] = []
+        self._data_gen = 0
+
+        # Three-tier render caches (see module docstring). The PhotoImage
+        # reference must live on self — canvas items don't hold one.
+        self._base_img: Image.Image | None = None
+        self._base_key = None
+        self._display_photo: ImageTk.PhotoImage | None = None
+        self._display_key = None
 
         h = px(theme.SEEKBAR_H)
         super().__init__(parent, height=h, highlightthickness=0, bd=0, bg=behind)
@@ -234,16 +273,34 @@ class HaloSeekbar(tk.Canvas):
                 self._redraw()
 
     # ------------------------------------------------------------------
-    # Layout bands
+    # Layout bands (see lane stack in the module docstring)
     # ------------------------------------------------------------------
 
+    def _ruler_top(self) -> int:
+        return px(LANE_MINIMAP_H)
+
+    def _ruler_bot(self) -> int:
+        return px(LANE_MINIMAP_H) + px(LANE_RULER_H)
+
     def _scrub_cy(self) -> int:
-        """Vertical center of the scrubber track (upper band)."""
-        return px(15)
+        """Vertical center of the ruler/scrubber band."""
+        return self._ruler_top() + px(LANE_RULER_H) // 2
+
+    def _film_top(self) -> int:
+        return self._ruler_bot()
+
+    def _film_bot(self) -> int:
+        """Filmstrip bottom: absorbs the audio band when no waveforms."""
+        if any(w is not None for w in self._waveforms):
+            return self._audio_bot() - px(LANE_AUDIO_H)
+        return self._audio_bot()
+
+    def _audio_bot(self) -> int:
+        return self._hpx - px(LANE_KF_H)
 
     def _kf_cy(self) -> int:
-        """Vertical center of the keyframe lane (lower band)."""
-        return self._hpx - px(8)
+        """Vertical center of the keyframe lane (bottom band)."""
+        return self._hpx - px(LANE_KF_H) // 2
 
     # ------------------------------------------------------------------
     # Geometry
@@ -281,6 +338,7 @@ class HaloSeekbar(tk.Canvas):
 
     def _on_resize(self, event):
         self._wpx = event.width
+        self._hpx = event.height
         self._redraw()
 
     def _frame_grid_columns(self, x0: int, x1: int, v0: float, v1: float):
@@ -322,14 +380,93 @@ class HaloSeekbar(tk.Canvas):
             self._kf_hover_index = None
         self._redraw()
 
+    # -- tier 1: composed base (PIL, cached one-deep) -------------------
+
+    def _base_cache_key(self):
+        v0, v1 = self._view()
+        return (self._wpx, self._hpx, round(v0, 6), round(v1, 6),
+                self._data_gen, self._fps)
+
+    def _ensure_base(self) -> Image.Image:
+        key = self._base_cache_key()
+        if key == self._base_key and self._base_img is not None:
+            return self._base_img
+        self._base_img = self._compose_base()
+        self._base_key = key
+        return self._base_img
+
+    def _compose_base(self) -> Image.Image:
+        """Everything static per view: lane wells, frame grid, (later:
+        filmstrip tiles + tinted waveforms). Never called from the 10 Hz
+        var-write path — only when the cache key changes."""
+        img = Image.new("RGB", (self._wpx, self._hpx), self.behind)
+        draw = ImageDraw.Draw(img)
+        x0, x1 = self._usable()
+        v0, v1 = self._view()
+        ruler_top, ruler_bot = self._ruler_top(), self._ruler_bot()
+        film_top, film_bot = self._film_top(), self._film_bot()
+        audio_bot = self._audio_bot()
+
+        # Ruler band: the scrub track.
+        draw.rectangle([x0, ruler_top, x1, ruler_bot - 1],
+                       fill=theme.SEEK_TRACK, outline=theme.PANEL_BORDER_DIM)
+
+        # Filmstrip well (tiles pasted here from S3 on).
+        draw.rectangle([x0, film_top + 1, x1, film_bot - 1],
+                       fill=theme.WELL_FILL)
+
+        # Audio band well (waveform lanes from S4 on).
+        if film_bot < audio_bot:
+            draw.rectangle([x0, film_bot + 1, x1, audio_bot - 1],
+                           fill=theme.SEEK_TRACK)
+
+        # Keyframe-lane separator hairline.
+        draw.line([(x0, audio_bot), (x1, audio_bot)],
+                  fill=theme.PANEL_BORDER_DIM)
+
+        # Zoomed-in frame grid: cells + hairlines live in the ruler band;
+        # second-ticks extend down the strip as faint landmarks.
+        frame_lines = self._frame_grid_columns(x0, x1, v0, v1)
+        if frame_lines is not None:
+            for fx0, fx1, even in frame_lines["cells"]:
+                if even:
+                    draw.rectangle([fx0, ruler_top + 1, fx1, ruler_bot - 2],
+                                   fill=theme.SEEK_CELL)
+            for fx in frame_lines["hairlines"]:
+                draw.line([(fx, ruler_top + 1), (fx, ruler_bot - 2)],
+                          fill=theme.PANEL_BORDER_DIM)
+            for fx in frame_lines["seconds"]:
+                draw.line([(fx, ruler_top), (fx, ruler_bot - 1)],
+                          fill=theme.ACCENT_DEEP)
+                draw.line([(fx, film_top), (fx, audio_bot)],
+                          fill=theme.PANEL_BORDER_DIM)
+
+        return img
+
+    # -- tier 2: display PhotoImage (base + trim dimming, cached) --------
+
+    def _display_cache_key(self):
+        return (self._base_key,)
+
+    def _ensure_display(self) -> ImageTk.PhotoImage:
+        base = self._ensure_base()
+        key = self._display_cache_key()
+        if key == self._display_key and self._display_photo is not None:
+            return self._display_photo
+        self._display_photo = ImageTk.PhotoImage(base)
+        self._display_key = key
+        return self._display_photo
+
+    # -- tier 3: dynamic items (the 10 Hz path — no PIL work) ------------
+
     def _redraw(self):
         if self._wpx <= 2:
             return
         self.delete("all")
         sk = skin.get_skin()
         cy = self._scrub_cy()
-        th = px(5)
         x0, x1 = self._usable()
+        ruler_top, ruler_bot = self._ruler_top(), self._ruler_bot()
 
         try:
             value = float(self._variable.get())
@@ -339,55 +476,35 @@ class HaloSeekbar(tk.Canvas):
 
         v0, v1 = self._view()
 
-        # Track + elapsed fill (axis-aligned: native rects stay crisp).
-        self.create_rectangle(x0, cy - th // 2, x1, cy + th // 2,
-                              fill=theme.SEEK_TRACK, outline=theme.PANEL_BORDER_DIM)
+        # Composed lanes (cached: no PIL work unless view/size/data changed).
+        self.create_image(0, 0, image=self._ensure_display(), anchor="nw")
 
-        # Zoomed-in frame grid: alternating per-frame cells under the fills.
-        frame_lines = self._frame_grid_columns(x0, x1, v0, v1)
-        if frame_lines is not None:
-            band_top = cy - th // 2 - px(2)
-            band_bot = cy + th // 2 + px(2)
-            for fx0, fx1, even in frame_lines["cells"]:
-                if even:
-                    self.create_rectangle(fx0, band_top, fx1, band_bot,
-                                          fill=theme.SEEK_CELL, outline="")
-
-        # Kept trim range brightens the track between the brackets.
+        # Kept trim range brightens the ruler between the brackets (interim
+        # until S2 swaps it for exclusion-zone dimming in the display tier).
         if self._trim_start is not None or self._trim_end is not None:
             tx0 = self._x_for(self._trim_start) if self._trim_start is not None else x0
             tx1 = self._x_for(self._trim_end) if self._trim_end is not None else x1
             if tx1 > tx0:
-                self.create_rectangle(tx0, cy - th // 2 - px(2), tx1, cy + th // 2 + px(2),
+                self.create_rectangle(tx0, ruler_top + 1, tx1, ruler_bot - 2,
                                       fill=theme.TRIM_KEEP, outline="")
 
+        # Elapsed fill across the ruler band.
         fill = theme.ACCENT_DEEP if self._state == tk.NORMAL else theme.TEXT_DIM
-        self.create_rectangle(x0, cy - th // 2 + 1, max(x0, hx), cy + th // 2 - 1,
+        self.create_rectangle(x0 + 1, ruler_top + 1, max(x0 + 1, hx), ruler_bot - 2,
                               fill=fill, width=0)
 
-        # Cached-range bar: bright segments just below the track showing which
-        # parts of the clip seek instantly from the mpv RAM cache.
+        # Cached-range bar: bright segments along the ruler's bottom edge
+        # showing which parts seek instantly from the mpv RAM cache.
         if self._cache_ranges:
-            cache_top = cy + th // 2 + px(3)
-            cache_bot = cache_top + px(2)
+            cache_top = ruler_bot - px(2)
             for rs, re_ in self._cache_ranges:
                 if re_ < v0 or rs > v1:
                     continue
                 cx0 = self._x_for(max(rs, v0))
                 cx1 = self._x_for(min(re_, v1))
                 if cx1 > cx0:
-                    self.create_rectangle(cx0, cache_top, cx1, cache_bot,
+                    self.create_rectangle(cx0, cache_top, cx1, ruler_bot - 1,
                                           fill=theme.BAR_EDGE, outline="")
-
-        # Frame hairlines + heavier second-ticks stay visible over the fills.
-        if frame_lines is not None:
-            band_top = cy - th // 2 - px(2)
-            band_bot = cy + th // 2 + px(2)
-            for fx in frame_lines["hairlines"]:
-                self.create_line(fx, band_top, fx, band_bot, fill=theme.PANEL_BORDER_DIM)
-            for fx in frame_lines["seconds"]:
-                self.create_line(fx, band_top - px(3), fx, band_bot + px(3),
-                                 fill=theme.ACCENT_DEEP)
 
         # Zoom view indicator: where the visible window sits in the full clip.
         if self._view_from is not None:
@@ -410,14 +527,18 @@ class HaloSeekbar(tk.Canvas):
                               image=sk.get("trim_flag", h=bracket_h, kind="end", behind=self.behind),
                               anchor="e")
 
-        # Playhead handle (culled when scrolled out of a zoomed view).
+        # Playhead: full-height hairline over the strip + grab handle in the
+        # ruler band (culled when scrolled out of a zoomed view).
         if v0 <= value <= v1:
             hstate = "disabled" if self._state == tk.DISABLED else (
                 "drag" if self._dragging else ("hover" if self._hover else "normal"))
+            line_fill = theme.ACCENT if self._state == tk.NORMAL else theme.TEXT_DIM
+            self.create_line(hx, ruler_top, hx, self._hpx - px(1),
+                             fill=line_fill, width=max(1, px(1)))
             self.create_image(hx, cy, image=sk.get(
                 "handle", w=px(10), h=px(18), state=hstate, behind=self.behind))
 
-        # Keyframe diamonds in the lower lane (culled outside the view).
+        # Keyframe diamonds in the bottom lane (culled outside the view).
         if self._keyframes:
             kf_cy = self._kf_cy()
             kf_h = px(12)
@@ -482,11 +603,11 @@ class HaloSeekbar(tk.Canvas):
 
     def _keyframe_at(self, x: int, y: int) -> int | None:
         """Index of the keyframe diamond under (x, y), or None. Restricted to
-        the lower lane so it never competes with playhead/trim grabs above.
+        the bottom lane so it never competes with playhead/trim grabs above.
         Diamonds scrolled outside a zoomed view are not grabbable."""
         if not self._keyframes:
             return None
-        if y < self._kf_cy() - px(10):
+        if y < self._audio_bot() - px(2):
             return None
         margin = px(8)
         v0, v1 = self._view()

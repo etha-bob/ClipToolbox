@@ -42,6 +42,7 @@ Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 | M2 | F1/? shortcut cheat-sheet overlay + legend hint (obsolete if B3 lands) | F7 | dropped (absorbed by B3 2026-07-15) |
 | M3 | Landing menu keyboard navigation (obsolete if B2 lands) | F12 | dropped (absorbed by B2 2026-07-15: the recents grid is arrow/Enter/Delete-navigable) |
 | M4 | Animated "starting preview" cue | F13 | todo |
+| M5 | Left column can't shrink: below ~884px window height w/ trim+crop toolbars open the compression card clips bottom-first (pre-B1 legacy, measured 2026-07-15; export stays visible since it packs first). Fix = collapsible sections or responsive preview height | — | todo |
 
 ## Incremental track — large (L)
 
@@ -56,7 +57,7 @@ Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 | ID | Item | Absorbs | Status |
 |----|------|---------|--------|
 | B0 | Background render queue utility (thumbnails/waveforms off the Tk thread via `ui()` marshaling) — prerequisite for B1/B4 | — | done 2026-07-15 |
-| B1 | Real timeline: filmstrip lane, per-track waveforms, fat trim regions, always-visible keyframe lane, progress painted on the strip | F5 F6 F13, M1 M4, most of F7 | todo |
+| B1 | Real timeline: filmstrip lane, per-track waveforms, fat trim regions, always-visible keyframe lane, progress painted on the strip | F5 F6 F13, M1 M4, most of F7 | in-progress |
 | B2 | One adaptive screen (landing becomes the workspace empty state; command strip shows filename) | F4 F12, Q1 M3 | done 2026-07-15 |
 | B3 | Command palette Ctrl+K (every action + hidden gestures, searchable, key hints) | F7, M2 | done 2026-07-15 |
 | B4 | Export drawer + persistent job history (name patterns, per-job progress/attempts, OPEN/RE-RUN) | F5 F11, Q7 M1 | todo |
@@ -76,6 +77,28 @@ filename+✕ | status·SETTINGS with QUIT dropped, recents grid gets arrows/Ente
 - [x] S4 Command strip in shell row 0; workspace actions row removed; EXPORT disabled w/o clip;
       ✕ chip + SETTINGS join `set_busy` lockdown
 - [x] S5 Grid keyboard nav (arrows/Enter/Delete) + legend states + roadmap close-out (M3 dropped)
+
+**B1 stage checklist** (design agreed 2026-07-15 in plan mode; decisions: grow `HaloSeekbar`
+in place keeping the DoubleVar/zoom/bind contracts; 3-tier redraw split so the 10 Hz path does
+no PIL; lane stack minimap 2 / ruler 14 / filmstrip 44 / audio 32 / keyframes 12 = SEEKBAR_H 104;
+slot-based filmstrip from one `fps=`+`tile` ffmpeg pass (~40 tiles, never stretched); per-stream
+`showwavespic` white-on-transparent tinted per mix state via new `WAVE` token; export sweep over
+the trimmed region w/ honest per-attempt reset + `on_progress(percent, attempt, attempts_max)`;
+STARTING scanner cue in the ruler band; branch `feature/real-timeline`, one commit per stage):
+
+- [x] S1 Lane scaffold: 3-tier redraw split, lane geometry, SEEKBAR_H 104 + `WAVE` both skins,
+      preview-scale/pady vertical budget, gallery layout rework, measurement driver. Budget
+      reality (measured, incl. pre-B1 stash baseline): the left column never fit 780 with
+      toolbars open — export_row is now packed FIRST (bottom-pinned wins clipping fights) and
+      the stock window is 1150x900 (plain stack req 764, toolbars-open 796, avail at 900 = 812)
+- [ ] S2 Trim as first-class region: `render_trim_handle`, exclusion-zone dimming, fat hit targets
+- [ ] S3 Filmstrip lane: `core/strips.py`, `build_timeline_assets` in `after_probe`, slot compose,
+      cache + `cancel_group("timeline")`
+- [ ] S4 Waveform lanes: per-stream extraction, mix-state tinting, 0/1/2/3/4+ band division
+- [ ] S5 Keyframe lane: inert state, always-visible, right-click delete (structural F6 fix)
+- [ ] S6 Export progress: `on_progress` protocol + sweep + attempt counter + seekbar-disable gap (M1/F5)
+- [ ] S7 STARTING cue (M4/F13)
+- [ ] S8 Cleanup + close-out: delete `trim_flag`, gallery timeline demos, roadmap done + log
 
 **B0 stage checklist** (done 2026-07-15):
 

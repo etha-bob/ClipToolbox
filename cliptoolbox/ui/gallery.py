@@ -82,33 +82,33 @@ def build(root: tk.Tk) -> None:
         slider.set(1.0 if i == 0 else 0.4)
         slider.pack(fill=tk.X, pady=(0, px(8)))
 
-    # --- seekbar + trim + keyframes -----------------------------------
+    # --- timeline strips (side by side: normal + zoomed frame grid) ----
     seek_var = tk.DoubleVar(value=42.0)
     seek = HaloSeekbar(root, to=120.0, variable=seek_var)
-    seek.place(x=px(24), y=px(340), width=px(600))
+    seek.place(x=px(24), y=px(330), width=px(450))
     seek.set_trim(20.0, 90.0)
     seek.set_keyframes([12.0, 42.0, 68.0, 105.0])
     seek.set_fps(60.0)
 
-    # Second seekbar: zoomed in far enough to show the per-frame grid.
+    # Second strip: zoomed in far enough to show the per-frame grid.
     zoom_var = tk.DoubleVar(value=41.6)
     zoom_seek = HaloSeekbar(root, to=120.0, variable=zoom_var)
-    zoom_seek.place(x=px(24), y=px(300), width=px(600))
+    zoom_seek.place(x=px(486), y=px(330), width=px(450))
     zoom_seek.set_fps(60.0)
     zoom_seek.set_keyframes([41.55, 41.7])
     zoom_seek.set_view(41.4, 41.9)  # ~0.5 s window → frames clearly separated
     tk.Label(root, text="zoomed (frame grid)", font=theme.font_small(),
-             bg=theme.BG_DEEP, fg=theme.TEXT_DIM).place(x=px(636), y=px(306))
+             bg=theme.BG_DEEP, fg=theme.TEXT_DIM).place(x=px(486), y=px(438))
 
     kf_readout = tk.Label(root, text="0:42", font=theme.font_small(), bg=theme.BG_DEEP,
                           fg=theme.TEXT)
-    kf_readout.place(x=px(636), y=px(346))
+    kf_readout.place(x=px(24), y=px(438))
     seek.bind_keyframe_click(lambda i: kf_readout.config(text=f"click kf {i}"))
     seek.bind_keyframe_commit(lambda i, v: kf_readout.config(text=f"kf {i} -> {v:.1f}s"))
 
     # --- checkbox + entry + segmented row ------------------------------
     controls = tk.Frame(root, bg=theme.BG_DEEP)
-    controls.place(x=px(24), y=px(384))
+    controls.place(x=px(24), y=px(462))
     compress_var = tk.BooleanVar(value=True)
     HaloCheckbox(controls, text="Compress", variable=compress_var,
                  behind=theme.BG_DEEP).pack(side=tk.LEFT)
@@ -130,7 +130,7 @@ def build(root: tk.Tk) -> None:
 
     # --- log ------------------------------------------------------------
     log_frame, log_text = make_log(root, behind=theme.BG_DEEP)
-    log_frame.place(x=px(24), y=px(430), width=px(600), height=px(120))
+    log_frame.place(x=px(24), y=px(500), width=px(600), height=px(110))
     log_text.config(state=tk.NORMAL)
     log_text.insert(tk.END, "[13:11:04] Loaded video: test_clip.mp4\n")
     log_text.insert(tk.END, "[13:11:04] Found 2 audio track(s). Duration: 0:12.\n")
@@ -158,7 +158,7 @@ def build(root: tk.Tk) -> None:
     crop.set_image(buf.getvalue())
     crop.set_rect(480, 270, 960, 540)
 
-    bg.create_image(px(24), px(560), image=sk.get("wordmark", text="CLIPTOOLBOX", size_px=px(30)), anchor="nw")
+    bg.create_image(px(660), px(432), image=sk.get("wordmark", text="CLIPTOOLBOX", size_px=px(24)), anchor="nw")
 
     # --- recents grid (B2 empty state) ----------------------------------
     recents = RecentsGrid(

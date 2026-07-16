@@ -53,6 +53,7 @@ TRIM_KEEP = "#22333E"      # kept-range brightening between the brackets
 
 SEEK_TRACK = "#0A1219"
 SEEK_CELL = "#16222B"      # alternating frame cells on the zoomed timeline
+WAVE = "#5E8298"           # timeline waveform lanes (normal mix state)
 ENTRY_FILL = "#0C161E"
 WELL_FILL = "#0A1117"      # thumbnail letterbox wells
 DISABLED_FILL = "#152028"  # disabled entry / segmented cells
@@ -79,7 +80,7 @@ BTN_PRIMARY_H = 44
 MENU_ITEM_H = 46
 CHECK_SIZE = 18
 SLIDER_H = 22
-SEEKBAR_H = 40
+SEEKBAR_H = 104  # timeline strip: minimap/ruler/filmstrip/audio/keyframe lanes
 ENTRY_H = 30
 
 PAD = 12

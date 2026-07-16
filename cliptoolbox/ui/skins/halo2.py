@@ -48,6 +48,7 @@ TRIM_KEEP = "#16405F"      # kept-range brightening between the brackets
 
 SEEK_TRACK = "#0C1E33"
 SEEK_CELL = "#122B47"      # alternating frame cells on the zoomed timeline
+WAVE = "#2E71A8"           # timeline waveform lanes (normal mix state)
 ENTRY_FILL = "#0A1B2E"
 WELL_FILL = "#0A1626"      # thumbnail letterbox wells
 DISABLED_FILL = "#0B1B2C"  # disabled entry / segmented cells
@@ -74,7 +75,7 @@ BTN_PRIMARY_H = 44
 MENU_ITEM_H = 46
 CHECK_SIZE = 18
 SLIDER_H = 22
-SEEKBAR_H = 40  # scrubber occupies the upper band; keyframe diamonds the lower lane
+SEEKBAR_H = 104  # timeline strip: minimap/ruler/filmstrip/audio/keyframe lanes
 ENTRY_H = 30
 
 PAD = 12
