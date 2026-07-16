@@ -44,7 +44,6 @@ OK_GREEN = "#35A854"
 ERR_RED = "#C23B2E"
 TRIM_IN = "#58C973"        # trim start bracket (was "green")
 TRIM_OUT = "#E0556B"       # trim end bracket (was "red")
-TRIM_KEEP = "#16405F"      # kept-range brightening between the brackets
 
 SEEK_TRACK = "#0C1E33"
 SEEK_CELL = "#122B47"      # alternating frame cells on the zoomed timeline

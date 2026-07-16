@@ -7,10 +7,10 @@ Single source of truth for planned UX/feature work. Seeded from the 2026-07-12 u
 sets items `in-progress`/`done` as it goes, appends a Session log entry, and commits roadmap updates
 in the same commit as the work. Newly discovered work gets a new row, not silent scope creep.
 
-**Now / Next:** T1, the Q1–Q9 batch, B3 (command palette), B2 (one adaptive screen — pulled
-forward by Ethan ahead of B0), and B0 (background render queue) are done. B1 (real timeline) and
-B4 (export drawer) are now unblocked; suggested next is B1 per the bold sequencing. M1 (export
-progress) remains the highest-value standalone alternative.
+**Now / Next:** T1, the Q1–Q9 batch, B3, B2, B0, and B1 (real timeline — absorbing M1 and M4)
+are done. Suggested next is B4 (export drawer + job history) per the bold sequencing, then
+B5/B6. L1 (silent-video support) is the highest-value incremental alternative; M5 (left column
+can't shrink, discovered during B1) is a small standalone layout fix.
 
 Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 
@@ -38,10 +38,10 @@ Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 
 | ID | Item | Fixes | Status |
 |----|------|-------|--------|
-| M1 | Determinate export progress strip via new `on_progress(percent, attempt, attempts_max)` callback; honest per-attempt display; no ETA | F5 | todo |
+| M1 | Determinate export progress strip via new `on_progress(percent, attempt, attempts_max)` callback; honest per-attempt display; no ETA | F5 | done 2026-07-15 (absorbed by B1 S6) |
 | M2 | F1/? shortcut cheat-sheet overlay + legend hint (obsolete if B3 lands) | F7 | dropped (absorbed by B3 2026-07-15) |
 | M3 | Landing menu keyboard navigation (obsolete if B2 lands) | F12 | dropped (absorbed by B2 2026-07-15: the recents grid is arrow/Enter/Delete-navigable) |
-| M4 | Animated "starting preview" cue | F13 | todo |
+| M4 | Animated "starting preview" cue | F13 | done 2026-07-15 (absorbed by B1 S7) |
 | M5 | Left column can't shrink: below ~884px window height w/ trim+crop toolbars open the compression card clips bottom-first (pre-B1 legacy, measured 2026-07-15; export stays visible since it packs first). Fix = collapsible sections or responsive preview height | — | todo |
 
 ## Incremental track — large (L)
@@ -57,7 +57,7 @@ Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 | ID | Item | Absorbs | Status |
 |----|------|---------|--------|
 | B0 | Background render queue utility (thumbnails/waveforms off the Tk thread via `ui()` marshaling) — prerequisite for B1/B4 | — | done 2026-07-15 |
-| B1 | Real timeline: filmstrip lane, per-track waveforms, fat trim regions, always-visible keyframe lane, progress painted on the strip | F5 F6 F13, M1 M4, most of F7 | in-progress |
+| B1 | Real timeline: filmstrip lane, per-track waveforms, fat trim regions, always-visible keyframe lane, progress painted on the strip | F5 F6 F13, M1 M4, most of F7 | done 2026-07-15 |
 | B2 | One adaptive screen (landing becomes the workspace empty state; command strip shows filename) | F4 F12, Q1 M3 | done 2026-07-15 |
 | B3 | Command palette Ctrl+K (every action + hidden gestures, searchable, key hints) | F7, M2 | done 2026-07-15 |
 | B4 | Export drawer + persistent job history (name patterns, per-job progress/attempts, OPEN/RE-RUN) | F5 F11, Q7 M1 | todo |
@@ -103,7 +103,8 @@ STARTING scanner cue in the ruler band; branch `feature/real-timeline`, one comm
       region + attempt counter + seekbar disabled during export (M1/F5; real 2-attempt NVENC run)
 - [x] S7 STARTING cue (M4/F13): ping-pong scanner in the ruler band around the playhead,
       tracked off `on_playback_state`, leak-free `after` loop (verified via `after info`)
-- [ ] S8 Cleanup + close-out: delete `trim_flag`, gallery timeline demos, roadmap done + log
+- [x] S8 Cleanup + close-out: `trim_flag` renderer + `TRIM_KEEP` token deleted (consumer-free),
+      gallery timeline demos fed synthetic PIL strips/waves (no ffmpeg), acceptance pass both skins
 
 **B0 stage checklist** (done 2026-07-15):
 
@@ -117,6 +118,35 @@ Bold sequencing if chosen: B3 → B0 → B1 → B4 → B2 → B5/B6 (B2 pulled f
 XL items get a stage checklist added under their row when work starts (plan-mode design first).
 
 ## Session log (newest first)
+
+- **2026-07-15** — Shipped B1 (real timeline) on `feature/real-timeline`, 8 stage commits. The
+  40px seekbar grew in place into a 104px multi-lane strip (minimap / ruler / filmstrip / audio
+  band / keyframe lane), keeping the DoubleVar position contract, zoom math, and all bind_* call
+  sites untouched. Rendering split into three tiers so the 10 Hz position path does no PIL work:
+  a cached composed base (lane wells, slotted filmstrip tiles, tinted waveforms, frame grid), a
+  cached display PhotoImage (base + trim-exclusion dimming), and cheap native items on top
+  (playhead, fat trim handles, diamonds, export sweep, STARTING scanner). New `core/strips.py`
+  extracts assets via the B0 render queue (group "timeline"): one `fps=`+`tile` ffmpeg pass →
+  ≤40 filmstrip tiles (slot-filled, never stretched — zoom re-slots), one `showwavespic` pass
+  per stream (white-on-transparent, PIL-tinted per mix state via the new `WAVE` token; solo →
+  accent, silenced → dim). Trim is a first-class region (grip-notch handles outside the kept
+  span, exclusions darkened). Keyframes render whenever they exist — ghosted "inert" when crop
+  is off (structural F6 fix) with right-click delete. Export progress paints on the strip:
+  `on_progress(percent, attempt, attempts_max)` threaded through the existing `-progress` pipe
+  parser, fill sweeping exactly the trimmed region, honest per-attempt resets, ATTEMPT n/8
+  counter (M1/F5); the seekbar is now DISABLED during export (pre-existing gap). Engine STARTING
+  shows a ping-pong scanner around the playhead (M4/F13). Old `trim_flag` renderer and
+  `TRIM_KEEP` token deleted; gallery timelines feed on synthetic PIL strips (no ffmpeg).
+  Verified: five in-process drivers (layout budget incl. pre-B1 stash baseline, filmstrip
+  cache/cancel, waveforms + mix tints, keyframe session round-trip, real NVENC exports w/
+  2-attempt compression + cancel, STARTING timer-leak assert via `after info`) + gallery both
+  skins. Layout discoveries: the left column NEVER fit the stock 780px window with both toolbars
+  open (pre-B1, measured via stash) and the export button silently lost the pack fight —
+  `export_row` now packs first (middle content clips instead) and the stock window is 1150x900;
+  logged M5 for the structural fix. Lessons: (1) skin tokens live in three places — both skins
+  AND theme.py's re-export list; the gallery doesn't catch a missing re-export if no demo hits
+  that code path. (2) lavfi `sine` generates at 1/8 amplitude — waveform test clips need
+  `volume=8` or the honest linear display looks broken when it isn't.
 
 - **2026-07-15** — B0: added `cliptoolbox/core/render_queue.py`, a pure-Python `RenderQueue`
   (bounded daemon-worker pool draining a `PriorityQueue`) + `CancelToken`. Results marshal to the

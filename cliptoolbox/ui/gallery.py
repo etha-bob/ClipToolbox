@@ -82,22 +82,55 @@ def build(root: tk.Tk) -> None:
         slider.set(1.0 if i == 0 else 0.4)
         slider.pack(fill=tk.X, pady=(0, px(8)))
 
-    # --- timeline strips (side by side: normal + zoomed frame grid) ----
+    # --- timeline strips (side by side: full demo + zoomed frame grid) --
+    # Synthetic lane feeds keep the gallery a pure look-iteration harness:
+    # no ffmpeg, no media files.
+    def demo_filmstrip(n=24, tile_w=32, tile_h=44):
+        from PIL import Image as PILImage
+        strip = PILImage.new("RGB", (n * tile_w, tile_h))
+        for i in range(n):
+            hue = int(i / n * 255)
+            for x in range(tile_w):
+                shade = 90 + int(110 * x / tile_w)
+                for y in range(tile_h):
+                    strip.putpixel((i * tile_w + x, y),
+                                   (shade, (hue + 40) % 255, 160))
+        return strip, n
+
+    def demo_waveform(w=1024, h=32, beats=9.0, quiet=1.0):
+        import math as _math
+        from PIL import Image as PILImage
+        wave = PILImage.new("RGBA", (w, h), (0, 0, 0, 0))
+        for x in range(w):
+            env = abs(_math.sin(x / w * beats * _math.pi)) * quiet
+            half = max(1, int(env * (h // 2)))
+            for y in range(h // 2 - half, h // 2 + half):
+                wave.putpixel((x, y), (255, 255, 255, 255))
+        return wave
+
     seek_var = tk.DoubleVar(value=42.0)
     seek = HaloSeekbar(root, to=120.0, variable=seek_var)
     seek.place(x=px(24), y=px(330), width=px(450))
     seek.set_trim(20.0, 90.0)
     seek.set_keyframes([12.0, 42.0, 68.0, 105.0])
     seek.set_fps(60.0)
+    seek.set_filmstrip(*demo_filmstrip())
+    seek.set_waveforms([demo_waveform(), demo_waveform(beats=23.0, quiet=0.45)])
+    seek.set_wave_states(["solo", "dim"])
 
-    # Second strip: zoomed in far enough to show the per-frame grid.
-    zoom_var = tk.DoubleVar(value=41.6)
+    # Second strip: zoomed to the per-frame grid, with ghosted (inert)
+    # keyframes and the export sweep + attempt counter.
+    zoom_var = tk.DoubleVar(value=74.3)
     zoom_seek = HaloSeekbar(root, to=120.0, variable=zoom_var)
     zoom_seek.place(x=px(486), y=px(330), width=px(450))
     zoom_seek.set_fps(60.0)
-    zoom_seek.set_keyframes([41.55, 41.7])
-    zoom_seek.set_view(41.4, 41.9)  # ~0.5 s window → frames clearly separated
-    tk.Label(root, text="zoomed (frame grid)", font=theme.font_small(),
+    zoom_seek.set_keyframes([74.25, 74.5], inert=True)
+    # ~0.5 s window → frames clearly separated; 62% of 0..120 = 74.4 s, so
+    # the export sweep line + attempt counter land inside the view.
+    zoom_seek.set_view(74.15, 74.65)
+    zoom_seek.set_export_progress(62, attempt=3, attempts_max=8)
+    tk.Label(root, text="zoomed (frame grid · inert keys · export sweep)",
+             font=theme.font_small(),
              bg=theme.BG_DEEP, fg=theme.TEXT_DIM).place(x=px(486), y=px(438))
 
     kf_readout = tk.Label(root, text="0:42", font=theme.font_small(), bg=theme.BG_DEEP,

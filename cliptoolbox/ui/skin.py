@@ -272,28 +272,6 @@ def render_handle(w: int, h: int, state: str = "normal", behind: str = theme.BG_
     return _finish(img, w, h)
 
 
-def render_trim_flag(h: int, kind: str, behind: str = theme.BG_DEEP) -> Image.Image:
-    """Trim bracket for the seekbar: [ for start (green), ] for end (red)."""
-    w = max(6, round(h * 0.42))
-    W, H = w * SS, h * SS
-    img = Image.new("RGB", (W, H), rgb(behind))
-    draw = ImageDraw.Draw(img)
-
-    color = rgb(theme.TRIM_IN if kind == "start" else theme.TRIM_OUT)
-    t = max(SS, round(1.6 * SS))  # stroke thickness
-
-    if kind == "start":
-        draw.rectangle([0, 0, t, H], fill=color)
-        draw.rectangle([0, 0, W - 1, t], fill=color)
-        draw.rectangle([0, H - t, W - 1, H], fill=color)
-    else:
-        draw.rectangle([W - 1 - t, 0, W - 1, H], fill=color)
-        draw.rectangle([0, 0, W - 1, t], fill=color)
-        draw.rectangle([0, H - t, W - 1, H], fill=color)
-
-    return _finish(img, w, h)
-
-
 def render_trim_handle(w: int, h: int, kind: str, state: str = "normal",
                        behind: str = theme.BG_DEEP) -> Image.Image:
     """Fat timeline trim handle: a full-lane-height grab bar with grip
@@ -543,7 +521,6 @@ _RENDERERS = {
     "button": render_button,
     "check": render_check,
     "handle": render_handle,
-    "trim_flag": render_trim_flag,
     "trim_handle": render_trim_handle,
     "keyframe": render_keyframe,
     "wordmark": render_wordmark,
