@@ -174,8 +174,7 @@ def build_command_registry(app) -> list[Command]:
                 keys="Ctrl+0", enabled=workspace_ready,
                 keywords="fit timeline pan scroll minimap navigator middle drag"),
         Command("view.focus", "Toggle focus mode", "View", app.toggle_focus_mode,
-                keys="Tab",
-                enabled=lambda: workspace_ready() and not app.crop_enabled_var.get(),
+                keys="Tab", enabled=workspace_ready,
                 keywords="hud collapse panels cinema fullscreen distraction free"),
 
         # --- Help --------------------------------------------------------

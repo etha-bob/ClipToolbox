@@ -397,11 +397,6 @@ class HaloApp:
         sweep all keep working), and the legend keeps the exit hint."""
         if self.focus_mode or not self.video_path:
             return
-        if self.crop_enabled_var.get():
-            # Crop editing needs its toolbar (and the cropbox letterbox math
-            # assumes a settled preview) — the two modes stay exclusive.
-            self.set_status("Disable CROP to enter focus mode.")
-            return
         self.focus_mode = True
 
         self.command_strip.grid_remove()
@@ -415,7 +410,11 @@ class HaloApp:
 
         # Focus must not linger on a now-hidden widget.
         self.root.focus_set()
-        self.focus_hud.show()
+        # Crop mode rides along (M9): its toolbar keeps its pack slot under
+        # the timeline strip, and the crop editor owns the preview surface —
+        # the HUD chips only overlay playback.
+        if not (self.crop and self.crop.editing):
+            self.focus_hud.show()
         self._refresh_preview_after_relayout()
         self.update_legend()
         self.set_status("Focus mode — TAB to exit.")
@@ -441,6 +440,10 @@ class HaloApp:
         self.workspace_left.grid_configure(padx=(0, px(12)))
         self.workspace_right.grid()
         self.command_strip.grid()
+        # A live crop toolbar kept its focus-mode slot (under the strip);
+        # move it back to its standard place under the transport row.
+        if self.crop and self.crop.active:
+            self.crop.reposition_toolbar()
 
         self._refresh_preview_after_relayout()
         self.update_legend()
@@ -1976,16 +1979,23 @@ class HaloApp:
         self.crop.toggle_mode()
 
     def toggle_crop_mode(self):
-        """Keyboard 'C': flip crop mode when the clip has known dimensions."""
+        """Keyboard 'C': flip crop mode when the clip has known dimensions.
+        Works inside focus mode too (M9) — the crop toolbar packs under the
+        timeline strip there and the editor covers the enlarged preview."""
         if not self.video_dimensions:
             return
-        # Crop editing needs its toolbar and the standard layout — focus
-        # mode steps aside first (the reverse direction is refused instead;
-        # see enter_focus_mode).
-        if self.focus_mode:
-            self.exit_focus_mode()
         self.crop_enabled_var.set(not self.crop_enabled_var.get())
         self.on_crop_toggle()
+
+    def on_crop_editing_changed(self, editing: bool):
+        """The crop editor opened/closed. In focus mode the HUD chips yield
+        the preview surface to the editor and come back for playback."""
+        if not self.focus_mode:
+            return
+        if editing:
+            self.focus_hud.hide()
+        else:
+            self.focus_hud.show()
 
     def on_crop_add_key(self):
         self.crop.add_key()

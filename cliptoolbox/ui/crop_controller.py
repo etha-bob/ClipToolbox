@@ -229,6 +229,7 @@ class CropController:
         # Uncropped backdrop (vf=None) so the editor shows the whole frame.
         self.app.pending_still_request = self.app.playback.request_still(seconds, vf=None)
         self._update_info(seconds)
+        self.app.on_crop_editing_changed(True)
 
     def _exit_edit(self):
         if not self._editing:
@@ -238,6 +239,7 @@ class CropController:
             self.app.cropbox.place_forget()
         except Exception:
             pass
+        self.app.on_crop_editing_changed(False)
 
     def _ensure_paused_still(self):
         """Get to a concealed paused state so Tk can own the preview surface
@@ -487,9 +489,18 @@ class CropController:
         self.app.update_compression_estimate()
 
     def _show_toolbar(self):
+        # In focus mode the transport row is hidden (pack_forget), so the
+        # toolbar slots in right under the timeline strip instead.
+        anchor = (self.app.timeline_row if getattr(self.app, "focus_mode", False)
+                  else self.app.transport_frame)
         self.app.crop_toolbar_frame.pack(
-            fill=tk.X, pady=(px(4), 0), after=self.app.transport_frame
+            fill=tk.X, pady=(px(4), 0), after=anchor
         )
+
+    def reposition_toolbar(self):
+        """Re-pack the toolbar for the current layout (focus enter/exit)."""
+        if self.track.enabled:
+            self._show_toolbar()
 
     def _hide_toolbar(self):
         try:
