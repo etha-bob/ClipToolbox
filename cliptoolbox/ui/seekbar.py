@@ -14,12 +14,14 @@ keeping the tk.Scale behavioral subset the preview state machine relies on:
 Interaction bands: the ruler is a dedicated always-seek scrub lane; trim
 brackets grab in the strip body below it (offset grab + drag threshold —
 a plain click seeks to the trim time via bind_seek_request instead of
-moving it); keyframes own the bottom lane.
+moving it); keyframes own the bottom lane; the minimap on top is a
+navigator scrollbar when zoomed (drag the thumb to pan the window, click
+the track to jump it) and middle-drag pans the strip from anywhere.
 
 Lane stack (top to bottom, logical px; total = theme.SEEKBAR_H):
-    2   minimap — zoom position indicator
+    6   minimap — zoom navigator scrollbar (drag thumb pans, click jumps)
     14  ruler   — scrub track, elapsed fill, frame grid, mpv cache line
-    44  filmstrip — clip thumbnails (grows over the audio band when no tracks)
+    40  filmstrip — clip thumbnails (grows over the audio band when no tracks)
     32  audio   — per-track waveform lanes
     12  keyframe lane — crop keyframe diamonds
 
@@ -43,7 +45,7 @@ from cliptoolbox.ui.theme import px
 
 # Lane heights (logical px; consumers scale through theme.px). The keyframe
 # lane hangs from the bottom so the audio band absorbs any rounding slack.
-LANE_MINIMAP_H = 2
+LANE_MINIMAP_H = 6
 LANE_RULER_H = 14
 LANE_AUDIO_H = 32
 LANE_KF_H = 12
@@ -102,6 +104,14 @@ class HaloSeekbar(tk.Canvas):
         self._view_to: float | None = None
         self._fps: float | None = None
 
+        # Zoom navigation: minimap thumb drag (Button-1 in the top band)
+        # and middle-drag panning anywhere on the strip.
+        self._minimap_drag = False
+        self._minimap_hover = False
+        self._minimap_grab_dt = 0.0
+        self._pan_anchor_x: int | None = None
+        self._pan_anchor_v0 = 0.0
+
         # Export progress overlay: (percent, attempt, attempts_max) or None.
         self._export_progress: tuple[int, int, int] | None = None
 
@@ -114,6 +124,9 @@ class HaloSeekbar(tk.Canvas):
         # _data_gen bumps on every change so the composed base cache misses.
         self._filmstrip: Image.Image | None = None
         self._filmstrip_count = 0
+        # Scaled filmstrip tiles keyed (idx, slot_w, lane_h) so panning a
+        # zoomed view recomposes from cached tiles instead of re-resizing.
+        self._tile_cache: dict[tuple, Image.Image] = {}
         self._waveforms: list[Image.Image | None] = []
         self._wave_states: list[str] = []
         self._data_gen = 0
@@ -140,6 +153,9 @@ class HaloSeekbar(tk.Canvas):
         self.bind("<B1-Motion>", self._on_drag)
         self.bind("<ButtonRelease-1>", self._on_release)
         self.bind("<ButtonPress-3>", self._on_right_press)
+        self.bind("<ButtonPress-2>", self._on_pan_press)
+        self.bind("<B2-Motion>", self._on_pan_drag)
+        self.bind("<ButtonRelease-2>", self._on_pan_release)
         self.bind("<Motion>", self._on_motion)
 
     # ------------------------------------------------------------------
@@ -231,6 +247,7 @@ class HaloSeekbar(tk.Canvas):
         lane back to an empty well."""
         self._filmstrip = strip
         self._filmstrip_count = int(count) if strip is not None else 0
+        self._tile_cache.clear()
         self._data_gen += 1
         self._redraw()
 
@@ -374,7 +391,9 @@ class HaloSeekbar(tk.Canvas):
         not zoomed or while the user is dragging anything on the bar."""
         if self._view_from is None:
             return
-        if self._dragging or self._trim_drag_kind is not None or self._kf_drag_index is not None:
+        if (self._dragging or self._trim_drag_kind is not None
+                or self._kf_drag_index is not None or self._minimap_drag
+                or self._pan_anchor_x is not None):
             return
         v0, v1 = self._view()
         span = v1 - v0
@@ -445,6 +464,27 @@ class HaloSeekbar(tk.Canvas):
     def _value_at(self, x: int) -> float:
         return round(self._time_at(x), 2)  # matches the old resolution=0.01
 
+    def _full_time_at(self, x: int) -> float:
+        """Pixel→time on the FULL clip range regardless of zoom (the
+        minimap's coordinate space)."""
+        x0, x1 = self._usable()
+        frac = min(1.0, max(0.0, (x - x0) / max(1, x1 - x0)))
+        return self._from + frac * (self._to - self._from)
+
+    def _minimap_thumb_rect(self) -> tuple[int, int]:
+        """The navigator thumb's pixel x-range (visible window mapped onto
+        the full range), widened to a minimum grabbable width."""
+        x0, x1 = self._usable()
+        v0, v1 = self._view()
+        full = max(1e-9, self._to - self._from)
+        ix0 = round(x0 + (v0 - self._from) / full * (x1 - x0))
+        ix1 = round(x0 + (v1 - self._from) / full * (x1 - x0))
+        min_w = px(10)
+        if ix1 - ix0 < min_w:
+            ix0 = max(x0, ix0 - (min_w - (ix1 - ix0)) // 2)
+            ix1 = min(x1, ix0 + min_w)
+        return ix0, ix1
+
     # ------------------------------------------------------------------
     # Drawing
     # ------------------------------------------------------------------
@@ -492,6 +532,7 @@ class HaloSeekbar(tk.Canvas):
         if not value:
             self._kf_hover_index = None
             self._trim_hover_kind = None
+            self._minimap_hover = False
         self._redraw()
 
     # -- tier 1: composed base (PIL, cached one-deep) -------------------
@@ -580,18 +621,20 @@ class HaloSeekbar(tk.Canvas):
             return
         slot_w = max(px(8), round(lane_h * tile_w_src / tile_h_src))
 
-        scaled_cache: dict[int, Image.Image] = {}
         sx = x0
         while sx < x1:
             t = self._time_at(sx + slot_w // 2)
             t = min(t, self._to - 1e-6)  # VFR tail-tile guard
             idx = min(n - 1, max(0, int((t - self._from) / total * n)))
-            tile = scaled_cache.get(idx)
+            cache_key = (idx, slot_w, lane_h)
+            tile = self._tile_cache.get(cache_key)
             if tile is None:
                 tile = strip.crop((idx * tile_w_src, 0,
                                    (idx + 1) * tile_w_src, tile_h_src))
                 tile = tile.convert("RGB").resize((slot_w, lane_h), Image.LANCZOS)
-                scaled_cache[idx] = tile
+                if len(self._tile_cache) > 512:  # stale sizes after resizes
+                    self._tile_cache.clear()
+                self._tile_cache[cache_key] = tile
             sw = min(slot_w, x1 - sx)
             if sw < slot_w:
                 tile = tile.crop((0, 0, sw, lane_h))
@@ -751,14 +794,18 @@ class HaloSeekbar(tk.Canvas):
                     self.create_rectangle(cx0, cache_top, cx1, ruler_bot - 1,
                                           fill=theme.BAR_EDGE, outline="")
 
-        # Zoom view indicator: where the visible window sits in the full clip.
+        # Minimap navigator: a full-clip track along the top; when zoomed an
+        # accent thumb marks the visible window — drag it to pan, click the
+        # track to jump the window there (see _on_press). Inert track at
+        # full zoom-out.
+        mm_bot = max(1, self._ruler_top() - px(1))
+        self.create_rectangle(x0, 0, x1, mm_bot, fill=theme.SEEK_TRACK, outline="")
         if self._view_from is not None:
-            full_span = max(1e-9, self._to - self._from)
-            ix0 = round(x0 + (v0 - self._from) / full_span * (x1 - x0))
-            ix1 = round(x0 + (v1 - self._from) / full_span * (x1 - x0))
-            self.create_rectangle(x0, 0, x1, px(2), fill=theme.SEEK_TRACK, outline="")
-            self.create_rectangle(ix0, 0, max(ix0 + px(2), ix1), px(2),
-                                  fill=theme.ACCENT_DEEP, outline="")
+            ix0, ix1 = self._minimap_thumb_rect()
+            bright = self._minimap_drag or self._minimap_hover
+            self.create_rectangle(ix0, 0, ix1, mm_bot,
+                                  fill=theme.ACCENT if bright else theme.ACCENT_DEEP,
+                                  outline="")
 
         # Fat trim handles spanning the strip body BELOW the ruler (the ruler
         # is a dedicated scrub lane — grabs match, see _bracket_at), sitting
@@ -953,8 +1000,55 @@ class HaloSeekbar(tk.Canvas):
         for callback in self._trim_change_callbacks:
             callback(kind, value)
 
+    def _pan_view_to(self, v0: float):
+        """Move a zoomed window to start at v0 (span preserved, clamped)."""
+        if self._view_from is None:
+            return
+        span = self._view_to - self._view_from
+        v0 = min(max(self._from, v0), self._to - span)
+        if abs(v0 - self._view_from) > 1e-9:
+            self._view_from = v0
+            self._view_to = v0 + span
+            self._redraw()
+
+    def _on_pan_press(self, event):
+        """Middle-drag pans a zoomed view 1:1 (the strip follows the hand)."""
+        if self._state != tk.NORMAL or self._view_from is None:
+            return
+        self._pan_anchor_x = event.x
+        self._pan_anchor_v0 = self._view_from
+        self._set_cursor("fleur")
+
+    def _on_pan_drag(self, event):
+        if self._pan_anchor_x is None or self._view_from is None:
+            return
+        x0, x1 = self._usable()
+        span = self._view_to - self._view_from
+        dt = (self._pan_anchor_x - event.x) * span / max(1, x1 - x0)
+        self._pan_view_to(self._pan_anchor_v0 + dt)
+
+    def _on_pan_release(self, _event):
+        if self._pan_anchor_x is None:
+            return
+        self._pan_anchor_x = None
+        self._set_cursor("")
+
     def _on_press(self, event):
         if self._state != tk.NORMAL:
+            return
+
+        # Minimap navigator (top band, zoomed only): grab the thumb to pan;
+        # clicking the track first jumps the window centered on the click,
+        # then drags from there — classic scrollbar semantics.
+        if self._view_from is not None and event.y < self._ruler_top():
+            span = self._view_to - self._view_from
+            ix0, ix1 = self._minimap_thumb_rect()
+            t = self._full_time_at(event.x)
+            if not (ix0 <= event.x <= ix1):
+                self._pan_view_to(t - span / 2.0)
+            self._minimap_drag = True
+            self._minimap_grab_dt = t - self._view_from
+            self._redraw()
             return
 
         # Grabbing a trim bracket takes priority over moving the playhead.
@@ -999,16 +1093,35 @@ class HaloSeekbar(tk.Canvas):
         for callback in self._kf_delete_callbacks:
             callback(index)
 
-    def _on_motion(self, event):
-        if self._state != tk.NORMAL or self._trim_drag_kind is not None or self._kf_drag_index is not None:
+    def _set_cursor(self, cursor: str):
+        if cursor == self._cursor:
             return
+        self._cursor = cursor
+        try:
+            # Bypass the overridden configure (which redraws) — just set the
+            # cursor on the underlying canvas.
+            tk.Canvas.configure(self, cursor=cursor)
+        except Exception:
+            pass
+
+    def _on_motion(self, event):
+        if (self._state != tk.NORMAL or self._trim_drag_kind is not None
+                or self._kf_drag_index is not None or self._minimap_drag
+                or self._pan_anchor_x is not None):
+            return
+        minimap = self._view_from is not None and event.y < self._ruler_top()
         bracket = self._bracket_at(event.x, event.y)
-        if bracket is not None:
+        if minimap:
+            cursor = "hand2"
+        elif bracket is not None:
             cursor = "sb_h_double_arrow"
         elif self._keyframe_at(event.x, event.y) is not None:
             cursor = "hand2"
         else:
             cursor = ""
+        if minimap != self._minimap_hover:
+            self._minimap_hover = minimap
+            self._redraw()
         if bracket != self._trim_hover_kind:
             self._trim_hover_kind = bracket
             self._redraw()
@@ -1016,17 +1129,14 @@ class HaloSeekbar(tk.Canvas):
         if hover != self._kf_hover_index:
             self._kf_hover_index = hover
             self._redraw()
-        if cursor != self._cursor:
-            self._cursor = cursor
-            try:
-                # Bypass the overridden configure (which redraws) — just set the
-                # cursor on the underlying canvas.
-                tk.Canvas.configure(self, cursor=cursor)
-            except Exception:
-                pass
+        self._set_cursor(cursor)
 
     def _on_drag(self, event):
         if self._state != tk.NORMAL:
+            return
+        if self._minimap_drag:
+            if self._view_from is not None:
+                self._pan_view_to(self._full_time_at(event.x) - self._minimap_grab_dt)
             return
         if self._trim_drag_kind is not None:
             if (not self._trim_moved and self._trim_press_x is not None
@@ -1043,6 +1153,10 @@ class HaloSeekbar(tk.Canvas):
             self._apply_drag(event.x)
 
     def _on_release(self, event):
+        if self._minimap_drag:
+            self._minimap_drag = False
+            self._redraw()
+            return
         if self._trim_drag_kind is not None:
             kind = self._trim_drag_kind
             moved = self._trim_moved

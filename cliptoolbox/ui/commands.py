@@ -171,7 +171,8 @@ def build_command_registry(app) -> list[Command]:
 
         # --- View --------------------------------------------------------
         Command("view.resetzoom", "Reset timeline zoom", "View", app.reset_timeline_zoom,
-                keys="Ctrl+0", enabled=workspace_ready, keywords="fit timeline"),
+                keys="Ctrl+0", enabled=workspace_ready,
+                keywords="fit timeline pan scroll minimap navigator middle drag"),
         Command("view.focus", "Toggle focus mode", "View", app.toggle_focus_mode,
                 keys="Tab",
                 enabled=lambda: workspace_ready() and not app.crop_enabled_var.get(),

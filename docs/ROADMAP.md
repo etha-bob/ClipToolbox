@@ -44,7 +44,7 @@ Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 | M4 | Animated "starting preview" cue | F13 | done 2026-07-15 (absorbed by B1 S7) |
 | M5 | Left column can't shrink: below ~884px window height w/ trim+crop toolbars open the compression card clips bottom-first (pre-B1 legacy, measured 2026-07-15; export stays visible since it packs first). Fix = collapsible sections or responsive preview height. 2026-07-16: B4 moved the compression/watermark cards into the drawer — toolbars-open requirement re-measured at ~734 logical px (was ~796), so every window ≥734 now fits; only the 700 minsize floor still clips ~34px. Downgraded to minor | — | todo |
 | M6 | Timeline: precise seeking around trim brackets — clicks near a bracket steal the seek and shift the trim (Ethan 2026-07-16). Fix: ruler band becomes a dedicated always-seek scrub lane (bracket/keyframe grabs live in the strip body), brackets grab with an offset + drag threshold instead of snapping to the cursor, and click-without-drag on a bracket seeks the playhead to that trim time | — | done 2026-07-16 |
-| M7 | Timeline: zoomed-view navigation (Ethan 2026-07-16) — the 2px zoom indicator grows into a draggable navigator scrollbar (drag thumb pans the window, click jumps it), middle-mouse drag pans the strip 1:1, persistent filmstrip tile cache keeps pan recomposes cheap | — | in-progress |
+| M7 | Timeline: zoomed-view navigation (Ethan 2026-07-16) — the 2px zoom indicator grows into a draggable navigator scrollbar (drag thumb pans the window, click jumps it), middle-mouse drag pans the strip 1:1, persistent filmstrip tile cache keeps pan recomposes cheap | — | done 2026-07-16 |
 
 ## Incremental track — large (L)
 
@@ -201,6 +201,33 @@ Bold sequencing if chosen: B3 → B0 → B1 → B4 → B2 → B5/B6 (B2 pulled f
 XL items get a stage checklist added under their row when work starts (plan-mode design first).
 
 ## Session log (newest first)
+
+- **2026-07-16** — Shipped M6 + M7 (timeline seek/navigation polish, both requested by Ethan
+  this session) on `feature/timeline-navigation` (stacked on `feature/coach-marks`), one commit
+  each; same-surface pair batched on one branch like a Q-batch. **M6 — the fix for "clicking
+  near a trim bracket steals the seek":** the ruler band is now a dedicated always-seek scrub
+  lane — trim-bracket hit-testing (grab + hover) moved into the strip body below it, so
+  clicking the ruler seeks precisely even directly over a trim point; brackets grab with an
+  offset instead of snapping to the cursor and only move after a px(3) drag threshold; and a
+  click-without-drag on a bracket seeks the playhead to that trim time (new
+  `bind_seek_request` hook → `app.seek_absolute`). Handle visuals shortened to start below the
+  ruler so they match the hit zone. **M7 — zoomed-view navigation:** the minimap grew 2→6
+  logical px (filmstrip lane absorbs the difference; SEEKBAR_H unchanged) and became a real
+  navigator scrollbar — when zoomed, an accent thumb (min-width px(10), hover/drag brightening)
+  marks the visible window; dragging it pans, clicking the track jumps the window centered on
+  the click then keeps dragging (classic scrollbar semantics); middle-mouse drag pans the strip
+  1:1 in view-space from anywhere (fleur cursor); `follow()` yields while either drag is live.
+  Filmstrip tiles now cache scaled per (idx, slot_w, lane_h) across recomposes (cleared on
+  set_filmstrip, capped 512) so pan drags re-slot from cached tiles instead of re-running
+  LANCZOS resizes. Palette `view.resetzoom` gained pan/minimap keywords. Verified: two
+  widget-level drivers (19 + 20 checks: ruler-click over bracket x, offset drag, click-seek,
+  sub-threshold jiggle, kf-lane priority, hover bands, thumb drag/jump/clamp, pan clamp,
+  follow interlock, tile-cache reuse, disabled inertness) + a 14-check in-process app driver ×
+  both skins with a real synthetic clip (real probe, event_generate at real coordinates,
+  ctrl-wheel zoom through the WheelRouter path, trim survival across navigation); gallery both
+  skins. Lesson: a first-run-state driver must write `coach_marks_seen: true` into its temp
+  config — a virgin config re-fires the B6 tour 700 ms after the first probe and its scrim
+  swallows the test clicks.
 
 - **2026-07-16** — Shipped B6 (first-run coach marks) on `feature/coach-marks` (stacked on
   `feature/focus-hud`), 2 stage commits, autonomous session — the bold track (B0–B6) is now
