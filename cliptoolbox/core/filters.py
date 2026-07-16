@@ -1,3 +1,4 @@
+import hashlib
 import os
 import re
 from datetime import datetime
@@ -37,13 +38,35 @@ def extract_recording_timestamp(filename: str) -> str | None:
 
 
 # Watermark date-format presets (M11). Keys persist in config.json; the
-# values are strftime date parts. The settings UI labels each option with
-# a concrete example, so the ids never surface to the user.
+# values are strftime date parts, except "long" which is special-cased in
+# watermark_date_part (strftime has no ordinal-day directive). The settings
+# UI labels each option with a concrete example, so the ids never surface
+# to the user.
 WATERMARK_DATE_FORMATS = {
     "ymd": "%Y-%m-%d",
     "mdy": "%m/%d/%Y",
     "dmy": "%d.%m.%Y",
+    "long": None,
 }
+
+
+def _ordinal_day(day: int) -> str:
+    if 10 <= day % 100 <= 20:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
+    return f"{day}{suffix}"
+
+
+def watermark_date_part(recorded_at: datetime, date_format: str = "ymd") -> str:
+    """Render just the date portion for a format preset id — shared by
+    format_watermark_datetime and the settings UI's example labels, so
+    every preset (including the special-cased "long" form) stays in sync
+    between the two."""
+    if date_format == "long":
+        return f"{recorded_at.strftime('%B')} {_ordinal_day(recorded_at.day)}, {recorded_at.year}"
+    fmt = WATERMARK_DATE_FORMATS.get(date_format) or WATERMARK_DATE_FORMATS["ymd"]
+    return recorded_at.strftime(fmt)
 
 
 def format_watermark_datetime(recorded_at: datetime, date_format: str = "ymd",
@@ -51,8 +74,7 @@ def format_watermark_datetime(recorded_at: datetime, date_format: str = "ymd",
     """Render a watermark timestamp per the M11 settings: a date-format
     preset plus an optional 24h time-of-day suffix. Unknown preset ids
     fall back to ISO (ymd)."""
-    date_part = recorded_at.strftime(
-        WATERMARK_DATE_FORMATS.get(date_format, WATERMARK_DATE_FORMATS["ymd"]))
+    date_part = watermark_date_part(recorded_at, date_format)
     if include_time:
         return f"{date_part} {recorded_at.strftime('%H:%M:%S')}"
     return date_part
@@ -88,8 +110,55 @@ def resolve_watermark_text(video_path: str, source: str = "parsed",
     return format_watermark_datetime(recorded_at, date_format, include_time)
 
 
-def build_timestamp_watermark_filter(timestamp_text: str, duration_seconds: float) -> str:
-    """drawtext filter that burns ``timestamp_text`` bottom-left and fades it out.
+def _watermark_cache_dir() -> Path:
+    """`%APPDATA%/ClipToolbox/watermarks` (sibling of the recents `thumbs`
+    dir — same fallback convention)."""
+    base = os.environ.get("APPDATA")
+    root = Path(base) / "ClipToolbox" if base else Path.home() / ".cliptoolbox"
+    d = root / "watermarks"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def write_watermark_textfile(text: str | list[str]) -> Path:
+    """Write watermark text to a content-hashed cache file and return its
+    path, for drawtext's ``textfile=`` option.
+
+    Embedding arbitrary user text (M11's custom watermark) directly in a
+    quoted ``text=`` option value is NOT reliably escapable: an apostrophe
+    inside the quoted string — via a bare ``\\'`` or even ffmpeg's own
+    documented shell-style ``'\\''`` quote trick — silently desyncs the
+    surrounding AVOption quote tracking once ANY later drawtext option is
+    also quoted (alpha=, enable=), corrupting the rendered text (verified
+    by extracting real frames, not just checking ffmpeg's exit code — a
+    parse mishap can succeed silently instead of erroring). ``textfile=``
+    reads the file's raw bytes with none of that escaping, and real
+    newline bytes in the file render as real line breaks.
+
+    Cached under AppData (not a temp dir) and never deleted: an
+    ExportJobSpec embeds the resolved filter string verbatim for RE-RUN,
+    which can replay a job after an app restart, so the referenced file
+    must keep existing. Content-hashed filenames make this a no-op cache
+    hit for repeat text (e.g. re-running the same export)."""
+    lines = [text] if isinstance(text, str) else list(text)
+    content = "\n".join(lines)
+    key = hashlib.sha1(content.encode("utf-8")).hexdigest()
+    path = _watermark_cache_dir() / f"{key}.txt"
+    if not path.exists():
+        path.write_text(content, encoding="utf-8")
+    return path
+
+
+def build_timestamp_watermark_filter(text: str | list[str], duration_seconds: float) -> str:
+    """drawtext filter that burns ``text`` bottom-left and fades it out.
+
+    ``text`` is either a single string or a list of lines stacked top to
+    bottom (M11's CONFIGURED+CUSTOM "both" mode: configured setting on top,
+    custom text on the bottom line) — written to a cache file and read via
+    ``textfile=`` (see write_watermark_textfile for why). drawtext sizes
+    ``th`` to the whole multi-line block, so ``y=h-th-20`` anchors the
+    LAST line at the usual 20px-from-bottom margin regardless of how many
+    lines there are.
 
     The text ramps in, holds until ``duration_seconds``, then fades over
     ``TIMESTAMP_WATERMARK_FADE_MS`` (clamped so short durations still fade).
@@ -102,7 +171,9 @@ def build_timestamp_watermark_filter(timestamp_text: str, duration_seconds: floa
     fade_out_after_text = f"{fade_out_after_seconds:.3f}"
     fade_end_text = f"{fade_end_seconds:.3f}"
     fade_text = f"{fade_seconds:.3f}"
-    escaped_text = str(timestamp_text).replace("\\", r"\\").replace(":", r"\:").replace("'", r"\'")
+
+    text_path = write_watermark_textfile(text)
+    escaped_text_path = str(text_path).replace("\\", "/").replace(":", r"\:")
 
     alpha_expression = (
         f"if(lt(t,{fade_text}),t/{fade_text},"
@@ -120,7 +191,7 @@ def build_timestamp_watermark_filter(timestamp_text: str, duration_seconds: floa
 
     return (
         f"drawtext={font_option}"
-        f"text='{escaped_text}':"
+        f"textfile='{escaped_text_path}':expansion=none:"
         "x=20:y=h-th-20:fontsize=h/26:"
         "fontcolor=white:borderw=2:bordercolor=black@0.85:"
         f"alpha='{alpha_expression}':enable='between(t,0,{fade_end_text})'"

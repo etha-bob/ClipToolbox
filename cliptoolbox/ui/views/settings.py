@@ -148,19 +148,19 @@ class SettingsOverlay:
         ).pack(side=tk.LEFT, padx=(px(12), 0))
 
         # Date-format options label themselves with a concrete example date,
-        # generated from the presets so new formats appear automatically.
+        # generated from the presets (via the same helper the export path
+        # uses) so new formats appear automatically and never drift from
+        # what actually gets burned in.
         self._wm_fmt_ids = {
-            self._wm_sample.strftime(fmt): fmt_id
-            for fmt_id, fmt in core_filters.WATERMARK_DATE_FORMATS.items()
+            core_filters.watermark_date_part(self._wm_sample, fmt_id): fmt_id
+            for fmt_id in core_filters.WATERMARK_DATE_FORMATS
         }
-        current_fmt = core_filters.WATERMARK_DATE_FORMATS.get(
-            app.settings.watermark_date_format,
-            core_filters.WATERMARK_DATE_FORMATS["ymd"])
+        self.wm_fmt_var = tk.StringVar(value=core_filters.watermark_date_part(
+            self._wm_sample, app.settings.watermark_date_format))
         fmt_row = tk.Frame(body, bg=theme.PANEL_FILL)
         fmt_row.pack(fill=tk.X, pady=(px(4), 0))
         tk.Label(fmt_row, text="Date", font=theme.font_body(),
                  bg=theme.PANEL_FILL, fg=theme.TEXT).pack(side=tk.LEFT)
-        self.wm_fmt_var = tk.StringVar(value=self._wm_sample.strftime(current_fmt))
         self.wm_fmt_seg = widgets.HaloSegmented(
             fmt_row, list(self._wm_fmt_ids), self.wm_fmt_var,
             behind=theme.PANEL_FILL)

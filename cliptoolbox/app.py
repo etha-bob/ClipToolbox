@@ -166,6 +166,12 @@ class HaloApp:
         self.timestamp_watermark_enabled_var = tk.BooleanVar(value=False)
         self.timestamp_watermark_duration_var = tk.StringVar(
             value=str(DEFAULT_TIMESTAMP_WATERMARK_DURATION_MS))
+        # Per-export watermark text override (M11): "configured" (the
+        # Settings source), "custom" (freetext below), or "both" (stacked,
+        # configured on top). Clip-scoped like trim/crop — reset on every
+        # load so one clip's caption can never bleed into the next export.
+        self.watermark_mode_var = tk.StringVar(value="configured")
+        self.watermark_custom_text_var = tk.StringVar(value="")
 
         # Export drawer (B4): name pattern + destination, and the persistent
         # job history (jobs.json). The drawer itself is built in build_ui.
@@ -1098,6 +1104,10 @@ class HaloApp:
             self.timestamp_watermark_checkbox.config(state=export_state)
         if hasattr(self, "timestamp_watermark_duration_entry"):
             self.timestamp_watermark_duration_entry.config(state=export_state)
+        if hasattr(self, "watermark_mode_seg"):
+            self.watermark_mode_seg.config(state=export_state)
+        if hasattr(self, "watermark_custom_entry"):
+            self.watermark_custom_entry.config(state=export_state)
         # The drawer manages its own inputs (pattern/destination/GO) from the
         # same is_exporting flag.
         if self.export_drawer is not None:
@@ -1307,6 +1317,11 @@ class HaloApp:
         self.trim_enabled_var.set(False)
         self.clear_trim_points(silent=True)
         self.update_trim_controls()
+        # Watermark mode/custom text are clip-scoped the same way (M11): a
+        # caption typed for one clip must never bleed into the next export.
+        self.watermark_mode_var.set("configured")
+        self.watermark_custom_text_var.set("")
+        self.on_watermark_mode_changed()
         if self.crop:
             self.crop.reset()
         self.preview_placeholder_var.set("Preparing file...")
@@ -1478,6 +1493,12 @@ class HaloApp:
         self.trim_enabled_var.set(False)
         self.clear_trim_points(silent=True)
         self.update_trim_controls()  # also resets the compression estimate
+        self.watermark_mode_var.set("configured")
+        self.watermark_custom_text_var.set("")
+        # HaloSegmented's command only fires from a click, not a programmatic
+        # .set(), so the custom-text row's visibility needs an explicit sync
+        # or it can be left showing (empty) from the previous clip's mode.
+        self.on_watermark_mode_changed()
         if self.crop:
             self.crop.reset()
         self.set_seek_range(0)
@@ -2096,29 +2117,58 @@ class HaloApp:
 
         if self.timestamp_watermark_enabled_var.get():
             self.timestamp_watermark_options_frame.pack(side=tk.LEFT, padx=(px(10), 0))
+            if hasattr(self, "watermark_text_options_frame"):
+                self.watermark_text_options_frame.pack(fill=tk.X, pady=(px(2), 0))
+                self.on_watermark_mode_changed()  # sync the custom-text row
             self.log("Timestamp watermark enabled for export.")
         else:
             self.timestamp_watermark_options_frame.pack_forget()
+            if hasattr(self, "watermark_text_options_frame"):
+                self.watermark_text_options_frame.pack_forget()
             self.log("Timestamp watermark disabled.")
 
         if self.export_drawer is not None:
             self.export_drawer.refresh()  # {stamp} token in the name preview
 
-    def get_timestamp_watermark_settings(self) -> tuple[str, float] | None:
-        """Return (timestamp_text, duration_seconds) for the watermark, or None.
+    def on_watermark_mode_changed(self):
+        """Show the custom-text entry only when the mode needs it."""
+        if not hasattr(self, "watermark_custom_frame"):
+            return
+        if self.watermark_mode_var.get() in ("custom", "both"):
+            if self.watermark_custom_frame.winfo_manager() == "":
+                self.watermark_custom_frame.pack(fill=tk.X, pady=(px(4), 0))
+        else:
+            self.watermark_custom_frame.pack_forget()
 
-        Raises ValueError with a user-facing message when enabled but the
-        filename has no recognizable recording time or the duration is invalid.
+    def get_timestamp_watermark_settings(self) -> tuple[list[str], float] | None:
+        """Return (text_lines, duration_seconds) for the watermark, or None.
+
+        text_lines has one entry for "configured" or "custom" mode, two for
+        "both" (configured on top, custom on the bottom line — build_
+        timestamp_watermark_filter stacks them in that order). Raises
+        ValueError with a user-facing message when enabled but the chosen
+        source(s) can't produce text, or the duration is invalid.
         """
         if not self.timestamp_watermark_enabled_var.get():
             return None
 
-        timestamp_text = core_filters.resolve_watermark_text(
-            self.video_path or "",
-            self.settings.watermark_source,
-            self.settings.watermark_date_format,
-            bool(self.settings.watermark_include_time),
-        )
+        mode = self.watermark_mode_var.get()
+        lines = []
+        if mode in ("configured", "both"):
+            lines.append(core_filters.resolve_watermark_text(
+                self.video_path or "",
+                self.settings.watermark_source,
+                self.settings.watermark_date_format,
+                bool(self.settings.watermark_include_time),
+            ))
+        if mode in ("custom", "both"):
+            custom_text = self.watermark_custom_text_var.get().strip()
+            if not custom_text:
+                raise ValueError(
+                    "Enter custom watermark text, or switch the watermark "
+                    "text option back to the configured setting."
+                )
+            lines.append(custom_text)
 
         raw_duration = (
             self.timestamp_watermark_duration_var.get().strip().lower().replace("ms", "").strip()
@@ -2133,7 +2183,7 @@ class HaloApp:
         if duration_ms <= 0:
             raise ValueError("Watermark duration must be larger than 0 milliseconds.")
 
-        return timestamp_text, duration_ms / 1000.0
+        return lines, duration_ms / 1000.0
 
     def update_compression_estimate(self):
         """Live bitrate estimate on the compression card (reuses core math).

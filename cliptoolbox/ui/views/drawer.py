@@ -304,11 +304,42 @@ class ExportDrawer:
         tk.Label(app.timestamp_watermark_options_frame, text="ms", font=theme.font_small(),
                  bg=theme.PANEL_FILL, fg=theme.TEXT_DIM).pack(side=tk.LEFT)
 
+        # Per-export text override (M11): CONFIGURED (Settings' source),
+        # CUSTOM (freetext below), or BOTH (stacked, configured on top).
+        # Clip-scoped — app.reset_clip_state clears both back to CONFIGURED.
+        wm_text_opts_row = tk.Frame(body, bg=theme.PANEL_FILL)
+        wm_text_opts_row.pack(fill=tk.X, padx=(px(24), 0))
+
+        app.watermark_text_options_frame = tk.Frame(wm_text_opts_row, bg=theme.PANEL_FILL)
+
+        mode_row = tk.Frame(app.watermark_text_options_frame, bg=theme.PANEL_FILL)
+        mode_row.pack(fill=tk.X, pady=(px(4), 0))
+        tk.Label(mode_row, text="Text:", font=theme.font_small(),
+                 bg=theme.PANEL_FILL, fg=theme.TEXT).pack(side=tk.LEFT)
+        app.watermark_mode_seg = HaloSegmented(
+            mode_row, ["CONFIGURED", "CUSTOM", "BOTH"], app.watermark_mode_var,
+            command=app.on_watermark_mode_changed, behind=theme.PANEL_FILL,
+        )
+        app.watermark_mode_seg.pack(side=tk.LEFT, padx=(px(6), 0))
+
+        app.watermark_custom_frame = tk.Frame(app.watermark_text_options_frame, bg=theme.PANEL_FILL)
+        app.watermark_custom_entry = HaloEntry(
+            app.watermark_custom_frame, textvariable=app.watermark_custom_text_var,
+            justify="left",
+        )
+        app.watermark_custom_entry.pack(fill=tk.X)
+        # Packed/forgotten by on_watermark_mode_changed (CUSTOM/BOTH only).
+
         for widget, tip in (
             (app.compression_target_entry, "Target size in MB (Windows/Discord MiB)"),
             (app.compression_resolution_combo, "Cap the compressed video resolution"),
             (app.timestamp_watermark_duration_entry,
              "How long the timestamp stays fully visible before fading (ms)"),
+            (app.watermark_mode_seg,
+             "CONFIGURED uses the Settings source; CUSTOM burns your own text for "
+             "just this clip; BOTH stacks them, configured on top."),
+            (app.watermark_custom_entry,
+             "Custom watermark text for this clip only — not saved between clips."),
         ):
             Tooltip(widget, tip)
 

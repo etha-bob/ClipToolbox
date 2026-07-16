@@ -49,6 +49,7 @@ Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 | M9 | Focus + crop compatibility (Ethan 2026-07-16) — Tab focus works with crop on: crop toolbar stays usable inside focus (preview/edit, add/delete, key nav, reset, clear) and the crop box drags in Edit mode; C inside focus toggles crop without leaving focus. Supersedes B5's mutual-exclusion decision | — | done 2026-07-16 |
 | M10 | Preview mouse gestures (Ethan 2026-07-16) — hold left-click on the preview = play at 2x while held, double-click = toggle focus mode, right-click = play/pause | — | done 2026-07-16 |
 | M11 | Watermark expansion (Ethan 2026-07-16) — Settings section for the timestamp watermark: text source (parsed filename timestamp / file creation date / full filename), date-only vs date+time, date format presets | — | done 2026-07-16 |
+| M12 | Watermark: long date format + per-export text override (Ethan 2026-07-16, M11 follow-up) — a 4th date preset ("April 6th, 2025"); export drawer gains a per-clip CONFIGURED/CUSTOM/BOTH text mode with a freetext field (BOTH stacks configured on top, custom on bottom); mode/text reset on every clip load (clip-scoped, never persisted) | — | done 2026-07-16 |
 
 ## Incremental track — large (L)
 
@@ -205,6 +206,46 @@ Bold sequencing if chosen: B3 → B0 → B1 → B4 → B2 → B5/B6 (B2 pulled f
 XL items get a stage checklist added under their row when work starts (plan-mode design first).
 
 ## Session log (newest first)
+
+- **2026-07-16 (latest)** — Shipped M12 (watermark long-date preset + per-export text override,
+  Ethan's M11 follow-up) on `feature/watermark-options`. Settings gained a 4th date preset,
+  "long" (`filters.watermark_date_part` special-cases it — strftime has no ordinal-day
+  directive — via a new `_ordinal_day` helper: "April 6th, 2025"), generated the same way as the
+  other three so the segmented button's example label can never drift from what export burns.
+  The export drawer gained a per-clip text-mode row under the watermark checkbox: CONFIGURED
+  (Settings' source, the existing behavior) / CUSTOM (a new freetext field, this clip only) /
+  BOTH (stacks them, configured line on top, custom on the bottom — `get_timestamp_watermark_
+  settings` now returns a list of 1-2 lines instead of a single string). New
+  `app.watermark_mode_var`/`watermark_custom_text_var` are clip-scoped like trim: reset in both
+  `load_video` (direct clip-to-clip switch, the Q6 leak path) and `reset_clip_state`
+  (close/probe-fail), with an explicit `on_watermark_mode_changed()` call after each — `Halo
+  Segmented`'s `command` only fires from a click, not a programmatic `.set()`, so the
+  custom-text row's visibility needs an explicit sync or it silently keeps showing (empty) from
+  the previous clip's mode. **Real bug hunted down via the verify-with-a-frame-grab
+  discipline** (a naive "export succeeded" check would have shipped this broken): drawtext's
+  `text=` option cannot reliably embed an apostrophe — neither a bare `\'` nor ffmpeg's own
+  documented shell-style `'\''` trick actually works once ANY
+  later drawtext option in the same filter is ALSO quoted (`alpha=`, `enable=`) — both silently
+  desync the surrounding AVOption quote-tracking and corrupt the rendered text (sometimes a hard
+  "No such filter: '0.500)'" parse error from the alpha expression's commas leaking out
+  unquoted, sometimes a QUIET corruption that exit-code-only checks miss entirely — caught only
+  by actually opening the extracted frame). The fix: `filters.write_watermark_textfile` writes
+  the (possibly two-line) text to a content-hashed cache file under
+  `%APPDATA%/ClipToolbox/watermarks/`, and the filter reads it via drawtext's `textfile=`
+  instead — no command-line escaping of the content at all, stress-tested clean against
+  percent signs, brackets, semicolons, embedded Windows paths, and mixed quotes. Cached under
+  AppData rather than a temp dir specifically because `ExportJobSpec` bakes the resolved filter
+  string in verbatim for RE-RUN, which can replay a job after a restart — the referenced file
+  must still be there. Added `expansion=none` defensively since custom text can now contain a
+  literal `%`. Layout fix in passing: an earlier change (moving the Date label to its own row
+  to fit the wider "long" example) pushed the Settings card past the 700px minsize by ~16
+  logical px — reverted to the original inline label+segmented row, which fits all four
+  presets including "April 6th, 2025" with no clipping. Verified: 28-check driver × both
+  skins (ordinal-day edge cases incl. 1st/2nd/3rd/11th/21st, cache-file content/hashing/reuse,
+  mode-switch UI sync, clip-load reset, a real "both"-mode export with an apostrophe in the
+  custom text, frame-extracted and read); a 6-case special-character stress test (`%`, `[]`,
+  quotes, backslashed paths, colons, `;`/`,`) each frame-verified; M11's original 21-check
+  driver re-run green on both skins after the settings layout fix; gallery both skins.
 
 - **2026-07-16 (later)** — Shipped M8–M11 (all requested by Ethan mid-session): M8 on
   `feature/timeline-navigation`, M9+M10 on `feature/focus-crop`, M11 on
