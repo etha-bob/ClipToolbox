@@ -101,7 +101,8 @@ STARTING scanner cue in the ruler band; branch `feature/real-timeline`, one comm
       right-click delete; inert edits skip the pipeline; only-inert restores stay silent (Q4)
 - [x] S6 Export progress: `on_progress(percent, attempt, attempts_max)` + sweep over the trimmed
       region + attempt counter + seekbar disabled during export (M1/F5; real 2-attempt NVENC run)
-- [ ] S7 STARTING cue (M4/F13)
+- [x] S7 STARTING cue (M4/F13): ping-pong scanner in the ruler band around the playhead,
+      tracked off `on_playback_state`, leak-free `after` loop (verified via `after info`)
 - [ ] S8 Cleanup + close-out: delete `trim_flag`, gallery timeline demos, roadmap done + log
 
 **B0 stage checklist** (done 2026-07-15):

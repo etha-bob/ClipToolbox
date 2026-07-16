@@ -1268,6 +1268,7 @@ class HaloApp:
             self.crop.reset()
         self.set_seek_range(0)
         self.seekbar.set_fps(None)
+        self.seekbar.set_engine_starting(False)
         self.render_queue.cancel_group("timeline")
         self.clear_timeline_assets()
         self.preview_placeholder_var.set(workspace.PLACEHOLDER_DEFAULT)
@@ -2626,6 +2627,9 @@ class HaloApp:
     def on_playback_state(self, state: str):
         self.refresh_playback_button_state()
 
+        # The timeline's scanner cue tracks the STARTING state exactly.
+        self.seekbar.set_engine_starting(state == core_playback.STARTING)
+
         if self.is_exporting:
             return
 
@@ -2660,6 +2664,8 @@ class HaloApp:
         window in place (FFplay repositions it once at first-frame time)."""
         self.hide_paused_frame()
         self.preview_placeholder.place_forget()
+        # Belt and braces: mpv/ffplay promote states on different signals.
+        self.seekbar.set_engine_starting(False)
         self.schedule_anchor_burst()
         self.refresh_playback_button_state()
 

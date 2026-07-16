@@ -96,6 +96,11 @@ class HaloSeekbar(tk.Canvas):
         # Export progress overlay: (percent, attempt, attempts_max) or None.
         self._export_progress: tuple[int, int, int] | None = None
 
+        # Engine-STARTING scanner cue (M4/F13): the widget's only timer.
+        self._starting = False
+        self._starting_phase = 0
+        self._starting_after_id: str | None = None
+
         # Lane data (pushed by the app; plain PIL images / state strings).
         # _data_gen bumps on every change so the composed base cache misses.
         self._filmstrip: Image.Image | None = None
@@ -119,6 +124,7 @@ class HaloSeekbar(tk.Canvas):
         self._variable.trace_add("write", self._on_var_write)
 
         self.bind("<Configure>", self._on_resize)
+        self.bind("<Destroy>", self._on_destroy)
         self.bind("<Enter>", lambda e: self._set_hover(True))
         self.bind("<Leave>", lambda e: self._set_hover(False))
         self.bind("<ButtonPress-1>", self._on_press)
@@ -231,6 +237,42 @@ class HaloSeekbar(tk.Canvas):
             self._wave_states = states
             self._data_gen += 1
             self._redraw()
+
+    def set_engine_starting(self, active: bool):
+        """Animated scanner segment in the ruler band while the playback
+        engine spins up (the STARTING state) — motion where the user's eye
+        already is, replacing the static placeholder-only cue (F13). Runs
+        the widget's only after() loop; idempotent and leak-free."""
+        active = bool(active)
+        if active == self._starting:
+            return
+        self._starting = active
+        self._cancel_starting_timer()
+        if active:
+            self._starting_phase = 0
+            self._tick_starting()
+        else:
+            self._redraw()
+
+    def _cancel_starting_timer(self):
+        if self._starting_after_id is not None:
+            try:
+                self.after_cancel(self._starting_after_id)
+            except Exception:
+                pass
+            self._starting_after_id = None
+
+    def _tick_starting(self):
+        self._starting_after_id = None
+        if not self._starting or not self.winfo_exists():
+            return
+        self._starting_phase += 1
+        self._redraw()
+        self._starting_after_id = self.after(80, self._tick_starting)
+
+    def _on_destroy(self, _event=None):
+        self._starting = False
+        self._cancel_starting_timer()
 
     def set_export_progress(self, percent, attempt: int = 1, attempts_max: int = 1):
         """Paint export progress onto the strip (None clears). The fill
@@ -663,6 +705,23 @@ class HaloSeekbar(tk.Canvas):
         fill = theme.ACCENT_DEEP if self._state == tk.NORMAL else theme.TEXT_DIM
         self.create_rectangle(x0 + 1, ruler_top + 1, max(x0 + 1, hx), ruler_bot - 2,
                               fill=fill, width=0)
+
+        # STARTING scanner: a bright segment ping-ponging around the
+        # playhead in the ruler band while the engine spins up.
+        if self._starting:
+            span = px(40)
+            seg = px(14)
+            period = 20  # ticks per one-way pass
+            ph = self._starting_phase % (2 * period)
+            frac = ph / period
+            if frac > 1.0:
+                frac = 2.0 - frac
+            cx = hx - span + round(2 * span * frac)
+            sx0 = max(x0, cx - seg // 2)
+            sx1 = min(x1, cx + seg // 2)
+            if sx1 > sx0:
+                self.create_rectangle(sx0, ruler_top + 1, sx1, ruler_bot - 2,
+                                      fill=theme.ACCENT, width=0)
 
         # Cached-range bar: bright segments along the ruler's bottom edge
         # showing which parts seek instantly from the mpv RAM cache.
