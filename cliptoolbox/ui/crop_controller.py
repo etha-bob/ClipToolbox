@@ -272,11 +272,20 @@ class CropController:
             time_offset=start_seconds, scale_flags=PREVIEW_MOTION_SCALE_FLAGS,
         )
 
-    def _export_motion(self, trim_start):
+    def _export_motion(self, trim_start, max_dims=None):
         if not self.track.enabled or self.src_w <= 0:
             return None
-        out_w = motion.even_floor(self.src_w)
-        out_h = motion.even_floor(self.src_h)
+        # Build at the capped output size when the compressed path passes its
+        # resolution limit: a zoom then scales the WHOLE frame up before
+        # cropping, so building at 4K when the export lands at 1080p forces a
+        # needlessly huge (often invalid) intermediate. Capping first keeps
+        # the intermediate proportional to the real output — the aspect and
+        # geometry are identical, and the later scale=min(box,iw) is a no-op.
+        if max_dims is not None:
+            out_w, out_h = motion.cap_size(self.src_w, self.src_h, *max_dims)
+        else:
+            out_w = motion.even_floor(self.src_w)
+            out_h = motion.even_floor(self.src_h)
         return motion.build_motion_chain(
             self.track, self.src_w, self.src_h, out_w, out_h,
             time_offset=trim_start or 0.0,
@@ -287,9 +296,11 @@ class CropController:
         chain = self._export_motion(trim_start)
         return f"{chain},setsar=1" if chain else None
 
-    def export_prefilter(self, trim_start):
-        """Compressed export prefix (prepended before the scale cap)."""
-        return self._export_motion(trim_start)
+    def export_prefilter(self, trim_start, max_dims=None):
+        """Compressed export prefix (prepended before the scale cap).
+        max_dims is the compression resolution limit (w, h); the chain builds
+        at that capped size so the pre-scale intermediate stays bounded."""
+        return self._export_motion(trim_start, max_dims)
 
     def will_reencode(self) -> bool:
         """True when the active crop forces the standard export to re-encode."""

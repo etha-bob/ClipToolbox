@@ -50,6 +50,7 @@ Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 | M10 | Preview mouse gestures (Ethan 2026-07-16) — hold left-click on the preview = play at 2x while held, double-click = toggle focus mode, right-click = play/pause | — | done 2026-07-16 |
 | M11 | Watermark expansion (Ethan 2026-07-16) — Settings section for the timestamp watermark: text source (parsed filename timestamp / file creation date / full filename), date-only vs date+time, date format presets | — | done 2026-07-16 |
 | M12 | Watermark: long date format + per-export text override (Ethan 2026-07-16, M11 follow-up) — a 4th date preset ("April 6th, 2025"); export drawer gains a per-clip CONFIGURED/CUSTOM/BOTH text mode with a freetext field (BOTH stacks configured on top, custom on bottom); mode/text reset on every clip load (clip-scoped, never persisted) | — | done 2026-07-16 |
+| M13 | Two bug fixes (Ethan 2026-07-16): (a) the CUSTOM/BOTH freetext field never appeared — HaloSegmented stores its UPPERCASE label into `watermark_mode_var` but the logic compared lowercase; normalized via `watermark_text_mode()`. (b) crop-keyframe exports crashed with "Picture size 63113x34114 is invalid / Cannot allocate memory" — the animated-size scale (`out_w*iw/pw`) explodes on a heavily-zoomed crop; added `_clamp_export_zoom` (MAX_SCALE_DIM safety net) + built the compressed path's motion chain at the capped target resolution (`cap_size`) so a 16x zoom to a 1080p target keeps full zoom | — | done 2026-07-16 |
 
 ## Incremental track — large (L)
 
@@ -206,6 +207,42 @@ Bold sequencing if chosen: B3 → B0 → B1 → B4 → B2 → B5/B6 (B2 pulled f
 XL items get a stage checklist added under their row when work starts (plan-mode design first).
 
 ## Session log (newest first)
+
+- **2026-07-16 (latest+1)** — Fixed two bugs Ethan hit testing M12, on `feature/watermark-options`
+  (touching app.py, core/motion.py, ui/crop_controller.py — none in the frozen diff-verifiable
+  set). **(a) The CUSTOM/BOTH freetext field never showed.** `HaloSegmented` stores its verbatim
+  UPPERCASE display label ("CUSTOM") into the bound var, but `on_watermark_mode_changed` /
+  `get_timestamp_watermark_settings` compared against lowercase ("custom"), so the branch never
+  fired. M12's driver had set the var directly in lowercase, bypassing the widget — the classic
+  "tested the state, not the click" gap. Fix: the var now holds the uppercase label (so the
+  segmented control's own selection highlight works too) and a new `watermark_text_mode()`
+  helper normalizes to the lowercase id at the two read sites; init + both clip-reset paths set
+  "CONFIGURED". **(b) Crop-keyframe exports crashed** — "Picture size 63113x34114 is invalid /
+  Cannot allocate memory". The animated-SIZE motion chain (`motion.py` tier 3) scales the whole
+  frame up by `out_w*iw/pw` before cropping, so a heavy zoom (a ~234px crop on a 3840px source
+  at 4K output) demands a ~63000px-wide intermediate — past ffmpeg's ~INT_MAX-pixel limit, and
+  a multi-GB alloc that OOMs. Two-part fix: (1) `_clamp_export_zoom` (new, motion.py) bumps any
+  crop rect that would push the scale past `MAX_SCALE_DIM`=32000 per side up around its centre —
+  a universal crash guard that also covers the 16px `CROP_MIN_SIZE` degenerate case, enforced
+  per-dimension so a thin rect can't sneak a tiny width past an adequate area; (2) the compressed
+  export now builds the motion chain at the capped target resolution (new `motion.cap_size`,
+  threaded through `crop.export_prefilter(trim_start, max_dims)` from `build_export_spec`) instead
+  of source res — the path downscales to 1080p afterward anyway, so building at 1080p makes the
+  intermediate proportional to the real output and keeps the user's full 16x zoom (at 1920 out,
+  the 32000 clamp's 230px floor sits just under their 234px crop, so nothing is clamped). The
+  standard (uncompressed 4K) path stays source-res but is protected by the clamp (caps ~8x — the
+  most ffmpeg can allocate at 4K anyway). Verified: a 10-check motion driver with REAL 4K ffmpeg
+  exports (standard-4K-via-clamp + compressed-1080p-via-cap both succeed; the 234px zoom is kept
+  at 1080p and clamped at 4K; a 16px degenerate crop is bounded on both axes) + an 11-check
+  in-process app driver × both skins (freetext field appears on a REAL segmented-control click of
+  CUSTOM/BOTH, custom/both text resolves, CONFIGURED hides it, and a **real NVENC compressed
+  export with animated-size crop keyframes — the user's exact failing case — completes `done` at
+  1080p** instead of erroring); M11b's 28-check watermark driver re-run green (two stale
+  lowercase-var assertions updated to `watermark_text_mode()`); drawer screenshot confirming the
+  field renders; gallery both skins. Lesson: a segmented control bound to a persisted/logic var
+  must either use the id as its label or map explicitly (as settings.py's source/format rows do)
+  — binding uppercase display labels to a var the logic reads as lowercase silently no-ops, and a
+  driver that `.set()`s the var directly will never catch it. Drive the widget, not the variable.
 
 - **2026-07-16 (latest)** — Shipped M12 (watermark long-date preset + per-export text override,
   Ethan's M11 follow-up) on `feature/watermark-options`. Settings gained a 4th date preset,

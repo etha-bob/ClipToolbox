@@ -166,11 +166,14 @@ class HaloApp:
         self.timestamp_watermark_enabled_var = tk.BooleanVar(value=False)
         self.timestamp_watermark_duration_var = tk.StringVar(
             value=str(DEFAULT_TIMESTAMP_WATERMARK_DURATION_MS))
-        # Per-export watermark text override (M11): "configured" (the
-        # Settings source), "custom" (freetext below), or "both" (stacked,
-        # configured on top). Clip-scoped like trim/crop — reset on every
-        # load so one clip's caption can never bleed into the next export.
-        self.watermark_mode_var = tk.StringVar(value="configured")
+        # Per-export watermark text override (M11): CONFIGURED (the Settings
+        # source), CUSTOM (freetext below), or BOTH (stacked, configured on
+        # top). The var holds the segmented control's UPPERCASE display label
+        # (HaloSegmented stores its label verbatim); watermark_text_mode()
+        # normalizes it to the lowercase id the logic keys off. Clip-scoped
+        # like trim/crop — reset on every load so one clip's caption can never
+        # bleed into the next export.
+        self.watermark_mode_var = tk.StringVar(value="CONFIGURED")
         self.watermark_custom_text_var = tk.StringVar(value="")
 
         # Export drawer (B4): name pattern + destination, and the persistent
@@ -1319,7 +1322,7 @@ class HaloApp:
         self.update_trim_controls()
         # Watermark mode/custom text are clip-scoped the same way (M11): a
         # caption typed for one clip must never bleed into the next export.
-        self.watermark_mode_var.set("configured")
+        self.watermark_mode_var.set("CONFIGURED")
         self.watermark_custom_text_var.set("")
         self.on_watermark_mode_changed()
         if self.crop:
@@ -1493,7 +1496,7 @@ class HaloApp:
         self.trim_enabled_var.set(False)
         self.clear_trim_points(silent=True)
         self.update_trim_controls()  # also resets the compression estimate
-        self.watermark_mode_var.set("configured")
+        self.watermark_mode_var.set("CONFIGURED")
         self.watermark_custom_text_var.set("")
         # HaloSegmented's command only fires from a click, not a programmatic
         # .set(), so the custom-text row's visibility needs an explicit sync
@@ -2130,11 +2133,18 @@ class HaloApp:
         if self.export_drawer is not None:
             self.export_drawer.refresh()  # {stamp} token in the name preview
 
+    def watermark_text_mode(self) -> str:
+        """The per-export watermark text mode as a lowercase id
+        (configured/custom/both). The segmented control stores its uppercase
+        display label into watermark_mode_var, so normalize here rather than
+        scattering case handling across every read site."""
+        return (self.watermark_mode_var.get() or "configured").strip().lower()
+
     def on_watermark_mode_changed(self):
         """Show the custom-text entry only when the mode needs it."""
         if not hasattr(self, "watermark_custom_frame"):
             return
-        if self.watermark_mode_var.get() in ("custom", "both"):
+        if self.watermark_text_mode() in ("custom", "both"):
             if self.watermark_custom_frame.winfo_manager() == "":
                 self.watermark_custom_frame.pack(fill=tk.X, pady=(px(4), 0))
         else:
@@ -2152,7 +2162,7 @@ class HaloApp:
         if not self.timestamp_watermark_enabled_var.get():
             return None
 
-        mode = self.watermark_mode_var.get()
+        mode = self.watermark_text_mode()
         lines = []
         if mode in ("configured", "both"):
             lines.append(core_filters.resolve_watermark_text(
@@ -3320,7 +3330,16 @@ class HaloApp:
         trim_start, trim_end = self.get_active_trim_points()
 
         crop_video_filter = self.crop.export_video_chain(trim_start) if self.crop else None
-        crop_prefilter = self.crop.export_prefilter(trim_start) if self.crop else None
+        # The compressed path downscales to the resolution cap after the crop,
+        # so build the crop chain directly at that cap — a heavy zoom then
+        # never inflates the pre-scale frame to an invalid size.
+        prefilter_dims = None
+        if compression_target_mb is not None:
+            max_w, max_h, _ = core_commands.resolve_resolution_limit(
+                compression_resolution_label)
+            prefilter_dims = (max_w, max_h)
+        crop_prefilter = (
+            self.crop.export_prefilter(trim_start, prefilter_dims) if self.crop else None)
 
         # Burn the timestamp on top of any crop transform. In the standard path
         # the watermark rides the -vf chain (crop or, alone, forcing a re-encode);
