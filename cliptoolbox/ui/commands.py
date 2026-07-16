@@ -172,4 +172,8 @@ def build_command_registry(app) -> list[Command]:
         # --- View --------------------------------------------------------
         Command("view.resetzoom", "Reset timeline zoom", "View", app.reset_timeline_zoom,
                 keys="Ctrl+0", enabled=workspace_ready, keywords="fit timeline"),
+        Command("view.focus", "Toggle focus mode", "View", app.toggle_focus_mode,
+                keys="Tab",
+                enabled=lambda: workspace_ready() and not app.crop_enabled_var.get(),
+                keywords="hud collapse panels cinema fullscreen distraction free"),
     ]

@@ -7,10 +7,10 @@ Single source of truth for planned UX/feature work. Seeded from the 2026-07-12 u
 sets items `in-progress`/`done` as it goes, appends a Session log entry, and commits roadmap updates
 in the same commit as the work. Newly discovered work gets a new row, not silent scope creep.
 
-**Now / Next:** T1, the Q1–Q9 batch, B3, B2, B0, B1, and B4 (export drawer + job history —
-absorbing Q7/M1's surfaces and defusing most of M5) are done. The bold track's remainder is
-B5 (focus/HUD mode) then B6 (coach marks). L1 (silent-video support) is the highest-value
-incremental alternative; L2 (taskbar progress) is now easy on top of the job pipeline.
+**Now / Next:** T1, the Q1–Q9 batch, B3, B2, B0, B1, B4, and B5 (focus/HUD mode) are done.
+The bold track's remainder is B6 (coach marks). L1 (silent-video support) is the
+highest-value incremental alternative; L2 (taskbar progress) is now easy on top of the job
+pipeline.
 
 Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 
@@ -61,7 +61,7 @@ Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 | B2 | One adaptive screen (landing becomes the workspace empty state; command strip shows filename) | F4 F12, Q1 M3 | done 2026-07-15 |
 | B3 | Command palette Ctrl+K (every action + hidden gestures, searchable, key hints) | F7, M2 | done 2026-07-15 |
 | B4 | Export drawer + persistent job history (name patterns, per-job progress/attempts, OPEN/RE-RUN) | F5 F11, Q7 M1 | done 2026-07-16 |
-| B5 | Focus/HUD mode (Tab collapses panels, translucent scanline controls per skin) | — | in-progress |
+| B5 | Focus/HUD mode (Tab collapses panels, translucent scanline controls per skin) | — | done 2026-07-16 |
 | B6 | First-run coach marks overlay | cold-start half of F7 | todo |
 
 **B2 stage checklist** (design agreed 2026-07-15 in plan mode; decisions: full-body hero empty
@@ -103,8 +103,10 @@ persisted):
       (16 checks × both skins incl. a pixel probe proving the chips out-stack the live player
       window — `anchor_child_window` re-raises it to HWND_TOP on every first-frame reveal, so
       the HUD re-asserts via new `win32.raise_window_to_top` on playback-state transitions)
-- [ ] S3 Palette `view.focus`, acceptance driver (export-in-focus, drawer-over-focus, Ctrl+W,
-      clip swap, Tab-in-entry traversal) both skins, roadmap close-out
+- [x] S3 Palette `view.focus`, acceptance drivers (20 checks × both skins: palette toggle +
+      crop-greyed predicate, drawer-over-focus Esc ordering, real GO export finishing inside
+      focus; 5-check mpv run pixel-proving the chips over mpv's differently-parented window;
+      S1 re-run green on final code), roadmap close-out
 
 **B4 stage checklist** (designed 2026-07-16, autonomous session per Ethan's standing direction;
 decisions: right-side slide-in drawer over the editor in `screen_container` (~440px, non-modal),
@@ -172,6 +174,41 @@ Bold sequencing if chosen: B3 → B0 → B1 → B4 → B2 → B5/B6 (B2 pulled f
 XL items get a stage checklist added under their row when work starts (plan-mode design first).
 
 ## Session log (newest first)
+
+- **2026-07-16** — Shipped B5 (focus/HUD mode) on `feature/focus-hud` (stacked on
+  `feature/export-drawer`), 3 stage commits, autonomous session. Tab (clip loaded, not typing,
+  no modal) collapses everything around the video: the command strip, right column (roster +
+  log), and the transport/frame/export rows hide, and the preview bezel grows to fill the
+  workspace; the timeline strip stays beneath the video as the one control surface, so trim
+  brackets, keyframes, Ctrl+wheel zoom and the export sweep all keep working full-width. Tab or
+  Esc exits (Esc keeps its cancel-export → leave-entry → close-drawer priorities); the legend
+  stays and swaps to focus hints, and the editor legend now advertises TAB FOCUS (WHEEL hint
+  retired to the palette). HUD chips overlay the preview letterbox via new
+  `skin.render_hud_chip` — a scanline panel pre-blended toward black (Tk can't alpha-composite
+  over an embedded player HWND; blending toward the black letterbox reads as translucent) —
+  with per-skin looks from existing tokens only (Reach's zero chamfer → straight-edged steel).
+  `ui/views/hud.py`: clip-name chip top-left (follows clip swaps via the file-label trace) and
+  a transport chip bottom-right — native-canvas glyph (play/pause/starting/stopped shapes, no
+  font roulette) + timecode riding the existing time-var traces, zero PIL on the 10 Hz path.
+  Focus is transient (never persisted), survives clip swaps, works during exports (Tab back out
+  any time); crop-edit and focus are mutually exclusive (entering with CROP on is refused with
+  a status hint; C inside focus exits focus first). close_clip/failed-probe exit via
+  reset_clip_state; the drawer stays orthogonal (Ctrl+E slides it over focus). Palette gained
+  `view.focus` (greyed while cropping). Discovery: `anchor_child_window` re-raises the ffplay
+  window to HWND_TOP on every first-frame reveal, burying Tk siblings — the chips are the
+  app's first widgets over LIVE video (stills/cropbox always had the player hidden), so new
+  `win32.raise_window_to_top` (async, no move/size/focus) re-asserts them on playback-state
+  transitions + 120/450 ms follow-ups. Verified: three in-process drivers × both skins (S1: 37
+  checks — layout flip, pack-order restore incl. export_row's pack-first priority, crop
+  refusal + C-handoff, Tab-in-entry traversal, Ctrl+W-in-focus, clip-swap survival; S2: 16
+  checks — chip text/glyph state machine over a real engine, plus a pixel probe proving the
+  chips paint above live video; S3: 20 checks — palette toggle, drawer-over-focus Esc order,
+  real GO export finishing inside focus; +5-check mpv run for the other z-order shape);
+  gallery both skins with a HUD-chip demo band. Lessons: (1) key-event drivers must
+  `focus_force()` before `event_generate` — the embedded player steals keyboard focus
+  mid-run and the event then has no focus window; (2) Tab traversal lives on the `all`
+  bindtag, so a toplevel binding returning "break" cleanly suppresses it while letting
+  entry-focused Tabs fall through by returning None.
 
 - **2026-07-16** — Shipped B4 (export drawer + job history) on `feature/export-drawer`
   (stacked on `feature/real-timeline`), 5 stage commits, autonomous session. The save-dialog
