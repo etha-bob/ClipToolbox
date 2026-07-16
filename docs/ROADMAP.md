@@ -98,8 +98,11 @@ persisted):
       toggle in app.py, Tab/Esc wiring + guards (typing, modal, crop refusal), focus legend
       hints, reset_clip_state exits, paused-still refresh at the new size; in-process driver
       (37 checks × both skins incl. pack-order restore, C-in-focus handoff, clip-swap survival)
-- [ ] S2 HUD: `skin.render_hud_chip` + `ui/views/hud.py` (name chip, transport glyph+timecode
+- [x] S2 HUD: `skin.render_hud_chip` + `ui/views/hud.py` (name chip, transport glyph+timecode
       chip on var traces), wired to enter/exit + playback-state refresh, gallery demo both skins
+      (16 checks × both skins incl. a pixel probe proving the chips out-stack the live player
+      window — `anchor_child_window` re-raises it to HWND_TOP on every first-frame reveal, so
+      the HUD re-asserts via new `win32.raise_window_to_top` on playback-state transitions)
 - [ ] S3 Palette `view.focus`, acceptance driver (export-in-focus, drawer-over-focus, Ctrl+W,
       clip swap, Tab-in-entry traversal) both skins, roadmap close-out
 

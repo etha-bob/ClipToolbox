@@ -20,7 +20,7 @@ The PhotoImage cache doubles as the mandatory Tk image reference holder.
 import random
 from collections import OrderedDict
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageTk
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageTk
 
 from cliptoolbox.ui import fonts, theme
 from cliptoolbox.ui.theme import px
@@ -480,6 +480,50 @@ def _render_background_reach(w: int, h: int) -> Image.Image:
     return img
 
 
+def render_hud_chip(w: int, h: int, behind: str = "#000000") -> Image.Image:
+    """Focus-mode HUD chip (B5): a scanline panel pre-blended toward black.
+
+    Tk can't alpha-composite widgets over the embedded video window, but the
+    chips sit on the preview's black letterbox — blending the skin's panel
+    colors toward that black reads as translucency. Scanlines are drawn at
+    1x after the downscale so they stay 1px-crisp, CRT-HUD style. Per-skin
+    look flows from the existing tokens (Reach's zero CHAMFER_SMALL makes a
+    straight-edged chip; the accent edge line picks up each skin's color).
+    """
+    c = px(theme.CHAMFER_SMALL)
+    W, H = w * SS, h * SS
+    img = Image.new("RGB", (W, H), rgb(behind))
+    pts = chamfer_points(W, H, c * SS, 0, c * SS, 0)
+
+    grad = _vgradient(
+        (W, H),
+        "#%02x%02x%02x" % mix(theme.PANEL_FILL_HI, behind, 0.45),
+        "#%02x%02x%02x" % mix(theme.PANEL_FILL, behind, 0.60),
+    )
+    mask = Image.new("L", (W, H), 0)
+    ImageDraw.Draw(mask).polygon(pts, fill=255)
+    img.paste(grad, (0, 0), mask)
+
+    draw = ImageDraw.Draw(img)
+    draw.polygon(pts, outline=mix(theme.PANEL_BORDER, behind, 0.25),
+                 width=max(1, round(1.2 * SS)))
+    # The lit HUD edge along the top face.
+    draw.line([pts[1 if c else 0], pts[2 if c else 1]],
+              fill=mix(theme.ACCENT, behind, 0.30), width=SS)
+
+    img = _finish(img, w, h)
+
+    # 1x scanlines, clipped to the chip body.
+    scan = Image.new("L", (w, h), 0)
+    sd = ImageDraw.Draw(scan)
+    for y in range(2, h - 1, 3):
+        sd.line([(0, y), (w, y)], fill=64)
+    scan = ImageChops.multiply(scan, mask.resize((w, h), Image.LANCZOS))
+    img = Image.composite(Image.new("RGB", (w, h), rgb(behind)), img, scan)
+
+    return img
+
+
 def render_menu_band(w: int, h: int, behind: str = theme.BG_DEEP) -> Image.Image:
     """Reach menu selection: pale silver band, solid left, fading out right."""
     W, H = w * SS, h * SS
@@ -526,6 +570,7 @@ _RENDERERS = {
     "wordmark": render_wordmark,
     "background": render_background,
     "menu_band": render_menu_band,
+    "hud_chip": render_hud_chip,
 }
 
 

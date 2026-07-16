@@ -89,6 +89,8 @@ if IS_WINDOWS:
 
     HWND_TOP = 0
 
+    SWP_NOSIZE = 0x0001
+    SWP_NOMOVE = 0x0002
     SWP_NOZORDER = 0x0004
     SWP_NOACTIVATE = 0x0010
     SWP_FRAMECHANGED = 0x0020
@@ -447,6 +449,27 @@ def anchor_child_window(hwnd: int | None, width: int, height: int, show: bool = 
         flags = SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS
         flags |= SWP_SHOWWINDOW if show else SWP_NOZORDER
         SetWindowPos(hwnd, HWND_TOP, 0, 0, max(1, int(width)), max(1, int(height)), flags)
+    except Exception:
+        pass
+
+
+def raise_window_to_top(hwnd: int | None):
+    """
+    Posts an async raise-to-top for a child window (no move/size/focus).
+
+    The focus HUD chips (B5) sit over the live video and must out-stack the
+    embedded player window, which anchor_child_window re-raises to HWND_TOP
+    on every first-frame reveal. Async for the same reason as
+    anchor_child_window: never block the Tk thread on another window's
+    message pump.
+    """
+    if not IS_WINDOWS or not hwnd:
+        return
+
+    try:
+        if IsWindow(hwnd):
+            SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS)
     except Exception:
         pass
 

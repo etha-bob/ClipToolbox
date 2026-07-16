@@ -34,7 +34,7 @@ from cliptoolbox.ui.widgets import (
 
 
 def build(root: tk.Tk) -> None:
-    w, h = px(960), px(865)
+    w, h = px(960), px(890)
     root.title("ClipToolbox skin gallery")
     root.geometry(f"{w}x{h}")
     root.configure(bg=theme.BG_DEEP)
@@ -243,6 +243,31 @@ def build(root: tk.Tk) -> None:
         row = JobRow(root, fake_app, job)
         row.place(x=px(620), y=px(676) + i * px(78), width=px(320))
         row.update(job)
+
+    # --- focus HUD chips (B5) --------------------------------------------
+    # Rendered on a black band standing in for the preview letterbox — the
+    # chips fake translucency by pre-blending the panel colors toward it.
+    hud_band = tk.Canvas(root, bg="black", highlightthickness=0, bd=0)
+    hud_band.place(x=px(24), y=px(770), width=px(560), height=px(58))
+    chip_h = px(30)
+    name_w = px(250)
+    hud_band.create_image(px(12), px(14), anchor="nw",
+                          image=sk.get("hud_chip", w=name_w, h=chip_h))
+    hud_band.create_text(px(12) + px(14), px(14) + chip_h // 2,
+                         text="raid_night_finale.mp4", anchor="w",
+                         font=theme.font_title(12), fill=theme.TEXT_BRIGHT)
+    tr_w = px(150)
+    tr_x = px(560) - px(12) - tr_w
+    hud_band.create_image(tr_x, px(14), anchor="nw",
+                          image=sk.get("hud_chip", w=tr_w, h=chip_h))
+    gx, gcy, gs = tr_x + px(14), px(14) + chip_h // 2, px(6)
+    hud_band.create_polygon(gx, gcy - gs, gx + round(gs * 1.6), gcy, gx, gcy + gs,
+                            fill=theme.ACCENT, outline="")
+    hud_band.create_text(gx + px(24), gcy, text="0:42 / 2:10", anchor="w",
+                         font=theme.font_mono(12), fill=theme.TEXT)
+    tk.Label(root, text="focus HUD chips (letterbox-blended scanline)",
+             font=theme.font_small(), bg=theme.BG_DEEP,
+             fg=theme.TEXT_DIM).place(x=px(24), y=px(831))
 
     legend = LegendBar(root)
     legend.pack(side=tk.BOTTOM, fill=tk.X)

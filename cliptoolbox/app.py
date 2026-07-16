@@ -79,6 +79,7 @@ from cliptoolbox.ui import dialogs as messagebox  # ported call sites unchanged
 from cliptoolbox.ui.theme import px
 from cliptoolbox.ui.views import empty_state, shell, workspace
 from cliptoolbox.ui.views.drawer import ExportDrawer
+from cliptoolbox.ui.views.hud import FocusHud
 from cliptoolbox.ui.views.palette import CommandPalette
 from cliptoolbox.ui.views.settings import SettingsOverlay
 
@@ -245,6 +246,7 @@ class HaloApp:
         workspace.build(self)    # the editor
         empty_state.build(self)  # the no-clip hero (stacked above at start)
         self.export_drawer = ExportDrawer(self)  # slides over both (B4)
+        self.focus_hud = FocusHud(self)          # focus-mode chips (B5)
 
         self.wheel = WheelRouter(self.root)
         self.wheel.register(self.seekbar, self.on_wheel_seek)
@@ -411,6 +413,7 @@ class HaloApp:
 
         # Focus must not linger on a now-hidden widget.
         self.root.focus_set()
+        self.focus_hud.show()
         self._refresh_preview_after_relayout()
         self.update_legend()
         self.set_status("Focus mode — TAB to exit.")
@@ -419,6 +422,7 @@ class HaloApp:
         if not self.focus_mode:
             return
         self.focus_mode = False
+        self.focus_hud.hide()
 
         self.preview_frame.pack_configure(fill=tk.X, expand=False)
         self.preview_bezel.pack_configure(fill=tk.X, expand=False)
@@ -1145,6 +1149,11 @@ class HaloApp:
         """Keep the single visible playback button in sync with engine state."""
         if not hasattr(self, "preview_button"):
             return
+
+        # The focus HUD's transport glyph mirrors the same state (no-op
+        # while hidden). Time ticks flow to it via var traces instead.
+        if getattr(self, "focus_hud", None) is not None:
+            self.focus_hud.refresh()
 
         if self.is_exporting:
             self.preview_button.config(text="PLAY", state=tk.DISABLED)
