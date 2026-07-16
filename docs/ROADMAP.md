@@ -97,7 +97,7 @@ SHOW JOBS pointing into the list (Q7 tag kept); still one export at a time; no n
 - [x] S2 `ui/views/drawer.py`: slide-in shell, destination + pattern + live name preview,
       compression/watermark cards moved in, GO + SAVE AS row; EXPORT button/Ctrl+E/Esc wiring,
       `set_busy` lockdown, settings keys
-- [ ] S3 Job list: rows (status rail, progress, attempts, size, actions), export pipeline wired
+- [x] S3 Job list: rows (status rail, progress, attempts, size, actions), export pipeline wired
       to job records via the existing callbacks, history persisted, toast → SHOW JOBS pointer
 - [ ] S4 RE-RUN + clip-less drawer + palette commands + gallery job-row demo
 - [ ] S5 Acceptance: in-process drivers (real export) + gallery both skins + close-out

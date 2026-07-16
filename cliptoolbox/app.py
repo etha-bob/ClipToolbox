@@ -172,6 +172,7 @@ class HaloApp:
         self.export_destination: str | None = self.settings.export_destination
         self.export_drawer: ExportDrawer | None = None
         self.job_history = core_jobs.JobHistory()
+        self.export_job: core_jobs.ExportJob | None = None  # the running one
 
         self.volume_log_after_ids: dict[int, str] = {}
 
@@ -259,6 +260,10 @@ class HaloApp:
         self.wheel.register(
             self.log_text,
             lambda steps, fine: self.log_text.yview_scroll(-steps * 2, "units"),
+        )
+        self.wheel.register(
+            self.export_drawer.jobs_canvas,
+            lambda steps, fine: self.export_drawer.scroll_jobs(steps),
         )
 
         dialogs.set_toast_offset(px(theme.FOOTER_H + 16))
@@ -3134,6 +3139,14 @@ class HaloApp:
 
         self.log(f"Output path: {spec.output_path}")
 
+        # Record the job before the worker starts: a crash mid-export leaves
+        # an honest "interrupted" row in the next session's history.
+        job = self.job_history.new_job(spec)
+        self.export_job = job
+        self.job_history.save()
+        if self.export_drawer is not None:
+            self.export_drawer.refresh_jobs()
+
         self.export_thread = threading.Thread(
             target=core_export.run_export_job,
             args=(
@@ -3145,7 +3158,7 @@ class HaloApp:
                 spec.compression_target_mb,
                 spec.compression_resolution_label,
                 spec.total_duration_seconds,
-                self.make_export_callbacks(),
+                self.make_export_callbacks(job),
                 lambda: not self.is_exporting,
                 self.register_export_process,
                 spec.video_filter,
@@ -3170,9 +3183,10 @@ class HaloApp:
             return
         flash_taskbar(chrome.get_root_hwnd(self.root), until_focused=True)
 
-    def make_export_callbacks(self):
+    def make_export_callbacks(self, job: core_jobs.ExportJob):
         """Bridges core export events onto the Tk thread with the same
-        messages/dialogs the app has always shown."""
+        messages/dialogs the app has always shown, and mirrors every event
+        into the job's history record (B4)."""
         app = self
 
         class TkExportCallbacks:
@@ -3180,22 +3194,40 @@ class HaloApp:
                 app.ui(app.set_status, text)
 
             def on_progress(self, percent: int, attempt: int, attempts_max: int) -> None:
+                job.percent = percent
+                job.attempt = attempt
+                job.attempts_max = attempts_max
                 app.ui(app.seekbar.set_export_progress, percent, attempt, attempts_max)
+                if app.export_drawer is not None:
+                    app.ui(app.export_drawer.update_job, job)
 
             def on_log(self, text: str) -> None:
+                job.add_log(text)
                 app.ui(app.log, text)
 
             def on_seek_to(self, seconds: float) -> None:
                 app.ui(app.set_seek_position, seconds)
 
             def on_error(self, title: str, message: str) -> None:
+                job.finish(core_jobs.FAILED, error=message)
+                app.ui(app.on_job_settled)
                 app.ui(app.notify_export_attention)
                 app.ui(messagebox.showerror, title, message)
 
             def on_complete(self, output_path: str, size_bytes: int | None) -> None:
+                if size_bytes is None:
+                    # The standard path doesn't measure — the row should
+                    # still show a real size.
+                    try:
+                        size_bytes = Path(output_path).stat().st_size
+                    except Exception:
+                        size_bytes = None
+                job.finish(core_jobs.DONE, size_bytes=size_bytes)
+                app.ui(app.on_job_settled)
                 app.ui(app.notify_export_attention)
-                # Success is a toast with an action, not a modal — and the
-                # folder opens on request instead of automatically.
+                # Success is a toast with an action, not a modal — and it
+                # points into the job history rather than being the only
+                # record of the export.
                 name = Path(output_path).name
                 if size_bytes is None:
                     message = name
@@ -3204,18 +3236,61 @@ class HaloApp:
                 app.ui(
                     lambda: dialogs.toast(
                         "Export complete", message, "success",
-                        "OPEN FOLDER", lambda: app.reveal_file(output_path),
+                        "SHOW JOBS", app.open_export_drawer,
                         12000, tag="export",
                     )
                 )
 
             def on_finished(self) -> None:
+                if job.is_running:  # neither complete nor failed: cancelled
+                    job.finish(core_jobs.CANCELLED, error="Cancelled.")
+                    app.ui(app.on_job_settled)
                 app.is_exporting = False
                 app.ui(app.seekbar.set_export_progress, None)
                 app.ui(app.stop_export_button.config, state=tk.DISABLED)
                 app.ui(app.set_busy, False)
 
         return TkExportCallbacks()
+
+    def on_job_settled(self):
+        """Tk-thread bookkeeping once a job reaches a terminal state:
+        persist the history and repaint the drawer's rows."""
+        self.job_history.save()
+        if self.export_drawer is not None:
+            self.export_drawer.refresh_jobs()
+
+    # ------------------------------------------------------ job actions
+
+    def job_open(self, job_id: str):
+        job = self.job_history.get(job_id)
+        if job is None:
+            return
+        try:
+            os.startfile(job.spec.output_path)  # noqa: S606 — user-initiated
+        except Exception:
+            self.set_status("That export is missing on disk.")
+
+    def job_reveal(self, job_id: str):
+        job = self.job_history.get(job_id)
+        if job is None:
+            return
+        if Path(job.spec.output_path).exists():
+            core_reveal_file(job.spec.output_path)
+        else:
+            self.set_status("That export is missing on disk.")
+
+    def job_rerun(self, job_id: str):
+        """Replay a history row's spec verbatim — same inputs, same filters,
+        same output path (ffmpeg -y overwrites the old file)."""
+        job = self.job_history.get(job_id)
+        if job is None or self.is_exporting:
+            return
+        if not Path(job.spec.input_path).exists():
+            self.set_status("The source clip for that job is missing on disk.")
+            return
+        spec = core_jobs.ExportJobSpec(**vars(job.spec))
+        self.log(f"Re-running export: {Path(spec.output_path).name}")
+        self.start_export(spec)
 
     def register_export_process(self, process: subprocess.Popen | None):
         self.export_process = process
