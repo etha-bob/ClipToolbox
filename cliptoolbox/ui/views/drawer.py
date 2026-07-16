@@ -395,8 +395,13 @@ class ExportDrawer:
         elif not custom and packed:
             app.export_dest_reset_button.pack_forget()
 
-        stem = app.resolved_export_stem()
-        self.name_preview.config(text=_ellipsize_middle(f"→ {stem}.mp4", 52))
+        if app.video_path:
+            stem = app.resolved_export_stem()
+            self.name_preview.config(
+                text=_ellipsize_middle(f"→ {stem}.mp4", 52), fg=theme.ACCENT)
+        else:
+            self.name_preview.config(text="→ load a clip to export",
+                                     fg=theme.TEXT_DIM)
 
         exporting = app.is_exporting
         loaded = bool(app.video_path)

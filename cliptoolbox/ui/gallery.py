@@ -34,7 +34,7 @@ from cliptoolbox.ui.widgets import (
 
 
 def build(root: tk.Tk) -> None:
-    w, h = px(960), px(775)
+    w, h = px(960), px(865)
     root.title("ClipToolbox skin gallery")
     root.geometry(f"{w}x{h}")
     root.configure(bg=theme.BG_DEEP)
@@ -210,7 +210,39 @@ def build(root: tk.Tk) -> None:
     recents.place(x=px(24), y=px(636))
     tk.Label(root, text="recents grid (selected · session dot · missing)",
              font=theme.font_small(), bg=theme.BG_DEEP,
-             fg=theme.TEXT_DIM).place(x=px(620), y=px(676))
+             fg=theme.TEXT_DIM).place(x=px(620), y=px(640))
+
+    # --- export-drawer job rows (B4) -------------------------------------
+    # Synthetic jobs + a duck-typed app: the rows are pure look, no ffmpeg.
+    import tempfile
+    import types
+    from pathlib import Path
+
+    from cliptoolbox.core import jobs as core_jobs
+    from cliptoolbox.ui.views.drawer import JobRow
+
+    demo_out = Path(tempfile.gettempdir()) / "raid_night_finale_mixed_audio.mp4"
+    demo_out.touch()  # existing output => the DONE row shows OPEN/FOLDER
+    fake_app = types.SimpleNamespace(
+        is_exporting=False, cancel_export=lambda: None,
+        job_open=lambda job_id: None, job_reveal=lambda job_id: None,
+        job_rerun=lambda job_id: None)
+    demo_spec = core_jobs.ExportJobSpec(
+        input_path=str(demo_out), filter_complex="", output_path=str(demo_out),
+        clip_name="raid_night_finale.mp4")
+
+    running = core_jobs.ExportJob("g-running", demo_spec)
+    running.percent, running.attempt, running.attempts_max = 62, 3, 8
+    done = core_jobs.ExportJob("g-done", demo_spec)
+    done.finish(core_jobs.DONE, size_bytes=10_470_000)
+
+    tk.Label(root, text="export job rows (running · done)",
+             font=theme.font_small(), bg=theme.BG_DEEP,
+             fg=theme.TEXT_DIM).place(x=px(620), y=px(658))
+    for i, job in enumerate((running, done)):
+        row = JobRow(root, fake_app, job)
+        row.place(x=px(620), y=px(676) + i * px(78), width=px(320))
+        row.update(job)
 
     legend = LegendBar(root)
     legend.pack(side=tk.BOTTOM, fill=tk.X)

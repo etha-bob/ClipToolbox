@@ -156,6 +156,8 @@ def build_command_registry(app) -> list[Command]:
         Command("export.run", "Export video", "Export", app.open_export_drawer,
                 keys="Ctrl+E", enabled=workspace_ready,
                 keywords="render save mp4 encode drawer"),
+        Command("export.jobs", "Export jobs / history", "Export", app.open_export_drawer,
+                keys="Ctrl+E", keywords="drawer queue progress rerun previous"),
         Command("export.cancel", "Cancel export", "Export", app.cancel_export,
                 keys="Esc", enabled=lambda: app.is_exporting, keywords="stop abort"),
 

@@ -358,6 +358,10 @@ class HaloApp:
         self.empty_state_frame.lift()
         if hasattr(self, "refresh_recents_grid"):
             self.refresh_recents_grid()
+        # An open drawer survives the flip (e.g. a failed probe while it was
+        # up, or clip-less job-history browsing) — keep it above the hero.
+        if self.export_drawer is not None and self.export_drawer.visible:
+            self.export_drawer.frame.lift()
         self.set_status("Ready.")
         self.update_legend()
 
@@ -390,9 +394,13 @@ class HaloApp:
                 and self.recents_grid.has_entries()):
             hints = [("CTRL+O", "OPEN CLIP"), ("↑↓←→", "BROWSE"),
                      ("ENTER", "LOAD"), ("CTRL+K", "COMMANDS")]
+            if self.job_history.jobs:
+                hints.insert(3, ("CTRL+E", "JOBS"))
         else:
             hints = [("CTRL+O", "OPEN CLIP"), ("DROP", "LOAD FILE"),
                      ("CTRL+K", "COMMANDS")]
+            if self.job_history.jobs:
+                hints.insert(2, ("CTRL+E", "JOBS"))
 
         self.legend.set_hints(hints)
 
@@ -433,7 +441,7 @@ class HaloApp:
             root.bind(f"<Key-{digit}>",
                       lambda e, n=digit: self.shortcut(lambda: self.seek_to_fraction(n / 10.0)))
         root.bind("<Control-o>", lambda e: self.shortcut_load())
-        root.bind("<Control-e>", lambda e: self.shortcut(self.toggle_export_drawer))
+        root.bind("<Control-e>", lambda e: self.shortcut_export())
         root.bind("<Control-w>", lambda e: self.shortcut_close())
         root.bind("<Control-W>", lambda e: self.shortcut_close())
         root.bind("<Control-comma>", lambda e: self.shortcut_settings())
@@ -502,6 +510,14 @@ class HaloApp:
             return "break"
         if self.video_path:
             self.close_clip()
+        return "break"
+
+    def shortcut_export(self):
+        """Ctrl+E works clip-less (the job history is still worth opening)
+        and during an export (to get back to the progress row)."""
+        if self._typing_in_entry():
+            return None
+        self.toggle_export_drawer()
         return "break"
 
     def shortcut_grid(self, action):

@@ -99,7 +99,7 @@ SHOW JOBS pointing into the list (Q7 tag kept); still one export at a time; no n
       `set_busy` lockdown, settings keys
 - [x] S3 Job list: rows (status rail, progress, attempts, size, actions), export pipeline wired
       to job records via the existing callbacks, history persisted, toast → SHOW JOBS pointer
-- [ ] S4 RE-RUN + clip-less drawer + palette commands + gallery job-row demo
+- [x] S4 RE-RUN + clip-less drawer + palette commands + gallery job-row demo
 - [ ] S5 Acceptance: in-process drivers (real export) + gallery both skins + close-out
 
 **B1 stage checklist** (design agreed 2026-07-15 in plan mode; decisions: grow `HaloSeekbar`
