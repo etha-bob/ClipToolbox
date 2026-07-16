@@ -147,6 +147,7 @@ def build(app):
     app.seekbar.bind_release(app.on_seek_release)
     app.seekbar.bind_trim_change(app.on_trim_bracket_drag)
     app.seekbar.bind_trim_commit(app.on_trim_bracket_commit)
+    app.seekbar.bind_seek_request(app.seek_absolute)
     app.seekbar.bind_keyframe_click(app.on_keyframe_click)
     app.seekbar.bind_keyframe_drag(app.on_keyframe_drag)
     app.seekbar.bind_keyframe_commit(app.on_keyframe_commit)

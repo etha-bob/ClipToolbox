@@ -11,6 +11,11 @@ keeping the tk.Scale behavioral subset the preview state machine relies on:
   .bind("<ButtonPress-1>"/"<ButtonRelease-1>") wiring;
 - .configure(to=duration).
 
+Interaction bands: the ruler is a dedicated always-seek scrub lane; trim
+brackets grab in the strip body below it (offset grab + drag threshold —
+a plain click seeks to the trim time via bind_seek_request instead of
+moving it); keyframes own the bottom lane.
+
 Lane stack (top to bottom, logical px; total = theme.SEEKBAR_H):
     2   minimap — zoom position indicator
     14  ruler   — scrub track, elapsed fill, frame grid, mpv cache line
@@ -63,6 +68,10 @@ class HaloSeekbar(tk.Canvas):
         self._trim_commit_callbacks = []
         self._trim_drag_kind: str | None = None
         self._trim_hover_kind: str | None = None
+        self._trim_press_x: int | None = None
+        self._trim_grab_dx = 0
+        self._trim_moved = False
+        self._seek_request_callbacks = []
         self._cursor = ""
         self._suspend_var_sync = False
 
@@ -167,6 +176,12 @@ class HaloSeekbar(tk.Canvas):
     def bind_trim_commit(self, callback):
         """callback(kind) fires once when a trim-bracket drag is released."""
         self._trim_commit_callbacks.append(callback)
+
+    def bind_seek_request(self, callback):
+        """callback(seconds) when the widget wants a full app-level seek on
+        the user's behalf (e.g. clicking a trim bracket without dragging
+        seeks to that trim time)."""
+        self._seek_request_callbacks.append(callback)
 
     def set_trim(self, start: float | None, end: float | None):
         """Draw trim brackets; None hides that bracket."""
@@ -745,13 +760,14 @@ class HaloSeekbar(tk.Canvas):
             self.create_rectangle(ix0, 0, max(ix0 + px(2), ix1), px(2),
                                   fill=theme.ACCENT_DEEP, outline="")
 
-        # Fat trim handles spanning the strip body, sitting OUTSIDE the kept
-        # region (over the dimmed exclusion) so they never cover kept frames.
-        # Culled outside a zoomed view — a clamped handle at the edge would
-        # read as a handle AT the edge.
+        # Fat trim handles spanning the strip body BELOW the ruler (the ruler
+        # is a dedicated scrub lane — grabs match, see _bracket_at), sitting
+        # OUTSIDE the kept region (over the dimmed exclusion) so they never
+        # cover kept frames. Culled outside a zoomed view — a clamped handle
+        # at the edge would read as a handle AT the edge.
         handle_w = px(10)
-        handle_h = self._audio_bot() - ruler_top
-        handle_cy = ruler_top + handle_h // 2
+        handle_h = self._audio_bot() - self._film_top()
+        handle_cy = self._film_top() + handle_h // 2
         for kind, t, anchor in (("start", self._trim_start, "e"),
                                 ("end", self._trim_end, "w")):
             if t is None or not (v0 <= t <= v1):
@@ -856,10 +872,16 @@ class HaloSeekbar(tk.Canvas):
         if self._command is not None:
             self._command(f"{value}")
 
-    def _bracket_at(self, x: int) -> str | None:
-        """Which trim handle, if any, sits under x (within a grab margin).
-        Returns "start"/"end"/None. Only set handles are grabbable; handles
-        scrolled outside a zoomed view are not (they aren't drawn either)."""
+    def _bracket_at(self, x: int, y: int) -> str | None:
+        """Which trim handle, if any, sits under (x, y) (within a grab
+        margin). Returns "start"/"end"/None. Grabs live in the strip body
+        only — the ruler band above is a dedicated always-seek scrub lane,
+        and the keyframe lane below belongs to the diamonds — so clicking
+        the ruler seeks precisely even on top of a bracket. Only set handles
+        are grabbable; handles scrolled outside a zoomed view are not (they
+        aren't drawn either)."""
+        if not (self._ruler_bot() <= y < self._audio_bot() - px(2)):
+            return None
         margin = px(12)
         v0, v1 = self._view()
         best_kind = None
@@ -936,10 +958,17 @@ class HaloSeekbar(tk.Canvas):
             return
 
         # Grabbing a trim bracket takes priority over moving the playhead.
-        kind = self._bracket_at(event.x)
+        # The grab records an offset instead of snapping the bracket to the
+        # cursor — nothing moves until the drag passes a small threshold, so
+        # a plain click can't shift the trim (it seeks to it on release).
+        kind = self._bracket_at(event.x, event.y)
         if kind is not None:
+            t = self._trim_start if kind == "start" else self._trim_end
             self._trim_drag_kind = kind
-            self._apply_trim_drag(event.x)
+            self._trim_press_x = event.x
+            self._trim_grab_dx = event.x - self._x_for(t)
+            self._trim_moved = False
+            self._redraw()
             return
 
         # Keyframe diamonds (lower lane) come next: grab to retime or click to
@@ -973,7 +1002,7 @@ class HaloSeekbar(tk.Canvas):
     def _on_motion(self, event):
         if self._state != tk.NORMAL or self._trim_drag_kind is not None or self._kf_drag_index is not None:
             return
-        bracket = self._bracket_at(event.x)
+        bracket = self._bracket_at(event.x, event.y)
         if bracket is not None:
             cursor = "sb_h_double_arrow"
         elif self._keyframe_at(event.x, event.y) is not None:
@@ -1000,7 +1029,11 @@ class HaloSeekbar(tk.Canvas):
         if self._state != tk.NORMAL:
             return
         if self._trim_drag_kind is not None:
-            self._apply_trim_drag(event.x)
+            if (not self._trim_moved and self._trim_press_x is not None
+                    and abs(event.x - self._trim_press_x) > px(3)):
+                self._trim_moved = True
+            if self._trim_moved:
+                self._apply_trim_drag(event.x - self._trim_grab_dx)
         elif self._kf_drag_index is not None:
             if self._kf_press_x is not None and abs(event.x - self._kf_press_x) > px(3):
                 self._kf_moved = True
@@ -1012,10 +1045,20 @@ class HaloSeekbar(tk.Canvas):
     def _on_release(self, event):
         if self._trim_drag_kind is not None:
             kind = self._trim_drag_kind
+            moved = self._trim_moved
             self._trim_drag_kind = None
+            self._trim_press_x = None
+            self._trim_moved = False
             self._redraw()
-            for callback in self._trim_commit_callbacks:
-                callback(kind)
+            if moved:
+                for callback in self._trim_commit_callbacks:
+                    callback(kind)
+            else:
+                # Click without drag: seek the playhead to this trim time.
+                t = self._trim_start if kind == "start" else self._trim_end
+                if t is not None:
+                    for callback in self._seek_request_callbacks:
+                        callback(t)
             return
         if self._kf_drag_index is not None:
             index = self._kf_drag_index

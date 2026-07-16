@@ -43,6 +43,8 @@ Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 | M3 | Landing menu keyboard navigation (obsolete if B2 lands) | F12 | dropped (absorbed by B2 2026-07-15: the recents grid is arrow/Enter/Delete-navigable) |
 | M4 | Animated "starting preview" cue | F13 | done 2026-07-15 (absorbed by B1 S7) |
 | M5 | Left column can't shrink: below ~884px window height w/ trim+crop toolbars open the compression card clips bottom-first (pre-B1 legacy, measured 2026-07-15; export stays visible since it packs first). Fix = collapsible sections or responsive preview height. 2026-07-16: B4 moved the compression/watermark cards into the drawer — toolbars-open requirement re-measured at ~734 logical px (was ~796), so every window ≥734 now fits; only the 700 minsize floor still clips ~34px. Downgraded to minor | — | todo |
+| M6 | Timeline: precise seeking around trim brackets — clicks near a bracket steal the seek and shift the trim (Ethan 2026-07-16). Fix: ruler band becomes a dedicated always-seek scrub lane (bracket/keyframe grabs live in the strip body), brackets grab with an offset + drag threshold instead of snapping to the cursor, and click-without-drag on a bracket seeks the playhead to that trim time | — | done 2026-07-16 |
+| M7 | Timeline: zoomed-view navigation (Ethan 2026-07-16) — the 2px zoom indicator grows into a draggable navigator scrollbar (drag thumb pans the window, click jumps it), middle-mouse drag pans the strip 1:1, persistent filmstrip tile cache keeps pan recomposes cheap | — | in-progress |
 
 ## Incremental track — large (L)
 
