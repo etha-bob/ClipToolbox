@@ -7,10 +7,10 @@ Single source of truth for planned UX/feature work. Seeded from the 2026-07-12 u
 sets items `in-progress`/`done` as it goes, appends a Session log entry, and commits roadmap updates
 in the same commit as the work. Newly discovered work gets a new row, not silent scope creep.
 
-**Now / Next:** T1, the Q1–Q9 batch, B3, B2, B0, and B1 (real timeline — absorbing M1 and M4)
-are done. Suggested next is B4 (export drawer + job history) per the bold sequencing, then
-B5/B6. L1 (silent-video support) is the highest-value incremental alternative; M5 (left column
-can't shrink, discovered during B1) is a small standalone layout fix.
+**Now / Next:** T1, the Q1–Q9 batch, B3, B2, B0, B1, and B4 (export drawer + job history —
+absorbing Q7/M1's surfaces and defusing most of M5) are done. The bold track's remainder is
+B5 (focus/HUD mode) then B6 (coach marks). L1 (silent-video support) is the highest-value
+incremental alternative; L2 (taskbar progress) is now easy on top of the job pipeline.
 
 Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 
@@ -42,7 +42,7 @@ Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 | M2 | F1/? shortcut cheat-sheet overlay + legend hint (obsolete if B3 lands) | F7 | dropped (absorbed by B3 2026-07-15) |
 | M3 | Landing menu keyboard navigation (obsolete if B2 lands) | F12 | dropped (absorbed by B2 2026-07-15: the recents grid is arrow/Enter/Delete-navigable) |
 | M4 | Animated "starting preview" cue | F13 | done 2026-07-15 (absorbed by B1 S7) |
-| M5 | Left column can't shrink: below ~884px window height w/ trim+crop toolbars open the compression card clips bottom-first (pre-B1 legacy, measured 2026-07-15; export stays visible since it packs first). Fix = collapsible sections or responsive preview height | — | todo |
+| M5 | Left column can't shrink: below ~884px window height w/ trim+crop toolbars open the compression card clips bottom-first (pre-B1 legacy, measured 2026-07-15; export stays visible since it packs first). Fix = collapsible sections or responsive preview height. 2026-07-16: B4 moved the compression/watermark cards into the drawer — toolbars-open requirement re-measured at ~734 logical px (was ~796), so every window ≥734 now fits; only the 700 minsize floor still clips ~34px. Downgraded to minor | — | todo |
 
 ## Incremental track — large (L)
 
@@ -60,7 +60,7 @@ Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 | B1 | Real timeline: filmstrip lane, per-track waveforms, fat trim regions, always-visible keyframe lane, progress painted on the strip | F5 F6 F13, M1 M4, most of F7 | done 2026-07-15 |
 | B2 | One adaptive screen (landing becomes the workspace empty state; command strip shows filename) | F4 F12, Q1 M3 | done 2026-07-15 |
 | B3 | Command palette Ctrl+K (every action + hidden gestures, searchable, key hints) | F7, M2 | done 2026-07-15 |
-| B4 | Export drawer + persistent job history (name patterns, per-job progress/attempts, OPEN/RE-RUN) | F5 F11, Q7 M1 | in-progress |
+| B4 | Export drawer + persistent job history (name patterns, per-job progress/attempts, OPEN/RE-RUN) | F5 F11, Q7 M1 | done 2026-07-16 |
 | B5 | Focus/HUD mode (Tab collapses panels, translucent scanline controls per skin) | — | todo |
 | B6 | First-run coach marks overlay | cold-start half of F7 | todo |
 
@@ -99,8 +99,10 @@ SHOW JOBS pointing into the list (Q7 tag kept); still one export at a time; no n
       `set_busy` lockdown, settings keys
 - [x] S3 Job list: rows (status rail, progress, attempts, size, actions), export pipeline wired
       to job records via the existing callbacks, history persisted, toast → SHOW JOBS pointer
-- [x] S4 RE-RUN + clip-less drawer + palette commands + gallery job-row demo
-- [ ] S5 Acceptance: in-process drivers (real export) + gallery both skins + close-out
+- [x] S4 RE-RUN + clip-less drawer + palette commands + gallery job-row demo (RE-RUN itself
+      landed a stage early, in S3, since the row buttons wanted real handlers)
+- [x] S5 Acceptance: S2+S3 drivers re-run on the final code (both green), M5 re-measured
+      (~796→~734), roadmap close-out
 
 **B1 stage checklist** (design agreed 2026-07-15 in plan mode; decisions: grow `HaloSeekbar`
 in place keeping the DoubleVar/zoom/bind contracts; 3-tier redraw split so the 10 Hz path does
@@ -142,6 +144,40 @@ Bold sequencing if chosen: B3 → B0 → B1 → B4 → B2 → B5/B6 (B2 pulled f
 XL items get a stage checklist added under their row when work starts (plan-mode design first).
 
 ## Session log (newest first)
+
+- **2026-07-16** — Shipped B4 (export drawer + job history) on `feature/export-drawer`
+  (stacked on `feature/real-timeline`), 5 stage commits, autonomous session. The save-dialog
+  export flow is replaced by a right-side slide-in drawer (~440px, non-modal, over
+  `screen_container`): destination folder (BROWSE + ↺ back-to-outputs), a name-pattern entry
+  with live resolved-name preview (`{clip} {trim} {crop} {stamp} {size} {res} {date} {time}`;
+  conditional tokens emit their legacy suffix so the default pattern reproduces the old
+  save-dialog name byte-for-byte; unknown tokens stay literal; collisions get `_2…`), the
+  compression + watermark cards moved in from the left column (attribute names unchanged, so
+  `set_busy`/settings persistence never noticed), START EXPORT (straight to the destination,
+  no dialog) + SAVE AS… (classic dialog, pattern-prefilled), and a JOB HISTORY list. New
+  `core/jobs.py`: `ExportJobSpec` snapshots the exact `run_export_job` arguments, so RE-RUN
+  replays a row verbatim (same output path, ffmpeg -y) — even with no clip loaded, even in a
+  later session; `jobs.json` persists the newest 20 (atomic writes; a job stored as `running`
+  loads as interrupted-cancelled). Rows carry a status rail, honest per-attempt progress +
+  ATTEMPT n/m (fed by the existing on_progress pipe), final size, OPEN/FOLDER/RE-RUN, CANCEL
+  while running. Completion toasts now say SHOW JOBS and point into the list (Q7's supersede
+  tag kept); Ctrl+E opens the drawer clip-less and mid-export (to get back to the progress
+  row); the palette gained `export.jobs`; the empty-state legend advertises CTRL+E JOBS once
+  history exists. `export_video_dialog` was split into `build_export_spec` (validations +
+  snapshot) → `export_go`/`export_save_as` → `start_export(spec)` — start_export derives its
+  status/log lines from the spec alone so reruns share the same door (the watermark-duration
+  log line moved to the toggle only). Settings grew `export_name_pattern`/`export_destination`;
+  `jobs.json` joined .gitignore. Layout bonus: the card move dropped the editor's toolbars-open
+  height requirement ~796→~734 logical px (M5 re-measured and downgraded). Verified: 24-check
+  pure-Python jobs test; three in-process drivers × both skins (S2: 24 checks incl. real
+  trimmed stream-copy GO exports and `_2` collision handling; S3: 30 checks incl. a real NVENC
+  compressed run, a mid-render cancel leaving an honest CANCELLED row, RE-RUN overwriting its
+  output, and a restart round-trip; S4: 16 checks incl. clip-less RE-RUN end-to-end); gallery
+  both skins with new synthetic job-row demos. Lessons: (1) app drivers must DELETE
+  config/sessions/jobs after backing them up — restore-on-exit alone leaks the user's real
+  settings into the assertions; (2) stream-copy exports finish in <150 ms, so "running-state"
+  assertions need an NVENC compressed run to observe; (3) Windows cp1252 consoles choke on
+  characters like "→" in driver output — `sys.stdout.reconfigure(encoding="utf-8")` first.
 
 - **2026-07-15** — Shipped B1 (real timeline) on `feature/real-timeline`, 8 stage commits. The
   40px seekbar grew in place into a 104px multi-lane strip (minimap / ruler / filmstrip / audio
