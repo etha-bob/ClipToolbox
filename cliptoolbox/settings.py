@@ -44,6 +44,10 @@ class AppSettings:
     export_destination: str | None = None
     # Coach marks (B6): flipped after the first-run tour is dismissed.
     coach_marks_seen: bool = False
+    # Timestamp watermark (M11): what the burned-in text shows.
+    watermark_source: str = "parsed"    # "parsed" | "created" | "filename"
+    watermark_date_format: str = "ymd"  # key into filters.WATERMARK_DATE_FORMATS
+    watermark_include_time: bool = True
 
 
 def _candidates() -> list[Path]:

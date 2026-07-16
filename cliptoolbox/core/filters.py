@@ -6,12 +6,12 @@ from pathlib import Path
 from cliptoolbox.constants import IS_WINDOWS, TIMESTAMP_WATERMARK_FADE_MS
 
 
-def extract_recording_timestamp(filename: str) -> str | None:
-    """Pull a recording timestamp out of a filename.
+def extract_recording_datetime(filename: str) -> datetime | None:
+    """Pull a recording timestamp out of a filename as a datetime.
 
     Matches six date/time parts (year, month, day, hour, minute, second)
     separated by spaces/underscores/dots/dashes, e.g. ``2025 04 06 02 06 50``.
-    Returns ``YYYY-MM-DD HH:MM:SS`` for the last valid match, else None.
+    Returns the last valid match, else None.
     """
     pattern = re.compile(
         r"(?<!\d)((?:19|20)\d{2})[ _.-]+(\d{2})[ _.-]+(\d{2})"
@@ -20,12 +20,72 @@ def extract_recording_timestamp(filename: str) -> str | None:
 
     for match in reversed(list(pattern.finditer(str(filename)))):
         try:
-            recorded_at = datetime(*map(int, match.groups()))
+            return datetime(*map(int, match.groups()))
         except ValueError:
             continue
-        return recorded_at.strftime("%Y-%m-%d %H:%M:%S")
 
     return None
+
+
+def extract_recording_timestamp(filename: str) -> str | None:
+    """Legacy string form of extract_recording_datetime (Q9 behavior):
+    ``YYYY-MM-DD HH:MM:SS`` or None."""
+    recorded_at = extract_recording_datetime(filename)
+    if recorded_at is None:
+        return None
+    return recorded_at.strftime("%Y-%m-%d %H:%M:%S")
+
+
+# Watermark date-format presets (M11). Keys persist in config.json; the
+# values are strftime date parts. The settings UI labels each option with
+# a concrete example, so the ids never surface to the user.
+WATERMARK_DATE_FORMATS = {
+    "ymd": "%Y-%m-%d",
+    "mdy": "%m/%d/%Y",
+    "dmy": "%d.%m.%Y",
+}
+
+
+def format_watermark_datetime(recorded_at: datetime, date_format: str = "ymd",
+                              include_time: bool = True) -> str:
+    """Render a watermark timestamp per the M11 settings: a date-format
+    preset plus an optional 24h time-of-day suffix. Unknown preset ids
+    fall back to ISO (ymd)."""
+    date_part = recorded_at.strftime(
+        WATERMARK_DATE_FORMATS.get(date_format, WATERMARK_DATE_FORMATS["ymd"]))
+    if include_time:
+        return f"{date_part} {recorded_at.strftime('%H:%M:%S')}"
+    return date_part
+
+
+def resolve_watermark_text(video_path: str, source: str = "parsed",
+                           date_format: str = "ymd",
+                           include_time: bool = True) -> str:
+    """Resolve the burned-in watermark text for a clip per the M11 settings.
+
+    source: "parsed" (recording time parsed from the filename), "created"
+    (the file's creation timestamp), or "filename" (the stem as literal
+    text — date_format/include_time don't apply). Raises ValueError with a
+    user-facing message when the source can't produce text."""
+    stem = Path(video_path).stem
+    if source == "filename":
+        if not stem:
+            raise ValueError("This file has no usable name for the watermark.")
+        return stem
+    if source == "created":
+        try:
+            recorded_at = datetime.fromtimestamp(os.path.getctime(video_path))
+        except (OSError, ValueError, OverflowError) as exc:
+            raise ValueError("Could not read this file's created-on date.") from exc
+    else:
+        recorded_at = extract_recording_datetime(stem)
+        if recorded_at is None:
+            raise ValueError(
+                "No recording timestamp was found in the filename. Expected six "
+                "date/time parts like 2025 04 06 02 06 50 — or switch the "
+                "watermark text source in Settings."
+            )
+    return format_watermark_datetime(recorded_at, date_format, include_time)
 
 
 def build_timestamp_watermark_filter(timestamp_text: str, duration_seconds: float) -> str:

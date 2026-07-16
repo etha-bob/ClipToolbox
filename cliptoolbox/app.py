@@ -2113,13 +2113,12 @@ class HaloApp:
         if not self.timestamp_watermark_enabled_var.get():
             return None
 
-        timestamp_text = core_filters.extract_recording_timestamp(
-            Path(self.video_path or "").stem)
-        if timestamp_text is None:
-            raise ValueError(
-                "No recording timestamp was found in the filename. Expected six date/time "
-                "parts like 2025 04 06 02 06 50."
-            )
+        timestamp_text = core_filters.resolve_watermark_text(
+            self.video_path or "",
+            self.settings.watermark_source,
+            self.settings.watermark_date_format,
+            bool(self.settings.watermark_include_time),
+        )
 
         raw_duration = (
             self.timestamp_watermark_duration_var.get().strip().lower().replace("ms", "").strip()

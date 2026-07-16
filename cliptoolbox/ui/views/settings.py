@@ -1,7 +1,9 @@
 """Settings overlay — a modal Halo card over whichever screen is active."""
 import tkinter as tk
+from datetime import datetime
 
 from cliptoolbox.core import engine_factory
+from cliptoolbox.core import filters as core_filters
 from cliptoolbox.core.paths import FFMPEG_BIN_DIR, OUTPUTS_DIR, reveal_file
 from cliptoolbox.ui import dialogs, fonts, skins, theme, widgets
 from cliptoolbox.ui.theme import px
@@ -36,11 +38,11 @@ class SettingsOverlay:
                  bg=theme.TITLE_FILL, fg=theme.TITLE_TEXT).pack(side=tk.LEFT, padx=px(10), pady=px(6))
 
         body = tk.Frame(card, bg=theme.PANEL_FILL)
-        body.pack(fill=tk.BOTH, expand=True, padx=px(20), pady=px(14))
+        body.pack(fill=tk.BOTH, expand=True, padx=px(20), pady=px(10))
 
         def section(text):
             tk.Label(body, text=text.upper(), font=theme.font_title(12),
-                     bg=theme.PANEL_FILL, fg=theme.ACCENT, anchor="w").pack(fill=tk.X, pady=(px(10), px(2)))
+                     bg=theme.PANEL_FILL, fg=theme.ACCENT, anchor="w").pack(fill=tk.X, pady=(px(6), px(2)))
 
         # --- interface ---------------------------------------------------
         section("Interface")
@@ -128,6 +130,58 @@ class SettingsOverlay:
                      anchor="w", wraplength=self._card_w - px(48),
                      justify=tk.LEFT).pack(fill=tk.X, pady=(px(2), 0))
 
+        # --- timestamp watermark (M11) -------------------------------------
+        section("Timestamp watermark")
+        self._wm_sample = datetime(2025, 4, 6, 2, 6, 50)
+        self._wm_source_ids = {"FILENAME TIME": "parsed", "FILE DATE": "created",
+                               "FILENAME": "filename"}
+        wm_source_labels = {v: k for k, v in self._wm_source_ids.items()}
+        src_row = tk.Frame(body, bg=theme.PANEL_FILL)
+        src_row.pack(fill=tk.X)
+        tk.Label(src_row, text="Text", font=theme.font_body(),
+                 bg=theme.PANEL_FILL, fg=theme.TEXT).pack(side=tk.LEFT)
+        self.wm_source_var = tk.StringVar(value=wm_source_labels.get(
+            app.settings.watermark_source, "FILENAME TIME"))
+        widgets.HaloSegmented(
+            src_row, list(self._wm_source_ids), self.wm_source_var,
+            behind=theme.PANEL_FILL,
+        ).pack(side=tk.LEFT, padx=(px(12), 0))
+
+        # Date-format options label themselves with a concrete example date,
+        # generated from the presets so new formats appear automatically.
+        self._wm_fmt_ids = {
+            self._wm_sample.strftime(fmt): fmt_id
+            for fmt_id, fmt in core_filters.WATERMARK_DATE_FORMATS.items()
+        }
+        current_fmt = core_filters.WATERMARK_DATE_FORMATS.get(
+            app.settings.watermark_date_format,
+            core_filters.WATERMARK_DATE_FORMATS["ymd"])
+        fmt_row = tk.Frame(body, bg=theme.PANEL_FILL)
+        fmt_row.pack(fill=tk.X, pady=(px(4), 0))
+        tk.Label(fmt_row, text="Date", font=theme.font_body(),
+                 bg=theme.PANEL_FILL, fg=theme.TEXT).pack(side=tk.LEFT)
+        self.wm_fmt_var = tk.StringVar(value=self._wm_sample.strftime(current_fmt))
+        self.wm_fmt_seg = widgets.HaloSegmented(
+            fmt_row, list(self._wm_fmt_ids), self.wm_fmt_var,
+            behind=theme.PANEL_FILL)
+        self.wm_fmt_seg.pack(side=tk.LEFT, padx=(px(12), 0))
+
+        self.wm_time_var = tk.BooleanVar(value=app.settings.watermark_include_time)
+        self.wm_time_check = widgets.HaloCheckbox(
+            body, text="Include the time of day (02:06:50)",
+            variable=self.wm_time_var, behind=theme.PANEL_FILL)
+        self.wm_time_check.pack(anchor="w", pady=(px(2), 0))
+
+        self._wm_preview = tk.Label(
+            body, font=theme.font_small(), bg=theme.PANEL_FILL,
+            fg=theme.TEXT_DIM, anchor="w", wraplength=self._card_w - px(48),
+            justify=tk.LEFT)
+        self._wm_preview.pack(fill=tk.X, pady=(px(2), 0))
+        self.wm_source_var.trace_add("write", lambda *_: self._update_wm_preview())
+        self.wm_fmt_var.trace_add("write", lambda *_: self._update_wm_preview())
+        self.wm_time_var.trace_add("write", lambda *_: self._update_wm_preview())
+        self._update_wm_preview()
+
         # --- library -----------------------------------------------------
         section("Library")
         row = tk.Frame(body, bg=theme.PANEL_FILL)
@@ -148,9 +202,9 @@ class SettingsOverlay:
         # --- about -------------------------------------------------------
         section("About")
         for line in (
-            f"ClipToolbox v{UI_VERSION} — {theme.SKIN_LABEL} interface",
+            f"ClipToolbox v{UI_VERSION} — {theme.SKIN_LABEL} interface · "
+            f"{fonts.describe()} · rendered by Pillow",
             f"FFmpeg folder: {FFMPEG_BIN_DIR}",
-            f"Font: {fonts.describe()} · UI rendered by Pillow",
         ):
             tk.Label(body, text=line, font=theme.font_small(),
                      bg=theme.PANEL_FILL, fg=theme.TEXT_DIM, anchor="w",
@@ -175,6 +229,34 @@ class SettingsOverlay:
         except Exception:
             pass
         self.card_win.focus_force()
+
+    def _update_wm_preview(self):
+        """Refresh the watermark example line and grey the date controls
+        when the source is the literal filename."""
+        source = self._wm_source_ids.get(self.wm_source_var.get(), "parsed")
+        state = tk.DISABLED if source == "filename" else tk.NORMAL
+        try:
+            self.wm_fmt_seg.config(state=state)
+            self.wm_time_check.config(state=state)
+        except Exception:
+            pass
+        fmt_id = self._wm_fmt_ids.get(self.wm_fmt_var.get(), "ymd")
+        include = bool(self.wm_time_var.get())
+        path = self.app.video_path
+        try:
+            if path:
+                text = core_filters.resolve_watermark_text(
+                    path, source, fmt_id, include)
+                self._wm_preview.config(text=f"This clip's watermark: {text}")
+            elif source == "filename":
+                self._wm_preview.config(
+                    text="The watermark shows the clip's filename.")
+            else:
+                text = core_filters.format_watermark_datetime(
+                    self._wm_sample, fmt_id, include)
+                self._wm_preview.config(text=f"Example: {text}")
+        except ValueError as exc:
+            self._wm_preview.config(text=str(exc))
 
     def _open_outputs(self):
         OUTPUTS_DIR.mkdir(exist_ok=True)
@@ -224,6 +306,11 @@ class SettingsOverlay:
     def save_and_close(self):
         self.app.settings.remember_geometry = bool(self.remember_var.get())
         self.app.settings.notify_flash_taskbar = bool(self.flash_var.get())
+        self.app.settings.watermark_source = self._wm_source_ids.get(
+            self.wm_source_var.get(), self.app.settings.watermark_source)
+        self.app.settings.watermark_date_format = self._wm_fmt_ids.get(
+            self.wm_fmt_var.get(), self.app.settings.watermark_date_format)
+        self.app.settings.watermark_include_time = bool(self.wm_time_var.get())
         self.app.auto_preview_after_load = bool(self.autoplay_var.get())
         selected_skin = self._skin_ids.get(self.skin_var.get(), self.app.settings.ui_skin)
         skin_changed = selected_skin != skins.normalize(self.app.settings.ui_skin)

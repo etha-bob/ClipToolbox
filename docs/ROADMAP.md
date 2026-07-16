@@ -48,7 +48,7 @@ Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 | M8 | Timeline: edge auto-scroll (Ethan 2026-07-16) — dragging the playhead/trim bracket/keyframe to the edge of a zoomed view pans the view so the drag continues past it (M7 follow-up) | — | done 2026-07-16 |
 | M9 | Focus + crop compatibility (Ethan 2026-07-16) — Tab focus works with crop on: crop toolbar stays usable inside focus (preview/edit, add/delete, key nav, reset, clear) and the crop box drags in Edit mode; C inside focus toggles crop without leaving focus. Supersedes B5's mutual-exclusion decision | — | done 2026-07-16 |
 | M10 | Preview mouse gestures (Ethan 2026-07-16) — hold left-click on the preview = play at 2x while held, double-click = toggle focus mode, right-click = play/pause | — | done 2026-07-16 |
-| M11 | Watermark expansion (Ethan 2026-07-16) — Settings section for the timestamp watermark: text source (parsed filename timestamp / file creation date / full filename), date-only vs date+time, date format presets | — | todo |
+| M11 | Watermark expansion (Ethan 2026-07-16) — Settings section for the timestamp watermark: text source (parsed filename timestamp / file creation date / full filename), date-only vs date+time, date format presets | — | done 2026-07-16 |
 
 ## Incremental track — large (L)
 
@@ -205,6 +205,43 @@ Bold sequencing if chosen: B3 → B0 → B1 → B4 → B2 → B5/B6 (B2 pulled f
 XL items get a stage checklist added under their row when work starts (plan-mode design first).
 
 ## Session log (newest first)
+
+- **2026-07-16 (later)** — Shipped M8–M11 (all requested by Ethan mid-session): M8 on
+  `feature/timeline-navigation`, M9+M10 on `feature/focus-crop`, M11 on
+  `feature/watermark-options` (stacked in that order), one commit each. **M8 — timeline edge
+  auto-scroll:** dragging the playhead/trim bracket/keyframe against the edge of a zoomed view
+  arms a 50 ms after-loop that pans 2.5–10% of the span per tick (ramping with overshoot) and
+  re-applies the live drag, so the dragged item rides the scrolling edge; disarms inward/on
+  release, stops itself at the clip ends (17-check driver incl. after-info leak assert).
+  **M9 — focus + crop compatibility:** B5's mutual exclusion removed — Tab enters focus with the
+  crop editor open, C toggles crop inside focus, the crop toolbar re-packs under the timeline
+  strip while the transport row is hidden (and back after it on exit via
+  `CropController.reposition_toolbar`), and new `app.on_crop_editing_changed` has the HUD chips
+  yield the preview to the editor and return for preview-mode playback; palette `view.focus`
+  ungreyed (22 checks × both skins incl. a corner drag committing a keyframe on the enlarged
+  editor). **M10 — preview mouse gestures:** embedded player windows are now input-DISABLED
+  (new `win32.disable_window_input`; ffplay inside `embed_external_window_hidden`, mpv at hwnd
+  discovery) so real clicks over live video fall through to Tk — verified with an actual
+  SendInput right-click — and ffplay's built-in mouse seek/fullscreen can't fire; the posted-
+  spacebar pause still lands (disabled windows still receive posted messages — verified native)
+  and the player stops stealing keyboard focus. Gestures: hold LMB 450 ms = 2× while held
+  (from pause it skims and re-parks paused), double-click = focus toggle, right-click =
+  play/pause. Engines grew `set_rate`/`rate` (protocol updated): mpv sets `speed` live; ffplay
+  bakes setpts+atempo into the spawn graph AFTER the amix (Parsed_volume_i targets unmoved),
+  position = start + clock×rate, paused pipelines drop on rate change, stop() resets
+  (20 ffplay + 19 mpv checks incl. measured ~2× vs ~1× position rates). **M11 — watermark
+  expansion:** new Settings section (Text source FILENAME TIME / FILE DATE / FILENAME; Date
+  format presets labeled by concrete examples from `filters.WATERMARK_DATE_FORMATS`; include-
+  time-of-day toggle; live per-clip preview line that also surfaces resolve errors before
+  export). New pure `filters.resolve_watermark_text` / `format_watermark_datetime` /
+  `extract_recording_datetime` (old string extractor kept as wrapper); settings keys
+  `watermark_source`/`watermark_date_format`/`watermark_include_time`; the parsed-source error
+  now points at Settings (21 checks × both skins incl. a real re-encoded export frame-grabbed
+  to prove the burned text). Layout callout: adding the section overflowed the settings card at
+  the 700 px minsize — reclaimed via tighter section padding and the About block condensing to
+  two lines (font info merged into the version line). Lesson: PowerShell 5.1 mangles embedded
+  double quotes in git-commit here-strings passed to native git — keep commit messages
+  quote-free.
 
 - **2026-07-16** — Shipped M6 + M7 (timeline seek/navigation polish, both requested by Ethan
   this session) on `feature/timeline-navigation` (stacked on `feature/coach-marks`), one commit
