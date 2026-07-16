@@ -198,6 +198,25 @@ class HaloSeekbar(tk.Canvas):
         self._data_gen += 1
         self._redraw()
 
+    def set_waveforms(self, waves):
+        """Push the waveform sources in roster-row order: white-on-
+        transparent PIL images spanning [_from, _to] (None entries render as
+        empty lanes while their extraction is still running). An empty list
+        collapses the audio band into the filmstrip."""
+        self._waveforms = list(waves)
+        if len(self._wave_states) != len(self._waveforms):
+            self._wave_states = ["normal"] * len(self._waveforms)
+        self._data_gen += 1
+        self._redraw()
+
+    def set_wave_states(self, states):
+        """Mix-state tints in roster-row order: "normal" / "dim" / "solo"."""
+        states = list(states)
+        if states != self._wave_states:
+            self._wave_states = states
+            self._data_gen += 1
+            self._redraw()
+
     # ------------------------------------------------------------------
     # Zoomed view window
     # ------------------------------------------------------------------
@@ -428,10 +447,13 @@ class HaloSeekbar(tk.Canvas):
         if self._filmstrip is not None and self._filmstrip_count > 0:
             self._paste_filmstrip(img, x0, x1, film_top + 1, film_bot - 1)
 
-        # Audio band well (waveform lanes from S4 on).
+        # Audio band: one tinted waveform lane per roster row (first four;
+        # a "+N" tag marks the rest — informational, not interactive).
         if film_bot < audio_bot:
             draw.rectangle([x0, film_bot + 1, x1, audio_bot - 1],
                            fill=theme.SEEK_TRACK)
+            self._paste_waveforms(img, draw, x0, x1, v0, v1,
+                                  film_bot + 1, audio_bot - 1)
 
         # Keyframe-lane separator hairline.
         draw.line([(x0, audio_bot), (x1, audio_bot)],
@@ -491,6 +513,63 @@ class HaloSeekbar(tk.Canvas):
                 tile = tile.crop((0, 0, sw, lane_h))
             img.paste(tile, (sx, top))
             sx += slot_w
+
+    _WAVE_TINTS = {
+        # state -> (theme color attr, alpha multiplier)
+        "normal": ("WAVE", 1.0),
+        "dim": ("TEXT_DIM", 0.5),
+        "solo": ("ACCENT", 1.0),
+    }
+
+    def _paste_waveforms(self, img: Image.Image, draw, x0: int, x1: int,
+                         v0: float, v1: float, top: int, bot: int):
+        """Divide the audio band among the first four rows and composite
+        each row's waveform: crop the visible time-fraction of the wide
+        white-on-transparent source, scale to the lane rect, and use its
+        alpha as a mask for a mix-state colored fill."""
+        total = self._to - self._from
+        n = len(self._waveforms)
+        if n <= 0 or total <= 0:
+            return
+        shown = min(n, 4)
+        band_h = bot - top
+        lane_h = band_h // shown
+        if lane_h < 4:
+            return
+        src_x0 = (v0 - self._from) / total
+        src_x1 = (v1 - self._from) / total
+
+        for row in range(shown):
+            wave = self._waveforms[row]
+            lane_top = top + row * lane_h
+            lane_bot = lane_top + lane_h - 1
+            if row > 0:
+                draw.line([(x0, lane_top), (x1, lane_top)],
+                          fill=theme.PANEL_BORDER_DIM)
+            if wave is None:
+                continue
+            state = (self._wave_states[row]
+                     if row < len(self._wave_states) else "normal")
+            color_attr, alpha_mul = self._WAVE_TINTS.get(
+                state, self._WAVE_TINTS["normal"])
+            color = getattr(theme, color_attr)
+
+            cx0 = int(src_x0 * wave.width)
+            cx1 = max(cx0 + 1, int(src_x1 * wave.width))
+            crop = wave.crop((cx0, 0, cx1, wave.height))
+            crop = crop.resize((max(1, x1 - x0), max(2, lane_bot - lane_top - 1)),
+                               Image.BILINEAR)
+            mask = crop.getchannel("A") if crop.mode == "RGBA" else None
+            if mask is None:
+                continue
+            if alpha_mul < 1.0:
+                mask = mask.point(lambda a: int(a * alpha_mul))
+            fill = Image.new("RGB", crop.size, color)
+            img.paste(fill, (x0, lane_top + 1), mask)
+
+        if n > shown:
+            draw.text((x1 - px(24), bot - px(10)), f"+{n - shown}",
+                      fill=theme.TEXT_DIM)
 
     # -- tier 2: display PhotoImage (base + trim dimming, cached) --------
 

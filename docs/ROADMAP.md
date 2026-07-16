@@ -95,7 +95,8 @@ STARTING scanner cue in the ruler band; branch `feature/real-timeline`, one comm
       region), exclusion-zone dimming in the display tier, hover/drag states, px(12) hit margin
 - [x] S3 Filmstrip lane: `core/strips.py`, `build_timeline_assets` in `after_probe`, slot compose,
       cache + `cancel_group("timeline")` (driver: 40/6-tile clips, cache-hit mtime, mid-decode close)
-- [ ] S4 Waveform lanes: per-stream extraction, mix-state tinting, 0/1/2/3/4+ band division
+- [x] S4 Waveform lanes: per-stream `showwavespic` (white-on-transparent, PIL-tinted via `WAVE`
+      token), mix-state dim/solo mirroring the roster, 0/1/2/3/4+ band division + "+N" tag
 - [ ] S5 Keyframe lane: inert state, always-visible, right-click delete (structural F6 fix)
 - [ ] S6 Export progress: `on_progress` protocol + sweep + attempt counter + seekbar-disable gap (M1/F5)
 - [ ] S7 STARTING cue (M4/F13)

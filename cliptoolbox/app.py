@@ -129,6 +129,7 @@ class HaloApp:
         self._session_to_restore: dict | None = None
         self.audio_metadata: list[dict] = []
         self.track_controls: list[tuple[int, tk.BooleanVar, object]] = []
+        self.timeline_waveforms: list = []  # PIL sources, roster-row order
 
         self.total_duration_seconds: float | None = None
 
@@ -731,42 +732,105 @@ class HaloApp:
     # ------------------------------------------------------------------
 
     def build_timeline_assets(self, streams):
-        """Kick off timeline strip extraction for the loaded clip on the
-        render queue. Results land on the Tk thread and are dropped if the
-        clip changed meanwhile (load-token guard); cancel_group("timeline")
-        kills a mid-decode ffmpeg on load/close."""
-        self.seekbar.set_filmstrip(None, 0)
+        """Kick off timeline strip extraction (filmstrip + per-track
+        waveforms) for the loaded clip on the render queue. Results land on
+        the Tk thread and are dropped if the clip changed meanwhile
+        (load-token guard); cancel_group("timeline") kills a mid-decode
+        ffmpeg on load/close. Waveforms run at priority 0 (audio-only
+        decodes finish fast); the whole-video filmstrip pass at 1."""
+        self.clear_timeline_assets()
         duration = self.total_duration_seconds
         if not (PIL_AVAILABLE and FFMPEG and self.video_path and duration):
             return
         token = self._load_token
         video_path = self.video_path
+
+        def load_image(cache_path):
+            try:
+                image = Image.open(cache_path)
+                image.load()
+                return image
+            except Exception:
+                return None
+
+        # -- per-track waveforms (white-on-transparent; seekbar tints) ----
+        self.timeline_waveforms = [None] * len(streams)
+        if streams:
+            self.seekbar.set_waveforms(self.timeline_waveforms)
+            self.push_wave_states()
+        wave_w, wave_h = core_strips.WAVEFORM_WIDTH, px(32)
+
+        def make_wave_apply(row):
+            def apply(cache_path):
+                if token != self._load_token:
+                    return
+                image = load_image(cache_path)
+                if image is None:
+                    return
+                self.timeline_waveforms[row] = image
+                self.seekbar.set_waveforms(self.timeline_waveforms)
+            return apply
+
+        for row, info in enumerate(streams):
+            wave_cache = core_strips.waveform_cache_path(
+                video_path, info["index"], wave_w, wave_h)
+            apply_wave = make_wave_apply(row)
+            if wave_cache.exists():
+                apply_wave(wave_cache)
+                continue
+            self.render_queue.submit(
+                str(wave_cache),
+                core_strips.waveform_work(video_path, wave_cache,
+                                          info["index"], wave_w, wave_h),
+                apply_wave, group="timeline", priority=0,
+                on_error=lambda exc, r=row: self.log(
+                    f"Timeline waveform (track {r + 1}) failed: {exc}"),
+            )
+
+        # -- filmstrip (one whole-clip decode) ----------------------------
         n = core_strips.filmstrip_tile_count(duration)
         # The filmstrip lane absorbs the audio band when the clip has no
         # tracks; extract at the height the lane will actually render.
         h_phys = px(76 if not streams else 44)
         cache_path = core_strips.filmstrip_cache_path(video_path, h_phys, n)
 
-        def apply(cache_path):
+        def apply_strip(cache_path):
             if token != self._load_token:
                 return  # a newer load (or a close) superseded this job
-            try:
-                image = Image.open(cache_path)
-                image.load()
-            except Exception:
+            image = load_image(cache_path)
+            if image is None:
                 return
             self.seekbar.set_filmstrip(image, n)
 
         if cache_path.exists():
-            apply(cache_path)
+            apply_strip(cache_path)
             return
 
         self.render_queue.submit(
             str(cache_path),
             core_strips.filmstrip_work(video_path, cache_path, h_phys, n, duration),
-            apply, group="timeline", priority=1,
+            apply_strip, group="timeline", priority=1,
             on_error=lambda exc: self.log(f"Timeline filmstrip failed: {exc}"),
         )
+
+    def clear_timeline_assets(self):
+        self.timeline_waveforms = []
+        self.seekbar.set_filmstrip(None, 0)
+        self.seekbar.set_waveforms([])
+
+    def push_wave_states(self):
+        """Mirror the roster's mix state onto the waveform lanes: accent
+        when soloed, dim when silenced, normal otherwise (same rules as the
+        row indicator strips)."""
+        states = []
+        for row in range(len(self.track_controls)):
+            if self.solo_row == row:
+                states.append("solo")
+            elif self.effective_volume(row) <= 0.0:
+                states.append("dim")
+            else:
+                states.append("normal")
+        self.seekbar.set_wave_states(states)
 
     def enable_drag_and_drop(self):
         if not DND_AVAILABLE:
@@ -1048,7 +1112,7 @@ class HaloApp:
         # Kill any timeline extraction still running for the outgoing clip
         # and blank the lanes before the new probe kicks off.
         self.render_queue.cancel_group("timeline")
-        self.seekbar.set_filmstrip(None, 0)
+        self.clear_timeline_assets()
 
         self.video_path = str(path_obj)
         self.video_fps = None
@@ -1200,7 +1264,7 @@ class HaloApp:
         self.set_seek_range(0)
         self.seekbar.set_fps(None)
         self.render_queue.cancel_group("timeline")
-        self.seekbar.set_filmstrip(None, 0)
+        self.clear_timeline_assets()
         self.preview_placeholder_var.set(workspace.PLACEHOLDER_DEFAULT)
         self.preview_placeholder.place(relx=0.5, rely=0.5, anchor="center")
         self.file_label_var.set("No video loaded")
@@ -2241,6 +2305,8 @@ class HaloApp:
                 strip.configure(bg=color)
             except Exception:
                 pass
+        # The timeline waveform lanes mirror the same mix state.
+        self.push_wave_states()
 
     def schedule_live_mix_fallback(self, delay_ms: int = 400):
         if self.live_mix_fallback_after_id is not None:

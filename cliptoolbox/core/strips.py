@@ -1,4 +1,4 @@
-"""Timeline strip asset extraction (filmstrip tiles; waveforms in S4).
+"""Timeline strip asset extraction (filmstrip tiles + per-track waveforms).
 
 Pure and Tk-free, shaped for core.render_queue: each ``*_work`` factory
 returns a ``work(token)`` callable that runs on a queue worker, spawns the
@@ -27,6 +27,11 @@ FILMSTRIP_MIN_TILES = 4
 # A hung ffmpeg must not hold a queue worker hostage forever; a whole-clip
 # decode of a long recording is slow but nowhere near this.
 EXTRACT_TIMEOUT_S = 300
+
+# Waveform source resolution: wide enough that a zoomed view crops rather
+# than runs out of pixels immediately; rendered white-on-transparent so the
+# UI can tint per skin + mix state without invalidating the disk cache.
+WAVEFORM_WIDTH = 2048
 
 
 def cache_dir() -> Path:
@@ -73,6 +78,41 @@ def filmstrip_work(video_path: str, cache_path: Path, h_phys: int, n: int,
         )
         token.attach_process(process)  # cancel_group kills mid-decode
         assign_process_to_cleanup_job(process)  # app exit kills too
+        try:
+            process.wait(timeout=EXTRACT_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            process.kill()
+        return cache_path
+
+    return work
+
+
+def waveform_cache_path(video_path: str, stream_index: int, w: int, h: int) -> Path:
+    return cache_dir() / f"{_cache_key(video_path, 'wave', stream_index, w, h)}.png"
+
+
+def waveform_work(video_path: str, cache_path: Path, stream_index: int,
+                  w: int, h: int):
+    """One ffmpeg pass per audio stream: a white-on-transparent peak
+    waveform PNG. stream_index is the ABSOLUTE ffmpeg stream index from the
+    probe (mapped as [0:{index}]), not the audio-relative position."""
+
+    def work(token):
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        graph = (f"[0:{stream_index}]aformat=channel_layouts=mono,"
+                 f"showwavespic=s={w}x{h}:filter=peak:colors=white[w]")
+        cmd = [
+            FFMPEG, "-hide_banner", "-loglevel", "error",
+            "-i", video_path,
+            "-filter_complex", graph, "-map", "[w]", "-frames:v", "1",
+            "-y", str(cache_path),
+        ]
+        process = subprocess.Popen(
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=CREATE_NO_WINDOW,
+        )
+        token.attach_process(process)
+        assign_process_to_cleanup_job(process)
         try:
             process.wait(timeout=EXTRACT_TIMEOUT_S)
         except subprocess.TimeoutExpired:
