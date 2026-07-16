@@ -60,7 +60,7 @@ Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 | B1 | Real timeline: filmstrip lane, per-track waveforms, fat trim regions, always-visible keyframe lane, progress painted on the strip | F5 F6 F13, M1 M4, most of F7 | done 2026-07-15 |
 | B2 | One adaptive screen (landing becomes the workspace empty state; command strip shows filename) | F4 F12, Q1 M3 | done 2026-07-15 |
 | B3 | Command palette Ctrl+K (every action + hidden gestures, searchable, key hints) | F7, M2 | done 2026-07-15 |
-| B4 | Export drawer + persistent job history (name patterns, per-job progress/attempts, OPEN/RE-RUN) | F5 F11, Q7 M1 | todo |
+| B4 | Export drawer + persistent job history (name patterns, per-job progress/attempts, OPEN/RE-RUN) | F5 F11, Q7 M1 | in-progress |
 | B5 | Focus/HUD mode (Tab collapses panels, translucent scanline controls per skin) | — | todo |
 | B6 | First-run coach marks overlay | cold-start half of F7 | todo |
 
@@ -77,6 +77,30 @@ filename+✕ | status·SETTINGS with QUIT dropped, recents grid gets arrows/Ente
 - [x] S4 Command strip in shell row 0; workspace actions row removed; EXPORT disabled w/o clip;
       ✕ chip + SETTINGS join `set_busy` lockdown
 - [x] S5 Grid keyboard nav (arrows/Enter/Delete) + legend states + roadmap close-out (M3 dropped)
+
+**B4 stage checklist** (designed 2026-07-16, autonomous session per Ethan's standing direction;
+decisions: right-side slide-in drawer over the editor in `screen_container` (~440px, non-modal),
+toggled by EXPORT CLIP / Ctrl+E, Esc closes; the compression + watermark cards MOVE into the
+drawer (same attribute names — `set_busy`/session code untouched; also relieves M5's left-column
+budget); destination + name-pattern entry (`{clip} {trim} {crop} {stamp} {size} {res} {date}
+{time}` tokens, collisions get `_2…`) with live resolved-name preview, new settings keys
+`export_name_pattern`/`export_destination`; GO exports straight to the destination, SAVE AS…
+keeps the old dialog with the pattern name prefilled; job history = `core/jobs.py`
+(`ExportJobSpec` snapshots the exact `run_export_job` args so RE-RUN replays verbatim even
+across restarts; `jobs.json` atomic-write persistence, cap 20); job rows carry per-attempt
+progress + ATTEMPT n/m, final size, OPEN/FOLDER/RE-RUN (CANCEL while running); the drawer opens
+clip-less too (history + RE-RUN without a loaded clip); completion toast's action becomes
+SHOW JOBS pointing into the list (Q7 tag kept); still one export at a time; no new skin tokens):
+
+- [x] S1 `core/jobs.py`: name-pattern resolver + unique-path, `ExportJobSpec`/`ExportJob`/
+      `JobHistory` with `jobs.json` persistence; pure-Python test driver
+- [ ] S2 `ui/views/drawer.py`: slide-in shell, destination + pattern + live name preview,
+      compression/watermark cards moved in, GO + SAVE AS row; EXPORT button/Ctrl+E/Esc wiring,
+      `set_busy` lockdown, settings keys
+- [ ] S3 Job list: rows (status rail, progress, attempts, size, actions), export pipeline wired
+      to job records via the existing callbacks, history persisted, toast → SHOW JOBS pointer
+- [ ] S4 RE-RUN + clip-less drawer + palette commands + gallery job-row demo
+- [ ] S5 Acceptance: in-process drivers (real export) + gallery both skins + close-out
 
 **B1 stage checklist** (design agreed 2026-07-15 in plan mode; decisions: grow `HaloSeekbar`
 in place keeping the DoubleVar/zoom/bind contracts; 3-tier redraw split so the 10 Hz path does

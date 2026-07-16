@@ -56,6 +56,11 @@ COMPRESSION_BUDGET_EPSILON_MB = 0.05
 COMPRESSION_DEFAULT_AUDIO_KBPS = 64
 DEFAULT_COMPRESSION_RESOLUTION = "1080p"
 
+# Export drawer (B4): default output name pattern. Tokens resolve in
+# core/jobs.py; this default reproduces the pre-drawer save-dialog name.
+DEFAULT_EXPORT_NAME_PATTERN = "{clip}_mixed_audio{trim}{crop}{stamp}{size}{res}"
+EXPORT_HISTORY_LIMIT = 20
+
 # Timestamp watermark: pulls the recording time out of the source filename and
 # burns it bottom-left, fading out after a chosen visible duration.
 DEFAULT_TIMESTAMP_WATERMARK_DURATION_MS = 3000
