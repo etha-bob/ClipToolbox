@@ -294,6 +294,45 @@ def render_trim_flag(h: int, kind: str, behind: str = theme.BG_DEEP) -> Image.Im
     return _finish(img, w, h)
 
 
+def render_trim_handle(w: int, h: int, kind: str, state: str = "normal",
+                       behind: str = theme.BG_DEEP) -> Image.Image:
+    """Fat timeline trim handle: a full-lane-height grab bar with grip
+    notches. kind: "start" (green, notches face right) / "end" (red, faces
+    left). states: normal / hover / drag."""
+    W, H = w * SS, h * SS
+    img = Image.new("RGB", (W, H), rgb(behind))
+    draw = ImageDraw.Draw(img)
+
+    color = theme.TRIM_IN if kind == "start" else theme.TRIM_OUT
+    if state in ("hover", "drag"):
+        fill = lighten(color, 0.25 if state == "hover" else 0.45)
+        outline = rgb(theme.TEXT_BRIGHT)
+    else:
+        fill = rgb(color)
+        outline = lighten(color, 0.35)
+
+    # Body: a slim vertical bar with a small chamfer on the outward corners
+    # (zeroed on rectangular skins via HANDLE_CHAMFER = 0).
+    c = round(W * theme.HANDLE_CHAMFER * 0.5)
+    if kind == "start":
+        pts = chamfer_points(W, H, c, 0, 0, c)
+    else:
+        pts = chamfer_points(W, H, 0, c, c, 0)
+    draw.polygon(pts, fill=fill, outline=outline, width=SS)
+
+    # Grip notches: three short horizontal slots around the vertical center.
+    slot_w = round(W * 0.42)
+    slot_h = max(SS, round(1.2 * SS))
+    slot_x = round((W - slot_w) / 2)
+    gap = round(H * 0.055)
+    for i in (-1, 0, 1):
+        cy = H // 2 + i * gap
+        draw.rectangle([slot_x, cy - slot_h // 2, slot_x + slot_w, cy + slot_h // 2],
+                       fill=darken(color, 0.45))
+
+    return _finish(img, w, h)
+
+
 def render_keyframe(h: int, state: str = "normal", behind: str = theme.BG_DEEP) -> Image.Image:
     """Keyframe marker for the seekbar: a small chamfered diamond.
 
@@ -501,6 +540,7 @@ _RENDERERS = {
     "check": render_check,
     "handle": render_handle,
     "trim_flag": render_trim_flag,
+    "trim_handle": render_trim_handle,
     "keyframe": render_keyframe,
     "wordmark": render_wordmark,
     "background": render_background,

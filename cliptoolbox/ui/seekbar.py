@@ -31,7 +31,7 @@ never touch PIL:
 import math
 import tkinter as tk
 
-from PIL import Image, ImageDraw, ImageTk
+from PIL import Image, ImageDraw, ImageEnhance, ImageTk
 
 from cliptoolbox.ui import skin, theme
 from cliptoolbox.ui.theme import px
@@ -62,6 +62,7 @@ class HaloSeekbar(tk.Canvas):
         self._trim_change_callbacks = []
         self._trim_commit_callbacks = []
         self._trim_drag_kind: str | None = None
+        self._trim_hover_kind: str | None = None
         self._cursor = ""
         self._suspend_var_sync = False
 
@@ -378,6 +379,7 @@ class HaloSeekbar(tk.Canvas):
         self._hover = value
         if not value:
             self._kf_hover_index = None
+            self._trim_hover_kind = None
         self._redraw()
 
     # -- tier 1: composed base (PIL, cached one-deep) -------------------
@@ -445,15 +447,39 @@ class HaloSeekbar(tk.Canvas):
 
     # -- tier 2: display PhotoImage (base + trim dimming, cached) --------
 
-    def _display_cache_key(self):
-        return (self._base_key,)
+    def _trim_exclusion_ranges(self):
+        """Pixel x-ranges cut away by trim, clipped to the strip. Empty
+        tuple when trim is off (the whole strip is kept)."""
+        if self._trim_start is None and self._trim_end is None:
+            return ()
+        x0, x1 = self._usable()
+        tx0 = self._x_for(self._trim_start) if self._trim_start is not None else x0
+        tx1 = self._x_for(self._trim_end) if self._trim_end is not None else x1
+        ranges = []
+        if tx0 > x0:
+            ranges.append((x0, tx0))
+        if tx1 < x1:
+            ranges.append((tx1, x1))
+        return tuple(ranges)
 
     def _ensure_display(self) -> ImageTk.PhotoImage:
         base = self._ensure_base()
-        key = self._display_cache_key()
+        exclusions = self._trim_exclusion_ranges()
+        key = (self._base_key, exclusions)
         if key == self._display_key and self._display_photo is not None:
             return self._display_photo
-        self._display_photo = ImageTk.PhotoImage(base)
+        if exclusions:
+            img = base.copy()
+            top, bot = self._ruler_top(), self._audio_bot()
+            for rx0, rx1 in exclusions:
+                if rx1 <= rx0:
+                    continue
+                box = (rx0, top, rx1, bot)
+                region = img.crop(box)
+                img.paste(ImageEnhance.Brightness(region).enhance(0.4), box)
+        else:
+            img = base
+        self._display_photo = ImageTk.PhotoImage(img)
         self._display_key = key
         return self._display_photo
 
@@ -476,17 +502,9 @@ class HaloSeekbar(tk.Canvas):
 
         v0, v1 = self._view()
 
-        # Composed lanes (cached: no PIL work unless view/size/data changed).
+        # Composed lanes + trim exclusion dimming (cached: no PIL work
+        # unless view/size/data or the trim range changed).
         self.create_image(0, 0, image=self._ensure_display(), anchor="nw")
-
-        # Kept trim range brightens the ruler between the brackets (interim
-        # until S2 swaps it for exclusion-zone dimming in the display tier).
-        if self._trim_start is not None or self._trim_end is not None:
-            tx0 = self._x_for(self._trim_start) if self._trim_start is not None else x0
-            tx1 = self._x_for(self._trim_end) if self._trim_end is not None else x1
-            if tx1 > tx0:
-                self.create_rectangle(tx0, ruler_top + 1, tx1, ruler_bot - 2,
-                                      fill=theme.TRIM_KEEP, outline="")
 
         # Elapsed fill across the ruler band.
         fill = theme.ACCENT_DEEP if self._state == tk.NORMAL else theme.TEXT_DIM
@@ -515,17 +533,27 @@ class HaloSeekbar(tk.Canvas):
             self.create_rectangle(ix0, 0, max(ix0 + px(2), ix1), px(2),
                                   fill=theme.ACCENT_DEEP, outline="")
 
-        # Trim brackets (culled outside a zoomed view — a clamped flag at the
-        # edge would read as a bracket AT the edge).
-        bracket_h = px(20)
-        if self._trim_start is not None and v0 <= self._trim_start <= v1:
-            self.create_image(self._x_for(self._trim_start), cy,
-                              image=sk.get("trim_flag", h=bracket_h, kind="start", behind=self.behind),
-                              anchor="w")
-        if self._trim_end is not None and v0 <= self._trim_end <= v1:
-            self.create_image(self._x_for(self._trim_end), cy,
-                              image=sk.get("trim_flag", h=bracket_h, kind="end", behind=self.behind),
-                              anchor="e")
+        # Fat trim handles spanning the strip body, sitting OUTSIDE the kept
+        # region (over the dimmed exclusion) so they never cover kept frames.
+        # Culled outside a zoomed view — a clamped handle at the edge would
+        # read as a handle AT the edge.
+        handle_w = px(10)
+        handle_h = self._audio_bot() - ruler_top
+        handle_cy = ruler_top + handle_h // 2
+        for kind, t, anchor in (("start", self._trim_start, "e"),
+                                ("end", self._trim_end, "w")):
+            if t is None or not (v0 <= t <= v1):
+                continue
+            if self._trim_drag_kind == kind:
+                tstate = "drag"
+            elif self._trim_hover_kind == kind:
+                tstate = "hover"
+            else:
+                tstate = "normal"
+            self.create_image(self._x_for(t), handle_cy,
+                              image=sk.get("trim_handle", w=handle_w, h=handle_h,
+                                           kind=kind, state=tstate, behind=self.behind),
+                              anchor=anchor)
 
         # Playhead: full-height hairline over the strip + grab handle in the
         # ruler band (culled when scrolled out of a zoomed view).
@@ -584,10 +612,10 @@ class HaloSeekbar(tk.Canvas):
             self._command(f"{value}")
 
     def _bracket_at(self, x: int) -> str | None:
-        """Which trim bracket, if any, sits under x (within a grab margin).
-        Returns "start"/"end"/None. Only set brackets are grabbable; brackets
+        """Which trim handle, if any, sits under x (within a grab margin).
+        Returns "start"/"end"/None. Only set handles are grabbable; handles
         scrolled outside a zoomed view are not (they aren't drawn either)."""
-        margin = px(9)
+        margin = px(12)
         v0, v1 = self._view()
         best_kind = None
         best_dist = margin + 1
@@ -691,12 +719,16 @@ class HaloSeekbar(tk.Canvas):
     def _on_motion(self, event):
         if self._state != tk.NORMAL or self._trim_drag_kind is not None or self._kf_drag_index is not None:
             return
-        if self._bracket_at(event.x) is not None:
+        bracket = self._bracket_at(event.x)
+        if bracket is not None:
             cursor = "sb_h_double_arrow"
         elif self._keyframe_at(event.x, event.y) is not None:
             cursor = "hand2"
         else:
             cursor = ""
+        if bracket != self._trim_hover_kind:
+            self._trim_hover_kind = bracket
+            self._redraw()
         hover = self._keyframe_at(event.x, event.y)
         if hover != self._kf_hover_index:
             self._kf_hover_index = hover

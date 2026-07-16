@@ -91,7 +91,8 @@ STARTING scanner cue in the ruler band; branch `feature/real-timeline`, one comm
       reality (measured, incl. pre-B1 stash baseline): the left column never fit 780 with
       toolbars open — export_row is now packed FIRST (bottom-pinned wins clipping fights) and
       the stock window is 1150x900 (plain stack req 764, toolbars-open 796, avail at 900 = 812)
-- [ ] S2 Trim as first-class region: `render_trim_handle`, exclusion-zone dimming, fat hit targets
+- [x] S2 Trim as first-class region: `render_trim_handle` (grip-notch bars outside the kept
+      region), exclusion-zone dimming in the display tier, hover/drag states, px(12) hit margin
 - [ ] S3 Filmstrip lane: `core/strips.py`, `build_timeline_assets` in `after_probe`, slot compose,
       cache + `cancel_group("timeline")`
 - [ ] S4 Waveform lanes: per-stream extraction, mix-state tinting, 0/1/2/3/4+ band division
