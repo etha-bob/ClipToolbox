@@ -7,10 +7,10 @@ Single source of truth for planned UX/feature work. Seeded from the 2026-07-12 u
 sets items `in-progress`/`done` as it goes, appends a Session log entry, and commits roadmap updates
 in the same commit as the work. Newly discovered work gets a new row, not silent scope creep.
 
-**Now / Next:** T1, the Q1–Q9 batch, B3, B2, B0, B1, B4, and B5 (focus/HUD mode) are done.
-The bold track's remainder is B6 (coach marks). L1 (silent-video support) is the
-highest-value incremental alternative; L2 (taskbar progress) is now easy on top of the job
-pipeline.
+**Now / Next:** The bold track is complete — T1, Q1–Q9, and B0–B6 are all done (F7 is now
+fully closed: palette for reference, coach marks for cold start). Remaining: L1
+(silent-video support) is the highest-value item; L2 (taskbar progress) is easy on top of
+the job pipeline; L3 (single-level undo) and the downgraded M5 round out the list.
 
 Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 
@@ -62,7 +62,7 @@ Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 | B3 | Command palette Ctrl+K (every action + hidden gestures, searchable, key hints) | F7, M2 | done 2026-07-15 |
 | B4 | Export drawer + persistent job history (name patterns, per-job progress/attempts, OPEN/RE-RUN) | F5 F11, Q7 M1 | done 2026-07-16 |
 | B5 | Focus/HUD mode (Tab collapses panels, translucent scanline controls per skin) | — | done 2026-07-16 |
-| B6 | First-run coach marks overlay | cold-start half of F7 | in-progress |
+| B6 | First-run coach marks overlay | cold-start half of F7 | done 2026-07-16 |
 
 **B2 stage checklist** (design agreed 2026-07-15 in plan mode; decisions: full-body hero empty
 state, Ctrl+W + ✕ chip closes the clip (Esc never unloads), strip = LOAD·EXPORT·CANCEL |
@@ -97,8 +97,11 @@ chamfer AA fringes read as dark edges):
       dismissal paths), `coach_marks_seen` setting, first-probe trigger + modal guard, palette
       `help.coach`, gallery callout demo; driver both skins (20 checks: fires once, Esc/GOT
       IT/click dismissals, disk persistence, no re-fire, palette re-invoke, focus interlock)
-- [ ] S2 Acceptance: minsize-window clamping, focus/drawer interlocks, persistence round-trip
-      across an app rebuild, S1 driver re-run on final code, roadmap close-out
+- [x] S2 Acceptance: 12 checks × both skins (980x700 minsize clamping + live-resize reflow,
+      Settings-grab guard leaves the flag unburned, drawer hidden by the tour, persistence
+      round-trip across a second in-process app instance), S1 re-run green on final code,
+      one placement fix (dropped the toolbar card's plain-text line — it overlapped the
+      EXPORT card at minsize and the labeled checkboxes already carry that info)
 
 **B5 stage checklist** (designed 2026-07-16, autonomous session per Ethan's standing direction;
 decisions: Tab toggles focus with a clip loaded (not typing, no modal; allowed during export so
@@ -196,6 +199,31 @@ Bold sequencing if chosen: B3 → B0 → B1 → B4 → B2 → B5/B6 (B2 pulled f
 XL items get a stage checklist added under their row when work starts (plan-mode design first).
 
 ## Session log (newest first)
+
+- **2026-07-16** — Shipped B6 (first-run coach marks) on `feature/coach-marks` (stacked on
+  `feature/focus-hud`), 2 stage commits, autonomous session — the bold track (B0–B6) is now
+  complete and F7 is fully closed. New `ui/views/coach.py`: the SettingsOverlay two-layer
+  pattern extended with a `-transparentcolor` overlay Toplevel (magic key #010101, near-black
+  so the chamfer's AA fringe reads as a dark edge) over the 0.45 alpha scrim, so five
+  chamfered skin-panel callouts with keycap hint lines + accent connectors float over the
+  dimmed editor: TIMELINE (drag/wheel/Ctrl+wheel/[ ]), PLAYBACK & TOOLS (Space, frame step,
+  C/K), EXPORT (Ctrl+E drawer), AUDIO MIX (the audit's zero-affordance gestures — right-click
+  solo, double-click reset, wheel volume), EVERYTHING ELSE (Ctrl+K, Tab), plus a GOT IT card
+  ("shows once — reopen from the CTRL+K palette"). Fires once per install, 700 ms after the
+  first successful probe (new `coach_marks_seen` setting, saved on dismissal); the deferred
+  trigger carries the load token and yields to modals/grabs WITHOUT burning the flag, so a
+  first load that hits the no-audio-tracks dialog gets the tour on the next clip instead.
+  Esc / any click / GOT IT dismiss; re-invocable via palette `help.coach` (workspace-ready
+  only); showing exits focus mode and hides the drawer first; callouts clamp into the window
+  and reflow on live resize. `draw_callout` is a standalone renderer, demoed in the gallery
+  per skin. Verified: two in-process drivers × both skins (S1: 20 checks — first-load fire,
+  all five cards present, three dismissal paths, on-disk persistence, no re-fire, palette
+  re-invoke, focus interlock; S2: 12 checks — minsize clamping, live-resize reflow, modal
+  guard, drawer interlock, and a persistence round-trip across a second in-process app
+  instance); gallery both skins. Lessons: (1) screenshot drivers that set `-topmost` on the
+  root push it ABOVE sibling overlay Toplevels — raise the whole stack into the topmost band
+  in order; (2) a second Tk root in one process needs the module-level skin PhotoImage cache
+  reset (`skin._skin = None`) — the cached images belong to the destroyed interpreter.
 
 - **2026-07-16** — Shipped B5 (focus/HUD mode) on `feature/focus-hud` (stacked on
   `feature/export-drawer`), 3 stage commits, autonomous session. Tab (clip loaded, not typing,

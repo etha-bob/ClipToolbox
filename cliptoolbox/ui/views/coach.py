@@ -105,9 +105,8 @@ def _callout_specs(app):
             [("k", "DRAG"), ("t", "SCRUB"), ("k", "WHEEL"), ("t", "SEEK")],
             [("k", "CTRL+WHEEL"), ("t", "ZOOM"), ("k", "[ ]"), ("t", "TRIM")],
         ]),
-        (lambda: app.transport_frame, "below", 0.32, "PLAYBACK & TOOLS", [
+        (lambda: app.transport_frame, "below", 0.26, "PLAYBACK & TOOLS", [
             [("k", "SPACE"), ("t", "PLAY"), ("k", ", ."), ("t", "FRAME STEP")],
-            [("t", "TRIM & CROP open their toolbars")],
             [("k", "C"), ("t", "CROP"), ("k", "K"), ("t", "KEYFRAME")],
         ]),
         (lambda: app.export_button, "right", 0.5, "EXPORT", [
