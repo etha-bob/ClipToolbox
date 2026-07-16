@@ -61,7 +61,7 @@ Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 | B2 | One adaptive screen (landing becomes the workspace empty state; command strip shows filename) | F4 F12, Q1 M3 | done 2026-07-15 |
 | B3 | Command palette Ctrl+K (every action + hidden gestures, searchable, key hints) | F7, M2 | done 2026-07-15 |
 | B4 | Export drawer + persistent job history (name patterns, per-job progress/attempts, OPEN/RE-RUN) | F5 F11, Q7 M1 | done 2026-07-16 |
-| B5 | Focus/HUD mode (Tab collapses panels, translucent scanline controls per skin) | — | todo |
+| B5 | Focus/HUD mode (Tab collapses panels, translucent scanline controls per skin) | — | in-progress |
 | B6 | First-run coach marks overlay | cold-start half of F7 | todo |
 
 **B2 stage checklist** (design agreed 2026-07-15 in plan mode; decisions: full-body hero empty
@@ -77,6 +77,31 @@ filename+✕ | status·SETTINGS with QUIT dropped, recents grid gets arrows/Ente
 - [x] S4 Command strip in shell row 0; workspace actions row removed; EXPORT disabled w/o clip;
       ✕ chip + SETTINGS join `set_busy` lockdown
 - [x] S5 Grid keyboard nav (arrows/Enter/Delete) + legend states + roadmap close-out (M3 dropped)
+
+**B5 stage checklist** (designed 2026-07-16, autonomous session per Ethan's standing direction;
+decisions: Tab toggles focus with a clip loaded (not typing, no modal; allowed during export so
+you can watch the strip render full-size and still Tab back out); focus hides the command strip,
+right column (roster+log), transport/frame/export rows and grows the preview bezel to fill the
+workspace — the timeline strip stays beneath it as the one control surface, so trim brackets,
+keyframes, zoom and the export sweep all keep working; Esc also exits (after its cancel-export /
+leave-entry / close-drawer priorities); legend stays and swaps to focus hints; HUD chips overlay
+the preview letterbox (clip name top-left, playback glyph + timecode bottom-right) rendered by a
+new `skin.render_hud_chip` scanline panel pre-blended toward black — faked translucency, honest
+over the black letterbox, per-skin via existing tokens only (no new tokens); live text via var
+traces updating native canvas items (no PIL at 10 Hz); crop-edit and focus are mutually
+exclusive (entering focus with CROP on is refused with a status hint; C inside focus exits focus
+first, then toggles crop); drawer stays orthogonal (Ctrl+E slides it over focus); close_clip /
+failed probe exit focus via reset_clip_state; focus survives clip swaps; transient — never
+persisted):
+
+- [x] S1 Layout flip: view refs (workspace grid/left/right, bezel, command strip), enter/exit/
+      toggle in app.py, Tab/Esc wiring + guards (typing, modal, crop refusal), focus legend
+      hints, reset_clip_state exits, paused-still refresh at the new size; in-process driver
+      (37 checks × both skins incl. pack-order restore, C-in-focus handoff, clip-swap survival)
+- [ ] S2 HUD: `skin.render_hud_chip` + `ui/views/hud.py` (name chip, transport glyph+timecode
+      chip on var traces), wired to enter/exit + playback-state refresh, gallery demo both skins
+- [ ] S3 Palette `view.focus`, acceptance driver (export-in-focus, drawer-over-focus, Ctrl+W,
+      clip swap, Tab-in-entry traversal) both skins, roadmap close-out
 
 **B4 stage checklist** (designed 2026-07-16, autonomous session per Ethan's standing direction;
 decisions: right-side slide-in drawer over the editor in `screen_container` (~440px, non-modal),

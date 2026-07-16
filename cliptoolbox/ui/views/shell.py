@@ -40,6 +40,7 @@ def build(app):
     strip = tk.Frame(root, bg=theme.BG_DEEP)
     strip.grid(row=0, column=0, sticky="ew", padx=px(14), pady=(px(6), px(2)))
     strip.columnconfigure(1, weight=1)
+    app.command_strip = strip  # hidden in focus mode (B5)
 
     app.strip_actions = tk.Frame(strip, bg=theme.BG_DEEP)
     app.strip_actions.grid(row=0, column=0, sticky="w")

@@ -202,6 +202,8 @@ class HaloApp:
         self.user_is_seeking = False
         self.is_exporting = False
         self.command_palette = None
+        # Focus/HUD mode (B5): transient view state, never persisted.
+        self.focus_mode = False
         self.auto_preview_after_load = bool(self.settings.auto_preview_after_load)
         self.preview_width = px(PREVIEW_WIDTH)
         self.preview_height = px(PREVIEW_HEIGHT)
@@ -373,19 +375,107 @@ class HaloApp:
         self.workspace_frame.lift()
         self.update_legend()
 
+    # ========================================================
+    # Focus / HUD mode (B5)
+    # ========================================================
+
+    def toggle_focus_mode(self):
+        if self.focus_mode:
+            self.exit_focus_mode()
+        else:
+            self.enter_focus_mode()
+
+    def enter_focus_mode(self):
+        """Collapse the chrome around the preview: command strip, right
+        column, and the transport/frame/export rows hide; the bezel grows to
+        fill the workspace. The timeline strip stays beneath the video as
+        the one control surface (trim brackets, keyframes, zoom, export
+        sweep all keep working), and the legend keeps the exit hint."""
+        if self.focus_mode or not self.video_path:
+            return
+        if self.crop_enabled_var.get():
+            # Crop editing needs its toolbar (and the cropbox letterbox math
+            # assumes a settled preview) — the two modes stay exclusive.
+            self.set_status("Disable CROP to enter focus mode.")
+            return
+        self.focus_mode = True
+
+        self.command_strip.grid_remove()
+        self.workspace_right.grid_remove()
+        self.workspace_grid.columnconfigure(1, weight=0, minsize=0)
+        self.workspace_left.grid_configure(padx=0)
+        for row in (self.transport_frame, self.frame_row, self.export_row):
+            row.pack_forget()
+        self.preview_bezel.pack_configure(fill=tk.BOTH, expand=True)
+        self.preview_frame.pack_configure(fill=tk.BOTH, expand=True)
+
+        # Focus must not linger on a now-hidden widget.
+        self.root.focus_set()
+        self._refresh_preview_after_relayout()
+        self.update_legend()
+        self.set_status("Focus mode — TAB to exit.")
+
+    def exit_focus_mode(self):
+        if not self.focus_mode:
+            return
+        self.focus_mode = False
+
+        self.preview_frame.pack_configure(fill=tk.X, expand=False)
+        self.preview_bezel.pack_configure(fill=tk.X, expand=False)
+        # Restore the hidden rows in their original pack order. export_row
+        # must re-enter the pack list BEFORE the bezel: it packed first so
+        # it wins the space fight when a short window clips the column.
+        self.transport_frame.pack(fill=tk.X, pady=(px(4), 0),
+                                  after=self.timeline_row)
+        self.frame_row.pack(fill=tk.X, pady=(px(4), 0),
+                            after=self.transport_frame)
+        self.export_row.pack(side=tk.BOTTOM, fill=tk.X, pady=(px(12), 0),
+                             before=self.preview_bezel)
+        self.workspace_grid.columnconfigure(1, weight=2, minsize=px(360))
+        self.workspace_left.grid_configure(padx=(0, px(12)))
+        self.workspace_right.grid()
+        self.command_strip.grid()
+
+        self._refresh_preview_after_relayout()
+        self.update_legend()
+        self.set_status("Focus mode off.")
+
+    def _refresh_preview_after_relayout(self):
+        """The preview frame just changed size wholesale: push the new size
+        to the engine now (not on the next idle <Configure>), and re-render
+        a visible paused still at the new resolution."""
+        self.root.update_idletasks()
+        self.on_preview_frame_resize()
+        if (self.playback.state == core_playback.PAUSED
+                and not self.user_is_seeking
+                and self.paused_frame_label is not None
+                and self.paused_frame_label.winfo_ismapped()):
+            self.last_scrub_frame_seconds = None  # bypass the dedup window
+            self.request_scrub_frame(self.current_seek_seconds())
+
     def update_legend(self):
         if not hasattr(self, "legend"):
             return
 
         if self.is_exporting:
             hints = [("ESC", "CANCEL EXPORT")]
+            if self.focus_mode:
+                hints.append(("TAB", "EXIT FOCUS"))
         elif self.export_drawer is not None and self.export_drawer.visible:
             hints = [("ESC", "CLOSE DRAWER"), ("CTRL+K", "COMMANDS")]
+        elif self.focus_mode:
+            hints = [
+                ("TAB", "EXIT FOCUS"),
+                ("SPACE", "PLAY/PAUSE"),
+                ("← →", "SEEK"),
+                ("[ ]", "TRIM"),
+                ("CTRL+K", "COMMANDS"),
+            ]
         elif self.video_path:
             hints = [
                 ("SPACE", "PLAY/PAUSE"),
                 ("← →", "SEEK"),
-                ("WHEEL", "SEEK · VOLUME"),
+                ("TAB", "FOCUS"),
                 ("[ ]", "TRIM"),
                 ("CTRL+K", "COMMANDS"),
                 ("CTRL+W", "CLOSE"),
@@ -448,6 +538,7 @@ class HaloApp:
         root.bind("<Control-k>", lambda e: self.toggle_command_palette())
         root.bind("<Control-K>", lambda e: self.toggle_command_palette())
         root.bind("<Control-C>", lambda e: self.shortcut(self.copy_timestamp))
+        root.bind("<Tab>", lambda e: self.shortcut_focus())
         root.bind("<Escape>", lambda e: self.shortcut_escape())
 
     def _typing_in_entry(self) -> bool:
@@ -491,9 +582,9 @@ class HaloApp:
         self.log(f"Copied timestamp {text}.")
 
     def shortcut_escape(self):
-        """Esc cancels an export, leaves a text entry, or closes the export
-        drawer — it never unloads the clip (that's Ctrl+W), so it can't yank
-        the screen away."""
+        """Esc cancels an export, leaves a text entry, closes the export
+        drawer, or exits focus mode — it never unloads the clip (that's
+        Ctrl+W), so it can't yank the screen away."""
         if self.is_exporting:
             self.cancel_export()
             return "break"
@@ -503,7 +594,24 @@ class HaloApp:
         if self.export_drawer is not None and self.export_drawer.visible:
             self.export_drawer.close()
             return "break"
+        if self.focus_mode:
+            self.exit_focus_mode()
+            return "break"
         return None
+
+    def shortcut_focus(self):
+        """Tab toggles focus/HUD mode. Works during an export (the strip
+        becomes a full-width render view, and you can Tab back out), stays
+        out of the way while typing (field traversal must keep working) and
+        under modals, and does nothing on the empty state."""
+        if self._typing_in_entry():
+            return None  # let Tk's all-tag binding traverse the fields
+        if dialogs.a_modal_is_open():
+            return None
+        if not self.video_path:
+            return "break"
+        self.toggle_focus_mode()
+        return "break"
 
     def shortcut_close(self):
         if self.is_exporting or self._typing_in_entry():
@@ -1299,6 +1407,7 @@ class HaloApp:
         Shared by close_clip and after_probe_failed; the editor widgets are
         all null-safe against this (PLAY disables, estimate goes back to its
         load-a-clip line, seekbar parks at zero)."""
+        self.exit_focus_mode()  # the empty state needs the standard layout
         self.video_path = None
         self._session_to_restore = None
         self._probe_done = False
@@ -1819,6 +1928,11 @@ class HaloApp:
         """Keyboard 'C': flip crop mode when the clip has known dimensions."""
         if not self.video_dimensions:
             return
+        # Crop editing needs its toolbar and the standard layout — focus
+        # mode steps aside first (the reverse direction is refused instead;
+        # see enter_focus_mode).
+        if self.focus_mode:
+            self.exit_focus_mode()
         self.crop_enabled_var.set(not self.crop_enabled_var.get())
         self.on_crop_toggle()
 

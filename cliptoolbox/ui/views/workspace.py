@@ -47,6 +47,12 @@ def build(app):
     right.columnconfigure(0, weight=1)
     right.rowconfigure(1, weight=1)
 
+    # Focus/HUD mode (B5) collapses the chrome around the preview and needs
+    # handles on the containers it hides/regrows.
+    app.workspace_grid = frame
+    app.workspace_left = left
+    app.workspace_right = right
+
     # ------------------------------------------------------------------
     # Left: EXPORT — the terminal action, pinned to the bottom of the
     # column right under the compression settings it depends on. Packed
@@ -56,6 +62,7 @@ def build(app):
     # ------------------------------------------------------------------
     export_row = tk.Frame(left, bg=theme.BG_DEEP)
     export_row.pack(side=tk.BOTTOM, fill=tk.X, pady=(px(12), 0))
+    app.export_row = export_row  # hidden in focus mode
 
     app.export_button = HaloButton(
         export_row, text="EXPORT CLIP", variant="primary",
@@ -76,6 +83,7 @@ def build(app):
     # ------------------------------------------------------------------
     bezel = HaloPanel(left, fill=theme.WELL_FILL, border=theme.PANEL_BORDER, pad=px(8))
     bezel.pack(fill=tk.X)
+    app.preview_bezel = bezel  # regrown to fill the column in focus mode
 
     app.preview_frame = tk.Frame(
         bezel.body, bg="black", height=px(PREVIEW_HEIGHT),
@@ -121,6 +129,7 @@ def build(app):
     # ------------------------------------------------------------------
     timeline = tk.Frame(left, bg=theme.BG_DEEP)
     timeline.pack(fill=tk.X, pady=(px(4), 0))
+    app.timeline_row = timeline  # the re-pack anchor when focus mode exits
 
     app.time_left_var = tk.StringVar(value="0:00")
     app.time_right_var = tk.StringVar(value="0:00")
@@ -306,6 +315,7 @@ def build(app):
     # ------------------------------------------------------------------
     frame_row = tk.Frame(left, bg=theme.BG_DEEP)
     frame_row.pack(fill=tk.X, pady=(px(4), 0))
+    app.frame_row = frame_row  # hidden in focus mode
 
     tk.Label(frame_row, text="FRAME", font=theme.font_title(12),
              bg=theme.BG_DEEP, fg=theme.TEXT_DIM).pack(side=tk.LEFT, padx=(0, px(8)))
