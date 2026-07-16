@@ -107,7 +107,9 @@ class CropController:
             self.app.crop_enabled_var.set(True)
             self._show_toolbar()
             self._update_mode_button()
-            self._refresh_markers()
+        # Markers render either way: inert (ghosted) when crop is off, so a
+        # restored session's keyframes are never invisible (F6).
+        self._refresh_markers()
         return True
 
     def on_toggle(self):
@@ -127,7 +129,7 @@ class CropController:
             self.track.enabled = False
             self._exit_edit()
             self._hide_toolbar()
-            self.app.seekbar.set_keyframes([])
+            self._refresh_markers()  # diamonds stay, ghosted
             self._invalidate_pipeline()
             self.app.update_compression_estimate()
             # The cropbox is gone; refresh the plain (uncropped) paused frame so
@@ -427,8 +429,22 @@ class CropController:
             return
         applied = self.track.retime(index, value, self._eps())
         self._refresh_markers()
-        self._invalidate_pipeline()
+        if self.track.enabled:  # inert keyframes don't touch the pipeline
+            self._invalidate_pipeline()
         self.app.log(f"Crop keyframe moved to {self.app.format_seconds(applied)}.")
+
+    def on_kf_delete(self, index):
+        """Right-click on a diamond removes it — enabled or inert alike."""
+        times = self.track.times()
+        if not (0 <= index < len(times)):
+            return
+        self.track.remove_near(times[index], self._eps())
+        self._refresh_markers()
+        if self.track.enabled:
+            self._invalidate_pipeline()
+        self.app.log(
+            f"Crop keyframe at {self.app.format_seconds(times[index])} deleted."
+        )
 
     # ------------------------------------------------------------------
     # Internals
@@ -462,7 +478,11 @@ class CropController:
         return 0.5 / max(1.0, self.fps or 30.0)
 
     def _refresh_markers(self):
-        self.app.seekbar.set_keyframes(self.track.times())
+        # Keyframes stay visible whenever they exist — ghosted ("inert")
+        # while crop is off, since they persist with the session but have
+        # no effect on preview/export. Structural fix for F6.
+        self.app.seekbar.set_keyframes(self.track.times(),
+                                       inert=not self.track.enabled)
         # The compression card hint reflects whether export will re-encode.
         self.app.update_compression_estimate()
 

@@ -1794,6 +1794,9 @@ class HaloApp:
     def on_keyframe_commit(self, index, value):
         self.crop.on_kf_commit(index, value)
 
+    def on_keyframe_delete(self, index):
+        self.crop.on_kf_delete(index)
+
     def on_loop_toggle(self):
         if self.loop_enabled_var.get():
             bounds = self.loop_bounds()

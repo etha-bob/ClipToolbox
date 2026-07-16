@@ -78,6 +78,8 @@ class HaloSeekbar(tk.Canvas):
         self._kf_drag_callbacks = []
         self._kf_commit_callbacks = []
         self._kf_click_callbacks = []
+        self._kf_delete_callbacks = []
+        self._kf_inert = False
         self._kf_drag_index: int | None = None
         self._kf_press_x: int | None = None
         self._kf_moved = False
@@ -119,6 +121,7 @@ class HaloSeekbar(tk.Canvas):
         self.bind("<ButtonPress-1>", self._on_press)
         self.bind("<B1-Motion>", self._on_drag)
         self.bind("<ButtonRelease-1>", self._on_release)
+        self.bind("<ButtonPress-3>", self._on_right_press)
         self.bind("<Motion>", self._on_motion)
 
     # ------------------------------------------------------------------
@@ -184,10 +187,19 @@ class HaloSeekbar(tk.Canvas):
         self._cache_ranges = [(float(a), float(b)) for a, b in ranges]
         self._redraw()
 
-    def set_keyframes(self, times):
-        """Replace the keyframe markers. Empty list hides the lane markers."""
+    def set_keyframes(self, times, inert: bool = False):
+        """Replace the keyframe markers. Empty list hides the lane markers.
+        inert=True renders ghosted diamonds: keyframes that exist (and will
+        persist with the session) but have no effect because crop is off —
+        the structural fix for invisible restored crops (F6). They stay
+        fully interactive (click seeks, drag retimes, right-click deletes)."""
         self._keyframes = sorted(float(t) for t in times)
+        self._kf_inert = bool(inert)
         self._redraw()
+
+    def bind_keyframe_delete(self, callback):
+        """callback(index) fires when a diamond is right-clicked."""
+        self._kf_delete_callbacks.append(callback)
 
     def set_filmstrip(self, strip, count: int = 0):
         """Push the filmstrip source: a PIL image of `count` equal-width
@@ -701,10 +713,12 @@ class HaloSeekbar(tk.Canvas):
                     continue
                 if i == self._kf_drag_index:
                     state = "drag"
-                elif abs(self._x_for(t) - hx) <= px(3):
-                    state = "active"
                 elif i == self._kf_hover_index:
                     state = "hover"
+                elif self._kf_inert:
+                    state = "inert"
+                elif abs(self._x_for(t) - hx) <= px(3):
+                    state = "active"
                 else:
                     state = "normal"
                 self.create_image(self._x_for(t), kf_cy,
@@ -841,6 +855,15 @@ class HaloSeekbar(tk.Canvas):
             callback(event)
         self._dragging = True
         self._apply_drag(event.x)
+
+    def _on_right_press(self, event):
+        if self._state != tk.NORMAL:
+            return
+        index = self._keyframe_at(event.x, event.y)
+        if index is None:
+            return
+        for callback in self._kf_delete_callbacks:
+            callback(index)
 
     def _on_motion(self, event):
         if self._state != tk.NORMAL or self._trim_drag_kind is not None or self._kf_drag_index is not None:

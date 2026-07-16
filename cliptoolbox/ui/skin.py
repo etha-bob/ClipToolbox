@@ -336,7 +336,8 @@ def render_trim_handle(w: int, h: int, kind: str, state: str = "normal",
 def render_keyframe(h: int, state: str = "normal", behind: str = theme.BG_DEEP) -> Image.Image:
     """Keyframe marker for the seekbar: a small chamfered diamond.
 
-    states: normal / hover / drag / active (playhead sitting on it)."""
+    states: normal / hover / drag / active (playhead sitting on it) /
+    inert (keyframes exist but crop is off — visible, ghosted)."""
     w = h
     W, H = w * SS, h * SS
     img = Image.new("RGB", (W, H), rgb(behind))
@@ -348,6 +349,9 @@ def render_keyframe(h: int, state: str = "normal", behind: str = theme.BG_DEEP) 
     elif state in ("hover", "drag"):
         fill = theme.ACCENT
         outline = theme.ACCENT_DEEP
+    elif state == "inert":
+        fill = theme.DISABLED_FILL
+        outline = theme.TEXT_DIM
     else:
         fill = theme.ACCENT_DEEP
         outline = theme.ACCENT

@@ -141,6 +141,7 @@ def build(app):
     app.seekbar.bind_keyframe_click(app.on_keyframe_click)
     app.seekbar.bind_keyframe_drag(app.on_keyframe_drag)
     app.seekbar.bind_keyframe_commit(app.on_keyframe_commit)
+    app.seekbar.bind_keyframe_delete(app.on_keyframe_delete)
 
     time_right_label = tk.Label(
         timeline, textvariable=app.time_right_var, font=theme.font_small(),
