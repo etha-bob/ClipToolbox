@@ -94,6 +94,23 @@ def is_default_state(state: dict) -> bool:
     return True
 
 
+def paths_with_sessions(video_paths) -> set[str]:
+    """Subset of video_paths that currently have a restorable session — the
+    same key and size-match rules as load(), but one file read for the whole
+    list (the recents grid marks its cards with this)."""
+    sessions = _read_all()
+    matched = set()
+    for video_path in video_paths:
+        entry = sessions.get(_key(video_path))
+        if not isinstance(entry, dict) or not isinstance(entry.get("state"), dict):
+            continue
+        size = _file_size(video_path)
+        if size is not None and entry.get("size") is not None and entry.get("size") != size:
+            continue
+        matched.add(video_path)
+    return matched
+
+
 def load(video_path: str) -> dict | None:
     """The saved state for this clip, or None if absent or stale."""
     entry = _read_all().get(_key(video_path))

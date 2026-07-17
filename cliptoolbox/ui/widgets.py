@@ -1,4 +1,4 @@
-"""Interactive Halo 2 styled widgets.
+"""Interactive Halo-styled widgets (skinned via cliptoolbox.ui.theme).
 
 Design constraints:
 - Everything visual comes from the skin (PIL-rendered, cached); axis-aligned
@@ -149,6 +149,8 @@ class HaloButton(tk.Canvas):
 
         if self._state == DISABLED:
             text_color = theme.TEXT_DIM
+        elif self.variant == "primary":
+            text_color = theme.BTN_PRIMARY_TEXT
         elif self.variant == "secondary" and self._visual not in ("hover", "pressed"):
             text_color = theme.TEXT
         else:
@@ -157,7 +159,7 @@ class HaloButton(tk.Canvas):
         self.create_text(self._wpx // 2, self._hpx // 2 + (px(1) if self._visual == "pressed" else 0),
                          text=self._text, font=self._font, fill=text_color)
 
-        if self._visual == "hover":
+        if self._visual == "hover" and theme.HOVER_BRACKETS:
             draw_corner_brackets(self, px(2), px(2), self._wpx - px(3), self._hpx - px(3))
 
     # --- ttk.Button-compatible surface -------------------------------
@@ -305,6 +307,7 @@ class HaloSlider(tk.Canvas):
         self._state = NORMAL
         self._dragging = False
         self._hover = False
+        self._press_callbacks = []
 
         h = px(theme.SLIDER_H)
         super().__init__(parent, width=length, height=h, highlightthickness=0, bd=0, bg=behind)
@@ -397,9 +400,20 @@ class HaloSlider(tk.Canvas):
             if self._command is not None:
                 self._command(f"{value}")
 
+    def bind_press(self, callback):
+        """Fire callback the instant a drag press begins, BEFORE the value
+        jumps to the click position — lets a caller snapshot the pre-press
+        value (e.g. the L3 undo capture)."""
+        self._press_callbacks.append(callback)
+
     def _on_press(self, event):
         if self._state != NORMAL:
             return
+        for cb in self._press_callbacks:
+            try:
+                cb()
+            except Exception:
+                pass
         self._dragging = True
         self._apply_drag(event.x)
 
@@ -427,7 +441,7 @@ class HaloEntry(tk.Frame):
             bg=theme.ENTRY_FILL,
             fg=theme.TEXT_BRIGHT,
             insertbackground=theme.ACCENT,
-            disabledbackground="#0B1B2C",
+            disabledbackground=theme.DISABLED_FILL,
             disabledforeground=theme.TEXT_DIM,
             relief=tk.FLAT,
             highlightthickness=0,
@@ -493,9 +507,9 @@ class HaloSegmented(tk.Frame):
         for label in self._buttons:
             active = label.cget("text") == selected
             if self._state == DISABLED:
-                label.configure(bg="#0B1B2C", fg=theme.TEXT_DIM)
+                label.configure(bg=theme.DISABLED_FILL, fg=theme.TEXT_DIM)
             elif active:
-                label.configure(bg=theme.SELECT_FILL, fg=theme.TEXT_BRIGHT)
+                label.configure(bg=theme.SELECT_FILL, fg=theme.SELECT_TEXT)
             else:
                 label.configure(bg=theme.ENTRY_FILL, fg=theme.TEXT)
 
@@ -656,16 +670,22 @@ class HaloMenuItem(tk.Canvas):
     def _redraw(self):
         self.delete("all")
         if self._hover:
-            self.create_rectangle(0, px(4), self._wpx, self._hpx - px(4),
-                                  fill=theme.SELECT_FILL, width=0)
-            self.create_rectangle(0, px(4), px(4), self._hpx - px(4),
-                                  fill=theme.ACCENT, width=0)
-            draw_corner_brackets(self, px(2), px(4), self._wpx - px(3), self._hpx - px(5))
+            if theme.MENU_SELECT_STYLE == "reach":
+                # Silver band fading out to the right (the Reach main menu).
+                self.create_image(0, 0, anchor="nw", image=skin.get_skin().get(
+                    "menu_band", w=self._wpx, h=self._hpx, behind=self.behind))
+            else:
+                self.create_rectangle(0, px(4), self._wpx, self._hpx - px(4),
+                                      fill=theme.SELECT_FILL, width=0)
+                self.create_rectangle(0, px(4), px(4), self._hpx - px(4),
+                                      fill=theme.ACCENT, width=0)
+                if theme.HOVER_BRACKETS:
+                    draw_corner_brackets(self, px(2), px(4), self._wpx - px(3), self._hpx - px(5))
 
         if self._state == DISABLED:
             color = theme.TEXT_DIM
         else:
-            color = theme.TEXT_BRIGHT if self._hover else theme.TEXT
+            color = theme.SELECT_TEXT if self._hover else theme.TEXT
         self.create_text(px(24), self._hpx // 2, text=self._text, font=theme.font_menu(),
                          fill=color, anchor="w")
 
@@ -750,7 +770,7 @@ def make_log(parent, behind=theme.PANEL_FILL) -> tuple[tk.Frame, tk.Text]:
         fg=theme.TEXT,
         insertbackground=theme.ACCENT,
         selectbackground=theme.SELECT_FILL,
-        selectforeground=theme.TEXT_BRIGHT,
+        selectforeground=theme.SELECT_TEXT,
         font=theme.font_mono(12),
         relief=tk.FLAT,
         borderwidth=0,

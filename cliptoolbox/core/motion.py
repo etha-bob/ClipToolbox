@@ -186,6 +186,15 @@ def fit_size(src_w: int, src_h: int, box_w: int, box_h: int) -> tuple[int, int]:
     return even_floor(int(src_w * scale)), even_floor(int(src_h * scale))
 
 
+def cap_size(src_w: int, src_h: int, box_w: int, box_h: int) -> tuple[int, int]:
+    """Like fit_size but never upscales: src dims scaled DOWN to fit the box,
+    or left as-is when already smaller. Matches the compressed export's
+    scale=min(box,iw) cap, so building a motion chain at this size and then
+    running that cap is a no-op instead of a second resample."""
+    scale = min(1.0, box_w / src_w, box_h / src_h)
+    return even_floor(int(src_w * scale)), even_floor(int(src_h * scale))
+
+
 def clamp_rect(
     x: float,
     y: float,
@@ -220,6 +229,52 @@ def _int_rect(
 # ============================================================
 # ffmpeg expression / chain builders
 # ============================================================
+
+# Per-side ceiling for the animated-zoom scale filter's intermediate frame.
+# The tier-3 chain scales the whole frame up by out_dim/crop_dim before
+# cropping, so a heavily zoomed rect (crop 234px on a 3840px source at 4K
+# output) asks scale for a ~63000px-wide frame — ffmpeg rejects anything
+# past ~INT_MAX pixels ("Picture size ... is invalid") and OOMs trying to
+# allocate it. 32000 keeps each side inside ffmpeg's dimension limit and the
+# worst-case area (~1.0 Gpx) under INT_MAX, while still allowing ~16x zoom at
+# a 1080p export target — see _clamp_export_zoom.
+MAX_SCALE_DIM = 32000
+
+
+def _clamp_export_zoom(
+    keyframes: tuple[CropKeyframe, ...],
+    src_w: int,
+    src_h: int,
+    out_w: int,
+    out_h: int,
+    max_dim: int = MAX_SCALE_DIM,
+) -> tuple[CropKeyframe, ...]:
+    """Bump up any crop rect that would make the animated-size scale filter
+    exceed max_dim on a side, re-centred and clamped inside the source.
+
+    The intermediate frame is (out_w*src_w/pw) x (out_h*src_h/ph); holding
+    each side <= max_dim means pw >= out_w*src_w/max_dim and likewise ph, so
+    that's the per-keyframe minimum. Enforced per dimension (not on area) so
+    a thin rect can't sneak a tiny width past an adequate area. Rects at a
+    sane zoom are untouched; only over-zoom (or a stray near-degenerate
+    keyframe) is nudged, trading a hair of zoom for an export that runs."""
+    min_w = min(float(src_w), out_w * src_w / max_dim)
+    min_h = min(float(src_h), out_h * src_h / max_dim)
+    if min_w <= 1.0 and min_h <= 1.0:
+        return keyframes
+    adjusted = []
+    for kf in keyframes:
+        w = min(float(src_w), max(kf.w, min_w))
+        h = min(float(src_h), max(kf.h, min_h))
+        if w == kf.w and h == kf.h:
+            adjusted.append(kf)
+            continue
+        cx, cy = kf.x + kf.w / 2, kf.y + kf.h / 2
+        x = min(max(0.0, cx - w / 2), src_w - w)
+        y = min(max(0.0, cy - h / 2), src_h - h)
+        adjusted.append(CropKeyframe(kf.t, x, y, w, h, kf.rot))
+    return tuple(adjusted)
+
 
 def _fmt(value: float) -> str:
     return f"{value:.4f}"
@@ -303,22 +358,33 @@ def build_motion_chain(
         return f"crop={w}:{h}:{x}:{y},scale={out_w}:{out_h}"
 
     times = [kf.t for kf in keyframes]
-    px = piecewise_expr(times, [kf.x for kf in keyframes], time_offset)
-    py = piecewise_expr(times, [kf.y for kf in keyframes], time_offset)
 
     if not track.has_size_animation():
         # Constant crop size, animated position: crop x/y evaluate per frame.
+        # crop-then-scale, so the intermediate never exceeds the source — no
+        # zoom clamp needed here.
+        px = piecewise_expr(times, [kf.x for kf in keyframes], time_offset)
+        py = piecewise_expr(times, [kf.y for kf in keyframes], time_offset)
         _, _, w, h = _int_rect(keyframes[0].rect(), src_w, src_h)
         return f"crop={w}:{h}:x='{px}':y='{py}',scale={out_w}:{out_h}"
 
     # Animated size: per-frame scale so the rect always maps onto a
-    # constant-size crop window. Crop's x/y are derived analytically from the
-    # scale factor (out_w*px/pw) rather than from iw/ih, because crop freezes
-    # in_w/in_h at configuration time and does not refresh them when scale's
-    # eval=frame changes the frame size mid-stream -- reading iw there lands
-    # the window in the wrong place for any nonzero pan (verified by
-    # tools/spike_motion.py). The analytic form leaves at most a 1 px slack
-    # from scale's integer rounding, which crop clamps into range.
+    # constant-size crop window. This scales the WHOLE frame up before
+    # cropping, so guard against an over-zoomed rect blowing the intermediate
+    # past ffmpeg's limits (see _clamp_export_zoom / MAX_SCALE_DIM). Every
+    # expression below derives from the clamped set so positions stay
+    # consistent with the adjusted sizes.
+    keyframes = _clamp_export_zoom(keyframes, src_w, src_h, out_w, out_h)
+    times = [kf.t for kf in keyframes]
+    px = piecewise_expr(times, [kf.x for kf in keyframes], time_offset)
+    py = piecewise_expr(times, [kf.y for kf in keyframes], time_offset)
+    # Crop's x/y are derived analytically from the scale factor (out_w*px/pw)
+    # rather than from iw/ih, because crop freezes in_w/in_h at configuration
+    # time and does not refresh them when scale's eval=frame changes the frame
+    # size mid-stream -- reading iw there lands the window in the wrong place
+    # for any nonzero pan (verified by tools/spike_motion.py). The analytic
+    # form leaves at most a 1 px slack from scale's integer rounding, which
+    # crop clamps into range.
     pw = piecewise_expr(times, [kf.w for kf in keyframes], time_offset)
     ph = piecewise_expr(times, [kf.h for kf in keyframes], time_offset)
     flags = f":flags={scale_flags}" if scale_flags else ""

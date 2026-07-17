@@ -46,9 +46,15 @@ To enable it:
 
 `ClipToolbox.spec` bundles the `mpv\` folder automatically **only if it exists** at build time, so builds without mpv still succeed. To rip mpv out entirely, delete `cliptoolbox\core\playback_mpv.py`, `cliptoolbox\core\mpv_ipc.py`, and `tools\spike_mpv.py`, then remove the mpv branch from `cliptoolbox\core\engine_factory.py` — nothing else imports them.
 
+## Interface skins
+
+The UI reads all colors, geometry, and style switches from `cliptoolbox\ui\theme.py`, which resolves one skin module from `cliptoolbox\ui\skins\` at import time: the `CLIPTOOLBOX_SKIN` environment variable wins, then `ui_skin` in `config.json` (set from Settings → Interface), then the Halo 2 default. The choice is fixed for the process — rendered chrome is cached — which is why skin changes apply on the next launch.
+
+To add a skin: copy `cliptoolbox\ui\skins\halo2.py` (it is the token schema of record — missing a token fails loudly at startup), adjust the values, and register the module in `cliptoolbox\ui\skins\__init__.py`. The Settings selector picks it up from the registry automatically. The Reach skin prefers the system Bahnschrift typeface and silently falls back to the bundled Rajdhani when it is missing, so nothing extra is bundled.
+
 Development extras:
 
-- `python -m cliptoolbox.ui.gallery` shows every themed widget/state for UI work.
+- `python -m cliptoolbox.ui.gallery` shows every themed widget/state for UI work; `--skin reach` (or any registered id) previews a skin regardless of `config.json`.
 - `python tools\dump_commands.py` prints the exact FFmpeg commands the core produces for fixed inputs — run before/after refactors to prove the trim/compression logic is unchanged.
 - Core logic (`cliptoolbox\core\`) never imports tkinter; UI changes should leave it untouched in diffs.
 - `cliptoolbox\core\playback.py` owns the preview pipeline (FFmpeg → pre-scaled rawvideo/PCM over a NUT pipe → embedded FFplay). Pause/resume post FFplay's own pause key; track volumes go through FFmpeg runtime filter commands on stdin. Two hard-won rules: never suspend the FFplay process (a suspended window freezes Tk on the next activation/z-order change), and never show the SDL window before `SetParent` (that is the white-flash race).

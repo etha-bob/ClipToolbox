@@ -56,6 +56,15 @@ def set_toast_offset(pixels: int):
     _toast_margin_bottom = pixels
 
 
+def a_modal_is_open() -> bool:
+    """True while a Halo dialog (info/error/confirm) is grabbing input.
+
+    Lets callers avoid stacking another overlay (e.g. the command palette)
+    on top of a modal. Settings uses its own grab, which already blocks
+    root key bindings, so it needs no separate flag here."""
+    return _open_dialog is not None
+
+
 # ----------------------------------------------------------------------
 # Dialogs
 # ----------------------------------------------------------------------
@@ -86,13 +95,13 @@ class _DialogWindow:
 
         accent = _KIND_COLORS.get(kind, theme.ACCENT)
 
-        strip = tk.Frame(card, bg=theme.SELECT_FILL)
+        strip = tk.Frame(card, bg=theme.TITLE_FILL)
         strip.pack(fill=tk.X)
         tk.Frame(strip, bg=accent, width=px(4)).pack(side=tk.LEFT, fill=tk.Y)
         tk.Label(strip, text=_KIND_TAGS.get(kind, "NOTICE"), font=theme.font_title(12),
-                 bg=theme.SELECT_FILL, fg=accent).pack(side=tk.LEFT, padx=(px(10), px(6)), pady=px(5))
+                 bg=theme.TITLE_FILL, fg=accent).pack(side=tk.LEFT, padx=(px(10), px(6)), pady=px(5))
         tk.Label(strip, text=title.upper(), font=theme.font_title(13),
-                 bg=theme.SELECT_FILL, fg=theme.TEXT_BRIGHT).pack(side=tk.LEFT, pady=px(5))
+                 bg=theme.TITLE_FILL, fg=theme.TITLE_TEXT).pack(side=tk.LEFT, pady=px(5))
 
         body = tk.Label(card, text=message, font=theme.font_body(),
                         bg=theme.PANEL_FILL, fg=theme.TEXT, justify=tk.LEFT,
@@ -206,7 +215,7 @@ def askyesno(title, message) -> bool:
 
 
 def toast(title, message=None, kind="info", action_label=None, action=None,
-          duration_ms=6000):
+          duration_ms=6000, tag=None):
     if _root is None:
         return
 
@@ -214,6 +223,9 @@ def toast(title, message=None, kind="info", action_label=None, action=None,
 
     frame = tk.Frame(_root, bg=theme.PANEL_FILL_HI,
                      highlightthickness=1, highlightbackground=theme.PANEL_BORDER)
+    # Optional grouping label so callers can supersede their own stale toasts
+    # (e.g. a new export dismissing a lingering "Export complete").
+    frame._toast_tag = tag
     tk.Frame(frame, bg=accent, width=px(4)).pack(side=tk.LEFT, fill=tk.Y)
 
     content = tk.Frame(frame, bg=theme.PANEL_FILL_HI)
@@ -252,6 +264,13 @@ def toast(title, message=None, kind="info", action_label=None, action=None,
 
     if duration_ms:
         frame.after(duration_ms, lambda: _dismiss(frame))
+
+
+def dismiss_tagged(tag):
+    """Dismiss every live toast created with this tag. Safe on the Tk thread."""
+    for frame in list(_toasts):
+        if getattr(frame, "_toast_tag", None) == tag:
+            _dismiss(frame)
 
 
 def _dismiss(frame):

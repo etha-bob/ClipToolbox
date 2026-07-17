@@ -110,6 +110,7 @@ def main():
 
     dump_motion()
     dump_mpv()
+    dump_silent()
 
 
 def dump_mpv():
@@ -129,6 +130,27 @@ def dump_mpv():
     )
     cmd = playback_mpv.build_mpv_cmd("{MPV}", 123456, r"\\.\pipe\cliptoolbox-mpv-0-1")
     dump("mpv spawn cmd (wid 123456)", cmd)
+
+
+def dump_silent():
+    """Silent-video (L1) export builders: an empty filter_complex (no audio
+    graph) drops the [aout] map and encodes -an. Appended so the output above
+    stays byte-identical (every case above passes a real audio filter)."""
+    dump(
+        "SILENT standard export, stream-copy, trim 5->20, mp4 (-an)",
+        mask(commands.build_standard_export_command(INPUT, "", OUTPUT_MP4, 5.0, 20.0)),
+    )
+    static = make_track((0.0, 100.0, 50.0, 1280.0, 720.0))
+    crop_vf = motion.build_motion_chain(static, 1920, 1080, 1920, 1080) + ",setsar=1"
+    dump(
+        "SILENT standard export + crop video_filter, no trim, mp4 (NVENC, -an)",
+        mask(commands.build_standard_export_command(INPUT, "", OUTPUT_MP4, None, None, crop_vf)),
+    )
+    prefilter = motion.build_motion_chain(static, 1920, 1080, 1280, 720)
+    ccmd, *_ = commands.build_compressed_export_command(
+        INPUT, "", OUTPUT_MP4, 4.2, 11.8, 9.99, 7.6, "720p", prefilter
+    )
+    dump("SILENT compressed export + crop prefilter, 9.99 MB @720p, mp4 (-an)", mask(ccmd))
 
 
 def make_track(*keyframes: tuple) -> motion.CropTrack:

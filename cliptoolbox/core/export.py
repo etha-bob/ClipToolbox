@@ -31,6 +31,8 @@ class ExportCallbacks(Protocol):
 
     def on_status(self, text: str) -> None: ...
 
+    def on_progress(self, percent: int, attempt: int, attempts_max: int) -> None: ...
+
     def on_log(self, text: str) -> None: ...
 
     def on_seek_to(self, seconds: float) -> None: ...
@@ -49,6 +51,8 @@ def run_export_command(
     total_duration_seconds: float | None,
     callbacks: ExportCallbacks,
     register_process: Callable[[subprocess.Popen | None], None],
+    attempt: int = 1,
+    attempts_max: int = 1,
 ) -> tuple[int, str]:
     export_process = subprocess.Popen(
         cmd,
@@ -60,6 +64,10 @@ def run_export_command(
     register_process(export_process)
 
     last_percentage = -1
+    # Honest per-attempt display: each attempt visibly resets to 0 (the
+    # tuner can't know how many attempts it will take, so a global 0..100
+    # would be a lie — as would an ETA).
+    callbacks.on_progress(0, attempt, attempts_max)
 
     if export_process.stdout:
         for line in export_process.stdout:
@@ -75,6 +83,7 @@ def run_export_command(
                     if percentage != last_percentage:
                         last_percentage = percentage
                         callbacks.on_status(f"{progress_label} {percentage}%")
+                        callbacks.on_progress(percentage, attempt, attempts_max)
                 except Exception:
                     pass
 
@@ -122,12 +131,14 @@ def run_export_job(
                 video_filter,
             )
 
+            # Silent-video support (L1): no audio graph means a video-only file.
+            audio_note = "AAC mixed audio" if filter_complex else "no audio (silent)"
             if video_filter:
                 callbacks.on_log(
-                    "Starting standard export: crop/zoom re-encode (NVENC quality) + AAC mixed audio."
+                    f"Starting standard export: crop/zoom re-encode (NVENC quality) + {audio_note}."
                 )
             else:
-                callbacks.on_log("Starting standard export: video copy + AAC mixed audio.")
+                callbacks.on_log(f"Starting standard export: video copy + {audio_note}.")
             return_code, stderr_text = run_export_command(
                 cmd,
                 progress_duration,
@@ -135,6 +146,8 @@ def run_export_job(
                 total_duration_seconds,
                 callbacks,
                 register_process,
+                attempt=1,
+                attempts_max=1,
             )
 
             if return_code != 0:
@@ -230,6 +243,8 @@ def run_export_job(
                     total_duration_seconds,
                     callbacks,
                     register_process,
+                    attempt=attempt,
+                    attempts_max=COMPRESSION_MAX_ATTEMPTS,
                 )
 
                 if is_cancelled():

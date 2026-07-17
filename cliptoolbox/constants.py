@@ -28,7 +28,7 @@ WINDOW_AUTO_HEIGHT_BASE = 760
 # Height scale lets you fine-tune the preview box aspect ratio.
 # 1.05 means 5% taller than strict 16:9.
 PREVIEW_WIDTH_INSET = 64
-PREVIEW_HEIGHT_SCALE = 1.042
+PREVIEW_HEIGHT_SCALE = 0.965  # B1: reclaim pure letterbox for the timeline strip
 
 # These can also limit how narrow the app feels. Lower them only if the
 # audio slider area is forcing the window wider than you want.
@@ -55,6 +55,16 @@ COMPRESSION_TARGET_FILL_RATIO = 0.995
 COMPRESSION_BUDGET_EPSILON_MB = 0.05
 COMPRESSION_DEFAULT_AUDIO_KBPS = 64
 DEFAULT_COMPRESSION_RESOLUTION = "1080p"
+
+# Export drawer (B4): default output name pattern. Tokens resolve in
+# core/jobs.py; this default reproduces the pre-drawer save-dialog name.
+DEFAULT_EXPORT_NAME_PATTERN = "{clip}_mixed_audio{trim}{crop}{stamp}{size}{res}"
+EXPORT_HISTORY_LIMIT = 20
+
+# Timestamp watermark: pulls the recording time out of the source filename and
+# burns it bottom-left, fading out after a chosen visible duration.
+DEFAULT_TIMESTAMP_WATERMARK_DURATION_MS = 3000
+TIMESTAMP_WATERMARK_FADE_MS = 500
 
 # Keyframed crop/zoom ("pan/crop"). A crop transform forces a video
 # re-encode (the standard export path is otherwise stream-copy), so the

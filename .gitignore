@@ -12,3 +12,5 @@ mpv/*.exe
 
 # Per-user app state
 config.json
+sessions.json
+jobs.json

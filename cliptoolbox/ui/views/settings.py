@@ -1,9 +1,11 @@
 """Settings overlay — a modal Halo card over whichever screen is active."""
 import tkinter as tk
+from datetime import datetime
 
 from cliptoolbox.core import engine_factory
+from cliptoolbox.core import filters as core_filters
 from cliptoolbox.core.paths import FFMPEG_BIN_DIR, OUTPUTS_DIR, reveal_file
-from cliptoolbox.ui import theme, widgets
+from cliptoolbox.ui import dialogs, fonts, skins, theme, widgets
 from cliptoolbox.ui.theme import px
 from cliptoolbox.ui.views.shell import UI_VERSION
 
@@ -29,18 +31,39 @@ class SettingsOverlay:
         card = tk.Frame(self.card_win, bg=theme.PANEL_FILL)
         card.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
 
-        strip = tk.Frame(card, bg=theme.SELECT_FILL)
+        strip = tk.Frame(card, bg=theme.TITLE_FILL)
         strip.pack(fill=tk.X)
         tk.Frame(strip, bg=theme.ACCENT, width=px(4)).pack(side=tk.LEFT, fill=tk.Y)
         tk.Label(strip, text="SETTINGS", font=theme.font_title(14),
-                 bg=theme.SELECT_FILL, fg=theme.TEXT_BRIGHT).pack(side=tk.LEFT, padx=px(10), pady=px(6))
+                 bg=theme.TITLE_FILL, fg=theme.TITLE_TEXT).pack(side=tk.LEFT, padx=px(10), pady=px(6))
 
         body = tk.Frame(card, bg=theme.PANEL_FILL)
-        body.pack(fill=tk.BOTH, expand=True, padx=px(20), pady=px(14))
+        body.pack(fill=tk.BOTH, expand=True, padx=px(20), pady=px(10))
 
         def section(text):
             tk.Label(body, text=text.upper(), font=theme.font_title(12),
-                     bg=theme.PANEL_FILL, fg=theme.ACCENT, anchor="w").pack(fill=tk.X, pady=(px(10), px(2)))
+                     bg=theme.PANEL_FILL, fg=theme.ACCENT, anchor="w").pack(fill=tk.X, pady=(px(6), px(2)))
+
+        # --- interface ---------------------------------------------------
+        section("Interface")
+        skin_row = tk.Frame(body, bg=theme.PANEL_FILL)
+        skin_row.pack(fill=tk.X)
+        tk.Label(skin_row, text="Skin", font=theme.font_body(),
+                 bg=theme.PANEL_FILL, fg=theme.TEXT).pack(side=tk.LEFT)
+        # id <-> segmented label, driven by the registry so new skins appear
+        # here without touching this view.
+        self._skin_labels = {sid: label.upper() for sid, label in skins.available()}
+        self._skin_ids = {label: sid for sid, label in self._skin_labels.items()}
+        current = skins.normalize(app.settings.ui_skin)
+        self.skin_var = tk.StringVar(value=self._skin_labels[current])
+        widgets.HaloSegmented(
+            skin_row, list(self._skin_labels.values()), self.skin_var,
+            behind=theme.PANEL_FILL,
+        ).pack(side=tk.LEFT, padx=(px(12), 0))
+        tk.Label(body, text="Skin changes apply the next time ClipToolbox starts.",
+                 font=theme.font_small(), bg=theme.PANEL_FILL, fg=theme.TEXT_DIM,
+                 anchor="w", wraplength=self._card_w - px(48),
+                 justify=tk.LEFT).pack(fill=tk.X, pady=(px(2), 0))
 
         # --- window ------------------------------------------------------
         section("Window")
@@ -48,6 +71,12 @@ class SettingsOverlay:
         widgets.HaloCheckbox(
             body, text="Remember window size and position",
             variable=self.remember_var, behind=theme.PANEL_FILL,
+        ).pack(anchor="w")
+
+        self.flash_var = tk.BooleanVar(value=app.settings.notify_flash_taskbar)
+        widgets.HaloCheckbox(
+            body, text="Flash the taskbar when exports finish in background",
+            variable=self.flash_var, behind=theme.PANEL_FILL,
         ).pack(anchor="w")
 
         # --- playback ----------------------------------------------------
@@ -101,6 +130,58 @@ class SettingsOverlay:
                      anchor="w", wraplength=self._card_w - px(48),
                      justify=tk.LEFT).pack(fill=tk.X, pady=(px(2), 0))
 
+        # --- timestamp watermark (M11) -------------------------------------
+        section("Timestamp watermark")
+        self._wm_sample = datetime(2025, 4, 6, 2, 6, 50)
+        self._wm_source_ids = {"FILENAME TIME": "parsed", "FILE DATE": "created",
+                               "FILENAME": "filename"}
+        wm_source_labels = {v: k for k, v in self._wm_source_ids.items()}
+        src_row = tk.Frame(body, bg=theme.PANEL_FILL)
+        src_row.pack(fill=tk.X)
+        tk.Label(src_row, text="Text", font=theme.font_body(),
+                 bg=theme.PANEL_FILL, fg=theme.TEXT).pack(side=tk.LEFT)
+        self.wm_source_var = tk.StringVar(value=wm_source_labels.get(
+            app.settings.watermark_source, "FILENAME TIME"))
+        widgets.HaloSegmented(
+            src_row, list(self._wm_source_ids), self.wm_source_var,
+            behind=theme.PANEL_FILL,
+        ).pack(side=tk.LEFT, padx=(px(12), 0))
+
+        # Date-format options label themselves with a concrete example date,
+        # generated from the presets (via the same helper the export path
+        # uses) so new formats appear automatically and never drift from
+        # what actually gets burned in.
+        self._wm_fmt_ids = {
+            core_filters.watermark_date_part(self._wm_sample, fmt_id): fmt_id
+            for fmt_id in core_filters.WATERMARK_DATE_FORMATS
+        }
+        self.wm_fmt_var = tk.StringVar(value=core_filters.watermark_date_part(
+            self._wm_sample, app.settings.watermark_date_format))
+        fmt_row = tk.Frame(body, bg=theme.PANEL_FILL)
+        fmt_row.pack(fill=tk.X, pady=(px(4), 0))
+        tk.Label(fmt_row, text="Date", font=theme.font_body(),
+                 bg=theme.PANEL_FILL, fg=theme.TEXT).pack(side=tk.LEFT)
+        self.wm_fmt_seg = widgets.HaloSegmented(
+            fmt_row, list(self._wm_fmt_ids), self.wm_fmt_var,
+            behind=theme.PANEL_FILL)
+        self.wm_fmt_seg.pack(side=tk.LEFT, padx=(px(12), 0))
+
+        self.wm_time_var = tk.BooleanVar(value=app.settings.watermark_include_time)
+        self.wm_time_check = widgets.HaloCheckbox(
+            body, text="Include the time of day (02:06:50)",
+            variable=self.wm_time_var, behind=theme.PANEL_FILL)
+        self.wm_time_check.pack(anchor="w", pady=(px(2), 0))
+
+        self._wm_preview = tk.Label(
+            body, font=theme.font_small(), bg=theme.PANEL_FILL,
+            fg=theme.TEXT_DIM, anchor="w", wraplength=self._card_w - px(48),
+            justify=tk.LEFT)
+        self._wm_preview.pack(fill=tk.X, pady=(px(2), 0))
+        self.wm_source_var.trace_add("write", lambda *_: self._update_wm_preview())
+        self.wm_fmt_var.trace_add("write", lambda *_: self._update_wm_preview())
+        self.wm_time_var.trace_add("write", lambda *_: self._update_wm_preview())
+        self._update_wm_preview()
+
         # --- library -----------------------------------------------------
         section("Library")
         row = tk.Frame(body, bg=theme.PANEL_FILL)
@@ -110,18 +191,20 @@ class SettingsOverlay:
             height=px(26), font=theme.font_small(12),
             command=self._open_outputs,
         ).pack(side=tk.LEFT)
-        widgets.HaloButton(
+        self._clear_recents_btn = widgets.HaloButton(
             row, text="CLEAR RECENT CLIPS", behind=theme.PANEL_FILL,
             height=px(26), font=theme.font_small(12), variant="danger",
             command=self._clear_recents,
-        ).pack(side=tk.LEFT, padx=(px(8), 0))
+        )
+        self._clear_recents_btn.pack(side=tk.LEFT, padx=(px(8), 0))
+        self._cleared_recents_backup = None
 
         # --- about -------------------------------------------------------
         section("About")
         for line in (
-            f"ClipToolbox v{UI_VERSION} — Halo 2 interface",
+            f"ClipToolbox v{UI_VERSION} — {theme.SKIN_LABEL} interface · "
+            f"{fonts.describe()} · rendered by Pillow",
             f"FFmpeg folder: {FFMPEG_BIN_DIR}",
-            "Font: Rajdhani (OFL) · UI rendered by Pillow",
         ):
             tk.Label(body, text=line, font=theme.font_small(),
                      bg=theme.PANEL_FILL, fg=theme.TEXT_DIM, anchor="w",
@@ -131,10 +214,10 @@ class SettingsOverlay:
         buttons.pack(fill=tk.X, padx=px(20), pady=(0, px(16)))
         widgets.HaloButton(buttons, text="DONE", variant="primary",
                            behind=theme.PANEL_FILL, width=px(110), height=px(30),
-                           command=self.close).pack(side=tk.RIGHT)
+                           command=self.save_and_close).pack(side=tk.RIGHT)
 
-        self.card_win.bind("<Return>", lambda e: self.close())
-        self.card_win.bind("<Escape>", lambda e: self.close())
+        self.card_win.bind("<Return>", lambda e: self.save_and_close())
+        self.card_win.bind("<Escape>", lambda e: self.cancel())
 
         self._configure_bind = root.bind("<Configure>", self._reposition, add="+")
         self._reposition()
@@ -147,15 +230,59 @@ class SettingsOverlay:
             pass
         self.card_win.focus_force()
 
+    def _update_wm_preview(self):
+        """Refresh the watermark example line and grey the date controls
+        when the source is the literal filename."""
+        source = self._wm_source_ids.get(self.wm_source_var.get(), "parsed")
+        state = tk.DISABLED if source == "filename" else tk.NORMAL
+        try:
+            self.wm_fmt_seg.config(state=state)
+            self.wm_time_check.config(state=state)
+        except Exception:
+            pass
+        fmt_id = self._wm_fmt_ids.get(self.wm_fmt_var.get(), "ymd")
+        include = bool(self.wm_time_var.get())
+        path = self.app.video_path
+        try:
+            if path:
+                text = core_filters.resolve_watermark_text(
+                    path, source, fmt_id, include)
+                self._wm_preview.config(text=f"This clip's watermark: {text}")
+            elif source == "filename":
+                self._wm_preview.config(
+                    text="The watermark shows the clip's filename.")
+            else:
+                text = core_filters.format_watermark_datetime(
+                    self._wm_sample, fmt_id, include)
+                self._wm_preview.config(text=f"Example: {text}")
+        except ValueError as exc:
+            self._wm_preview.config(text=str(exc))
+
     def _open_outputs(self):
         OUTPUTS_DIR.mkdir(exist_ok=True)
         reveal_file(str(OUTPUTS_DIR))
 
     def _clear_recents(self):
+        # A toast's UNDO button would be unclickable behind this overlay's grab,
+        # so the button flips to UNDO CLEAR in place instead (roadmap Q5).
+        if not self.app.recent_clips:
+            return
+        self._cleared_recents_backup = list(self.app.recent_clips)
         self.app.recent_clips.clear()
         self.app.save_settings()
-        if hasattr(self.app, "refresh_landing_detail"):
-            self.app.refresh_landing_detail()
+        if hasattr(self.app, "refresh_recents_grid"):
+            self.app.refresh_recents_grid()
+        self._clear_recents_btn.config(text="UNDO CLEAR", command=self._undo_clear_recents)
+
+    def _undo_clear_recents(self):
+        if self._cleared_recents_backup is None:
+            return
+        self.app.recent_clips[:] = self._cleared_recents_backup
+        self._cleared_recents_backup = None
+        self.app.save_settings()
+        if hasattr(self.app, "refresh_recents_grid"):
+            self.app.refresh_recents_grid()
+        self._clear_recents_btn.config(text="CLEAR RECENT CLIPS", command=self._clear_recents)
 
     def _reposition(self, _event=None):
         try:
@@ -171,9 +298,24 @@ class SettingsOverlay:
         except Exception:
             pass
 
-    def close(self):
+    def cancel(self):
+        """Esc: discard every pending choice — nothing here applies until
+        DONE. (The Library buttons act immediately and are not undone.)"""
+        self._teardown()
+
+    def save_and_close(self):
         self.app.settings.remember_geometry = bool(self.remember_var.get())
+        self.app.settings.notify_flash_taskbar = bool(self.flash_var.get())
+        self.app.settings.watermark_source = self._wm_source_ids.get(
+            self.wm_source_var.get(), self.app.settings.watermark_source)
+        self.app.settings.watermark_date_format = self._wm_fmt_ids.get(
+            self.wm_fmt_var.get(), self.app.settings.watermark_date_format)
+        self.app.settings.watermark_include_time = bool(self.wm_time_var.get())
         self.app.auto_preview_after_load = bool(self.autoplay_var.get())
+        selected_skin = self._skin_ids.get(self.skin_var.get(), self.app.settings.ui_skin)
+        skin_changed = selected_skin != skins.normalize(self.app.settings.ui_skin)
+        if skin_changed:
+            self.app.settings.ui_skin = selected_skin
         # Only act on the engine choice when mpv is actually available, so a
         # stored "mpv" preference is preserved even while mpv.exe is missing.
         if self._mpv_available:
@@ -192,6 +334,17 @@ class SettingsOverlay:
                 self.app.apply_mpv_cache_size(cache_mb)
         self.app.save_settings()
 
+        self._teardown()
+
+        if skin_changed:
+            label = dict(skins.available()).get(selected_skin, selected_skin)
+            dialogs.toast(
+                "Skin saved",
+                f"{label} loads the next time ClipToolbox starts.",
+                kind="info",
+            )
+
+    def _teardown(self):
         try:
             self.card_win.grab_release()
         except Exception:

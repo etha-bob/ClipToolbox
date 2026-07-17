@@ -11,6 +11,7 @@ import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from cliptoolbox.constants import DEFAULT_EXPORT_NAME_PATTERN
 from cliptoolbox.core.paths import BASE_DIR
 
 CONFIG_NAME = "config.json"
@@ -32,10 +33,21 @@ class AppSettings:
     compression_target_mb: str = "9.99"
     compression_resolution: str = "1080p"
     auto_preview_after_load: bool = True
+    ui_skin: str = "halo2"  # interface skin: "halo2" (default) or "reach"
     playback_engine: str = "ffplay"  # "ffplay" (default) or "mpv" (optional)
     mpv_cache_mb: int = 100  # RAM demuxer cache for the mpv engine (instant seeks)
+    notify_flash_taskbar: bool = True  # flash the taskbar when exports finish unfocused
     recent_clips: list[str] = field(default_factory=list)
     last_open_dir: str | None = None
+    # Export drawer (B4): output name pattern + destination (None = outputs/).
+    export_name_pattern: str = DEFAULT_EXPORT_NAME_PATTERN
+    export_destination: str | None = None
+    # Coach marks (B6): flipped after the first-run tour is dismissed.
+    coach_marks_seen: bool = False
+    # Timestamp watermark (M11): what the burned-in text shows.
+    watermark_source: str = "parsed"    # "parsed" | "created" | "filename"
+    watermark_date_format: str = "ymd"  # key into filters.WATERMARK_DATE_FORMATS
+    watermark_include_time: bool = True
 
 
 def _candidates() -> list[Path]:

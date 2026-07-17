@@ -1,16 +1,16 @@
 """The workspace screen — ClipToolbox's take on the Halo 2 pregame lobby.
 
 Left column: action buttons (START GAME position), preview bezel, timeline,
-transport/trim controls, and the compression quick-options card. Right
-column: the audio-track roster (styled like the lobby player list) and the
-activity log (the lobby chat box position).
+transport/trim controls, and the pinned EXPORT row. Right column: the
+audio-track roster (styled like the lobby player list) and the activity log
+(the lobby chat box position). Export options live in the drawer (B4).
 
 This module only builds widgets and assigns them onto the app object under
 the attribute names the ported state machine expects.
 """
 import tkinter as tk
 
-from cliptoolbox.constants import COMPRESSION_RESOLUTION_PRESETS, PREVIEW_HEIGHT
+from cliptoolbox.constants import PREVIEW_HEIGHT
 from cliptoolbox.ui import theme
 from cliptoolbox.ui.cropbox import CropBoxCanvas
 from cliptoolbox.ui.seekbar import HaloSeekbar
@@ -21,16 +21,15 @@ from cliptoolbox.ui.widgets import (
     HaloEntry,
     HaloPanel,
     HaloScrollbar,
-    HaloSegmented,
     Tooltip,
     make_log,
 )
 
-PREVIEW_BEZEL_FILL = "#0A1626"
+PLACEHOLDER_DEFAULT = "Load a video, choose tracks, then click Preview."
 
 
 def build(app):
-    # Screens stack in the container; show_landing/show_workspace lift them.
+    # Screens stack in the container; show_empty_state/show_editor lift them.
     app.workspace_frame = tk.Frame(app.screen_container, bg=theme.BG_DEEP)
     app.workspace_frame.place(x=0, y=0, relwidth=1.0, relheight=1.0)
 
@@ -48,39 +47,43 @@ def build(app):
     right.columnconfigure(0, weight=1)
     right.rowconfigure(1, weight=1)
 
+    # Focus/HUD mode (B5) collapses the chrome around the preview and needs
+    # handles on the containers it hides/regrows.
+    app.workspace_grid = frame
+    app.workspace_left = left
+    app.workspace_right = right
+
     # ------------------------------------------------------------------
-    # Left: actions (START GAME homage)
+    # Left: EXPORT — the terminal action, pinned to the bottom of the
+    # column right under the compression settings it depends on. Packed
+    # FIRST: pack gives earlier slaves their space first, so when the
+    # column overflows a short window the middle content clips instead
+    # of the export button silently vanishing.
     # ------------------------------------------------------------------
-    actions = tk.Frame(left, bg=theme.BG_DEEP)
-    actions.pack(fill=tk.X, pady=(0, px(8)))
+    export_row = tk.Frame(left, bg=theme.BG_DEEP)
+    export_row.pack(side=tk.BOTTOM, fill=tk.X, pady=(px(12), 0))
+    app.export_row = export_row  # hidden in focus mode
 
     app.export_button = HaloButton(
-        actions, text="EXPORT CLIP", variant="primary",
-        command=app.export_video_dialog, width=px(190),
+        export_row, text="EXPORT CLIP", variant="primary",
+        command=app.toggle_export_drawer, width=px(200),
     )
     app.export_button.pack(side=tk.LEFT)
+    Tooltip(app.export_button, "Open the export drawer (Ctrl+E)")
 
     app.stop_export_button = HaloButton(
-        actions, text="CANCEL EXPORT", variant="danger",
+        export_row, text="CANCEL EXPORT", variant="danger",
         command=app.cancel_export, height=px(theme.BTN_PRIMARY_H),
     )
-    # Packed by update_export_actions() only while an export runs.
-
-    app.back_button = HaloButton(
-        actions, text="◂ MENU", command=app.show_landing,
-    )
-    app.back_button.pack(side=tk.RIGHT)
-
-    app.load_button = HaloButton(
-        actions, text="LOAD CLIP", command=app.load_video_dialog,
-    )
-    app.load_button.pack(side=tk.RIGHT, padx=(0, px(8)))
+    # Packed beside EXPORT by update_export_actions() only while exporting.
 
     # ------------------------------------------------------------------
     # Left: preview bezel with the real embed target frame
+    # (LOAD/EXPORT/CANCEL live in the shell's command strip since B2.)
     # ------------------------------------------------------------------
-    bezel = HaloPanel(left, fill=PREVIEW_BEZEL_FILL, border=theme.PANEL_BORDER, pad=px(8))
+    bezel = HaloPanel(left, fill=theme.WELL_FILL, border=theme.PANEL_BORDER, pad=px(8))
     bezel.pack(fill=tk.X)
+    app.preview_bezel = bezel  # regrown to fill the column in focus mode
 
     app.preview_frame = tk.Frame(
         bezel.body, bg="black", height=px(PREVIEW_HEIGHT),
@@ -94,9 +97,7 @@ def build(app):
     app.mpv_host_frame = tk.Frame(app.preview_frame, bg="black")
     app.mpv_host_frame.place(x=0, y=0, relwidth=1.0, relheight=1.0)
 
-    app.preview_placeholder_var = tk.StringVar(
-        value="Load a video, choose tracks, then click Preview."
-    )
+    app.preview_placeholder_var = tk.StringVar(value=PLACEHOLDER_DEFAULT)
     app.preview_placeholder = tk.Label(
         app.preview_frame,
         textvariable=app.preview_placeholder_var,
@@ -123,11 +124,20 @@ def build(app):
 
     app.preview_frame.bind("<Configure>", app.on_preview_frame_resize)
 
+    # Preview mouse gestures (M10): hold = 2x, double-click = focus mode,
+    # right-click = play/pause. The embedded player windows are input-
+    # disabled, so clicks over live video land on these Tk surfaces (the
+    # cropbox stays unbound — the crop editor owns its own clicks).
+    for surface in (app.preview_frame, app.mpv_host_frame,
+                    app.preview_placeholder, app.paused_frame_label):
+        app.bind_preview_gestures(surface)
+
     # ------------------------------------------------------------------
     # Left: timeline
     # ------------------------------------------------------------------
     timeline = tk.Frame(left, bg=theme.BG_DEEP)
-    timeline.pack(fill=tk.X, pady=(px(6), 0))
+    timeline.pack(fill=tk.X, pady=(px(4), 0))
+    app.timeline_row = timeline  # the re-pack anchor when focus mode exits
 
     app.time_left_var = tk.StringVar(value="0:00")
     app.time_right_var = tk.StringVar(value="0:00")
@@ -145,9 +155,11 @@ def build(app):
     app.seekbar.bind_release(app.on_seek_release)
     app.seekbar.bind_trim_change(app.on_trim_bracket_drag)
     app.seekbar.bind_trim_commit(app.on_trim_bracket_commit)
+    app.seekbar.bind_seek_request(app.seek_absolute)
     app.seekbar.bind_keyframe_click(app.on_keyframe_click)
     app.seekbar.bind_keyframe_drag(app.on_keyframe_drag)
     app.seekbar.bind_keyframe_commit(app.on_keyframe_commit)
+    app.seekbar.bind_keyframe_delete(app.on_keyframe_delete)
 
     time_right_label = tk.Label(
         timeline, textvariable=app.time_right_var, font=theme.font_small(),
@@ -228,7 +240,7 @@ def build(app):
         entry.entry.bind("<FocusOut>", lambda e, k=kind: app.commit_trim_entry(k), add="+")
 
     app.clear_trim_button = HaloButton(
-        app.trim_buttons_frame, text="CLEAR", command=app.clear_trim_points,
+        app.trim_buttons_frame, text="CLEAR", command=app.clear_trim_points_action,
         variant="danger", height=px(28), font=theme.font_small(12),
     )
     app.clear_trim_button.pack(side=tk.LEFT, padx=(px(8), 0))
@@ -311,7 +323,8 @@ def build(app):
     # Left: frame snapshot actions
     # ------------------------------------------------------------------
     frame_row = tk.Frame(left, bg=theme.BG_DEEP)
-    frame_row.pack(fill=tk.X, pady=(px(6), 0))
+    frame_row.pack(fill=tk.X, pady=(px(4), 0))
+    app.frame_row = frame_row  # hidden in focus mode
 
     tk.Label(frame_row, text="FRAME", font=theme.font_title(12),
              bg=theme.BG_DEEP, fg=theme.TEXT_DIM).pack(side=tk.LEFT, padx=(0, px(8)))
@@ -334,51 +347,9 @@ def build(app):
     )
     app.frame_copy_button.pack(side=tk.LEFT, padx=(px(6), 0))
 
-    # ------------------------------------------------------------------
-    # Left: compression quick-options card
-    # ------------------------------------------------------------------
-    card = HaloPanel(left, title="Compression")
-    card.pack(fill=tk.X, pady=(px(10), 0))
-
-    comp_row = tk.Frame(card.body, bg=theme.PANEL_FILL)
-    comp_row.pack(fill=tk.X)
-
-    app.compress_checkbox = HaloCheckbox(
-        comp_row, text="COMPRESS TO TARGET SIZE", variable=app.compress_enabled_var,
-        command=app.on_compression_toggle, behind=theme.PANEL_FILL,
-        font=theme.font_body(13),
-    )
-    app.compress_checkbox.pack(side=tk.LEFT)
-
-    app.compression_options_frame = tk.Frame(comp_row, bg=theme.PANEL_FILL)
-    app.compression_options_frame.pack(side=tk.LEFT, padx=(px(10), 0))
-
-    tk.Label(app.compression_options_frame, text="Target:", font=theme.font_small(),
-             bg=theme.PANEL_FILL, fg=theme.TEXT).pack(side=tk.LEFT)
-    app.compression_target_entry = HaloEntry(
-        app.compression_options_frame, textvariable=app.compression_target_var, width=6,
-    )
-    app.compression_target_entry.pack(side=tk.LEFT, padx=(px(6), px(4)))
-    tk.Label(app.compression_options_frame, text="MB", font=theme.font_small(),
-             bg=theme.PANEL_FILL, fg=theme.TEXT_DIM).pack(side=tk.LEFT)
-
-    tk.Label(app.compression_options_frame, text="Max res:", font=theme.font_small(),
-             bg=theme.PANEL_FILL, fg=theme.TEXT).pack(side=tk.LEFT, padx=(px(14), px(4)))
-    app.compression_resolution_combo = HaloSegmented(
-        app.compression_options_frame,
-        list(COMPRESSION_RESOLUTION_PRESETS.keys()),
-        app.compression_resolution_var,
-        command=app.on_compression_resolution_changed,
-    )
-    app.compression_resolution_combo.pack(side=tk.LEFT)
-
-    app.compression_options_frame.pack_forget()
-
-    app.compression_estimate_var = tk.StringVar(value="")
-    tk.Label(card.body, textvariable=app.compression_estimate_var, font=theme.font_small(),
-             bg=theme.PANEL_FILL, fg=theme.TEXT_DIM, anchor="w").pack(fill=tk.X, pady=(px(6), 0))
-
-    app.compression_target_var.trace_add("write", lambda *a: app.update_compression_estimate())
+    # (The compression + timestamp-watermark cards moved into the export
+    # drawer with B4 — they're export-only options, and the move frees
+    # left-column height, the M5 pressure point.)
 
     # ------------------------------------------------------------------
     # Right: audio-track roster (lobby player list)
@@ -458,10 +429,5 @@ def build(app):
         (app.frame_saveas_button, "Save the current frame to a chosen location"),
         (app.frame_copy_button, "Copy the current frame to the clipboard"),
         (app.reset_volumes_button, "Reset every track to 100% and clear mute/solo"),
-        (app.compression_target_entry, "Target size in MB (Windows/Discord MiB)"),
-        (app.compression_resolution_combo, "Cap the compressed video resolution"),
     ):
         Tooltip(widget, tip)
-
-    # Misc compatibility vars.
-    app.dnd_hint_var = tk.StringVar(value="")

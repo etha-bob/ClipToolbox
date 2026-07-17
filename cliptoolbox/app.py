@@ -36,6 +36,8 @@ from cliptoolbox.constants import (
     CREATE_NO_WINDOW,
     DEFAULT_COMPRESSION_RESOLUTION,
     DEFAULT_COMPRESSION_TARGET_MB,
+    DEFAULT_EXPORT_NAME_PATTERN,
+    DEFAULT_TIMESTAMP_WATERMARK_DURATION_MS,
     IS_WINDOWS,
     PREVIEW_HEIGHT,
     PREVIEW_WIDTH,
@@ -45,10 +47,13 @@ from cliptoolbox.constants import (
 from cliptoolbox.core import commands as core_commands
 from cliptoolbox.core import export as core_export
 from cliptoolbox.core import filters as core_filters
+from cliptoolbox.core import jobs as core_jobs
 from cliptoolbox.core import engine_factory
 from cliptoolbox.core import mediainfo as core_mediainfo
 from cliptoolbox.core import playback as core_playback
 from cliptoolbox.core import probe as core_probe
+from cliptoolbox.core import strips as core_strips
+from cliptoolbox.core.render_queue import RenderQueue
 from cliptoolbox.core.paths import (
     FFMPEG,
     FFMPEG_BIN_DIR,
@@ -58,7 +63,13 @@ from cliptoolbox.core.paths import (
     exe_name,
     reveal_file as core_reveal_file,
 )
-from cliptoolbox.core.win32 import assign_process_to_cleanup_job, set_clipboard_dib
+from cliptoolbox.core.win32 import (
+    TaskbarProgress,
+    assign_process_to_cleanup_job,
+    flash_taskbar,
+    is_foreground_process,
+    set_clipboard_dib,
+)
 from cliptoolbox.dnd import DND_AVAILABLE, DND_FILES, TkinterDnD
 from cliptoolbox import settings as app_settings
 from cliptoolbox import sessions as video_sessions
@@ -67,7 +78,11 @@ from cliptoolbox.ui.crop_controller import CropController
 from cliptoolbox.ui.wheel import WheelRouter
 from cliptoolbox.ui import dialogs as messagebox  # ported call sites unchanged
 from cliptoolbox.ui.theme import px
-from cliptoolbox.ui.views import landing, shell, workspace
+from cliptoolbox.ui.views import empty_state, shell, workspace
+from cliptoolbox.ui.views.coach import CoachMarks
+from cliptoolbox.ui.views.drawer import ExportDrawer
+from cliptoolbox.ui.views.hud import FocusHud
+from cliptoolbox.ui.views.palette import CommandPalette
 from cliptoolbox.ui.views.settings import SettingsOverlay
 
 
@@ -108,17 +123,38 @@ class HaloApp:
         self.root.after(15, self._pump_ui_queue)
 
         self.video_path: str | None = None
+        # Each load_video bumps the token; probe results and the auto-preview
+        # timer carry it and are dropped when stale, so closing or replacing
+        # a clip mid-probe can't apply the old clip's results. _probe_done
+        # marks that the current clip's probe finished — persisting a session
+        # before that would capture (and store) a default state.
+        self._load_token = 0
+        self._probe_done = False
         # Saved per-video setup for the clip being loaded; applied in
         # after_probe (and read by add_track_row) once probing finishes.
         self._session_to_restore: dict | None = None
         self.audio_metadata: list[dict] = []
+        # Silent-video support (L1): a clip that probed zero audio streams but
+        # has a decodable video. Drives the video-only preview/export path and
+        # the roster placeholder. Set in after_probe, cleared on reset.
+        self.is_silent = False
         self.track_controls: list[tuple[int, tk.BooleanVar, object]] = []
+        self.timeline_waveforms: list = []  # PIL sources, roster-row order
 
         self.total_duration_seconds: float | None = None
 
         self.trim_enabled_var = tk.BooleanVar(value=False)
         self.trim_start_seconds: float | None = None
         self.trim_end_seconds: float | None = None
+
+        # Single-level undo/redo (L3): one slot holds the "other" edit state
+        # (trim + crop + mix). push_undo() snapshots before a mutation; Ctrl+Z
+        # swaps current<->slot. Cleared on clip change so undo never crosses
+        # clips. _trim_drag_undo guards one capture per bracket-drag gesture.
+        self._undo_slot: dict | None = None
+        self._trim_drag_undo = False
+        self._wheel_undo_armed = False
+        self._wheel_undo_after: str | None = None
 
         self.video_fps: float | None = None
         self.video_dimensions: tuple[int, int] | None = None
@@ -128,6 +164,9 @@ class HaloApp:
         self.preview_muted = False
         self.solo_row: int | None = None
         self.track_state_strips: dict[int, tk.Frame] = {}
+        # Per-row "NN%" label vars — HaloSlider.set() doesn't fire its command,
+        # so bulk resets have to refresh these labels themselves.
+        self.track_volume_labels: dict[int, tk.StringVar] = {}
 
         self.crop_enabled_var = tk.BooleanVar(value=False)
         self.crop = None  # CropController, constructed after build_ui
@@ -137,6 +176,29 @@ class HaloApp:
             value=self.settings.compression_target_mb or f"{DEFAULT_COMPRESSION_TARGET_MB:g}")
         self.compression_resolution_var = tk.StringVar(
             value=self.settings.compression_resolution or DEFAULT_COMPRESSION_RESOLUTION)
+
+        self.timestamp_watermark_enabled_var = tk.BooleanVar(value=False)
+        self.timestamp_watermark_duration_var = tk.StringVar(
+            value=str(DEFAULT_TIMESTAMP_WATERMARK_DURATION_MS))
+        # Per-export watermark text override (M11): CONFIGURED (the Settings
+        # source), CUSTOM (freetext below), or BOTH (stacked, configured on
+        # top). The var holds the segmented control's UPPERCASE display label
+        # (HaloSegmented stores its label verbatim); watermark_text_mode()
+        # normalizes it to the lowercase id the logic keys off. Clip-scoped
+        # like trim/crop — reset on every load so one clip's caption can never
+        # bleed into the next export.
+        self.watermark_mode_var = tk.StringVar(value="CONFIGURED")
+        self.watermark_custom_text_var = tk.StringVar(value="")
+
+        # Export drawer (B4): name pattern + destination, and the persistent
+        # job history (jobs.json). The drawer itself is built in build_ui.
+        self.export_name_pattern_var = tk.StringVar(
+            value=self.settings.export_name_pattern or DEFAULT_EXPORT_NAME_PATTERN)
+        self.export_destination: str | None = self.settings.export_destination
+        self.export_drawer: ExportDrawer | None = None
+        self.job_history = core_jobs.JobHistory()
+        self.export_job: core_jobs.ExportJob | None = None  # the running one
+
         self.volume_log_after_ids: dict[int, str] = {}
 
         self.export_thread: threading.Thread | None = None
@@ -164,6 +226,16 @@ class HaloApp:
 
         self.user_is_seeking = False
         self.is_exporting = False
+        # Taskbar-button progress during exports (L2). No-op off Windows.
+        self.taskbar_progress = TaskbarProgress()
+        self.command_palette = None
+        # Focus/HUD mode (B5): transient view state, never persisted.
+        self.focus_mode = False
+        # Preview mouse gestures (M10): hold-to-2x bookkeeping.
+        self.preview_hold_after_id: str | None = None
+        self.preview_hold_active = False
+        self.preview_hold_was_paused = False
+        self.coach_marks: CoachMarks | None = None
         self.auto_preview_after_load = bool(self.settings.auto_preview_after_load)
         self.preview_width = px(PREVIEW_WIDTH)
         self.preview_height = px(PREVIEW_HEIGHT)
@@ -171,7 +243,10 @@ class HaloApp:
         self.recent_clips: list[str] = list(self.settings.recent_clips)
         self.last_open_dir: str | None = self.settings.last_open_dir
         self.thumbnail_cache: dict = {}  # cache-path -> ImageTk.PhotoImage (ref holder)
-        self.active_screen = "landing"
+        # Bounded worker pool for short-lived media jobs (thumbnails now; the
+        # B1 filmstrip/waveforms and B4 export drawer later). Results marshal
+        # back to the Tk thread via self.ui.
+        self.render_queue = RenderQueue(self.ui)
 
         self.build_ui()
         self.crop = CropController(self)
@@ -183,9 +258,13 @@ class HaloApp:
     # ========================================================
 
     def build_ui(self):
-        self.root.title(f"{APP_NAME} - {APP_VERSION}" if APP_VERSION else APP_NAME)
+        self.update_window_title()
         self.root.configure(bg=theme.BG_DEEP)
-        self.root.geometry(f"{px(1150)}x{px(780)}")
+        # 900: the editor's left column (preview + timeline strip + card +
+        # EXPORT, with trim row + crop toolbar open) requests ~884 logical
+        # px of window; the old 780 clipped the column even without the
+        # toolbars once the B1 timeline landed.
+        self.root.geometry(f"{px(1150)}x{px(900)}")
         self.root.minsize(px(980), px(700))
 
         chrome.apply_dark_titlebar(self.root)
@@ -194,9 +273,11 @@ class HaloApp:
 
         dialogs.attach(self.root)
 
-        shell.build(self)      # header, status strip, legend, screen container
-        workspace.build(self)  # the lobby screen
-        landing.build(self)    # the main-menu screen
+        shell.build(self)        # header, status strip, legend, screen container
+        workspace.build(self)    # the editor
+        empty_state.build(self)  # the no-clip hero (stacked above at start)
+        self.export_drawer = ExportDrawer(self)  # slides over both (B4)
+        self.focus_hud = FocusHud(self)          # focus-mode chips (B5)
 
         self.wheel = WheelRouter(self.root)
         self.wheel.register(self.seekbar, self.on_wheel_seek)
@@ -215,19 +296,24 @@ class HaloApp:
             self.log_text,
             lambda steps, fine: self.log_text.yview_scroll(-steps * 2, "units"),
         )
+        self.wheel.register(
+            self.export_drawer.jobs_canvas,
+            lambda steps, fine: self.export_drawer.scroll_jobs(steps),
+        )
 
         dialogs.set_toast_offset(px(theme.FOOTER_H + 16))
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.bind_shortcuts()
         self.refresh_playback_button_state()
+        self.update_file_strip()
 
         # Restore persisted compression state without the toggle log lines.
         if self.compress_enabled_var.get() and hasattr(self, "compression_options_frame"):
             self.compression_options_frame.pack(side=tk.LEFT, padx=(px(10), 0))
 
         self.update_compression_estimate()
-        self.show_landing()
+        self.show_empty_state()
 
     # ========================================================
     # Settings persistence
@@ -268,28 +354,142 @@ class HaloApp:
         s.auto_preview_after_load = bool(self.auto_preview_after_load)
         s.recent_clips = list(self.recent_clips)
         s.last_open_dir = self.last_open_dir
+        s.export_name_pattern = (
+            self.export_name_pattern_var.get().strip() or DEFAULT_EXPORT_NAME_PATTERN)
+        s.export_destination = self.export_destination
         app_settings.save(s)
 
     def open_settings(self):
         SettingsOverlay(self)
 
+    def toggle_command_palette(self):
+        """Ctrl+K: open the command palette, or close it if already open."""
+        if getattr(self, "command_palette", None) is not None:
+            self.command_palette.close()
+            return "break"
+        # Not while exporting, mid-typing, or over a modal (Settings / dialog).
+        if self.is_exporting or self._typing_in_entry():
+            return "break"
+        if dialogs.a_modal_is_open():
+            return "break"
+        self.command_palette = CommandPalette(self)
+        return "break"
+
     # ========================================================
     # Screen routing
     # ========================================================
 
-    def show_landing(self):
+    def update_window_title(self, clip_name: str | None = None):
+        """Window/taskbar title: the loaded clip's name first, so the taskbar
+        button is identifiable (and the export flash points at something)."""
+        base = f"{APP_NAME} - {APP_VERSION}" if APP_VERSION else APP_NAME
+        self.root.title(f"{clip_name} — {base}" if clip_name else base)
+
+    def show_empty_state(self):
+        """Lift the no-clip hero over the editor. Clip-state resets are
+        reset_clip_state's job; playback is stopped defensively (callers
+        that unload — close_clip — already did)."""
         self.stop_preview()
-        self.landing_frame.lift()
-        self.active_screen = "landing"
+        self.empty_state_frame.lift()
+        if hasattr(self, "refresh_recents_grid"):
+            self.refresh_recents_grid()
+        # An open drawer survives the flip (e.g. a failed probe while it was
+        # up, or clip-less job-history browsing) — keep it above the hero.
+        if self.export_drawer is not None and self.export_drawer.visible:
+            self.export_drawer.frame.lift()
         self.set_status("Ready.")
-        if hasattr(self, "refresh_landing_detail"):
-            self.refresh_landing_detail()
         self.update_legend()
 
-    def show_workspace(self):
+    def show_editor(self):
+        # The recents grid is gone once the editor is up, so any still-pending
+        # thumbnail extractions are wasted work — drop them and free the pool
+        # for the incoming clip.
+        self.render_queue.cancel_group("thumbnails")
         self.workspace_frame.lift()
-        self.active_screen = "workspace"
         self.update_legend()
+
+    # ========================================================
+    # Focus / HUD mode (B5)
+    # ========================================================
+
+    def toggle_focus_mode(self):
+        if self.focus_mode:
+            self.exit_focus_mode()
+        else:
+            self.enter_focus_mode()
+
+    def enter_focus_mode(self):
+        """Collapse the chrome around the preview: command strip, right
+        column, and the transport/frame/export rows hide; the bezel grows to
+        fill the workspace. The timeline strip stays beneath the video as
+        the one control surface (trim brackets, keyframes, zoom, export
+        sweep all keep working), and the legend keeps the exit hint."""
+        if self.focus_mode or not self.video_path:
+            return
+        self.focus_mode = True
+
+        self.command_strip.grid_remove()
+        self.workspace_right.grid_remove()
+        self.workspace_grid.columnconfigure(1, weight=0, minsize=0)
+        self.workspace_left.grid_configure(padx=0)
+        for row in (self.transport_frame, self.frame_row, self.export_row):
+            row.pack_forget()
+        self.preview_bezel.pack_configure(fill=tk.BOTH, expand=True)
+        self.preview_frame.pack_configure(fill=tk.BOTH, expand=True)
+
+        # Focus must not linger on a now-hidden widget.
+        self.root.focus_set()
+        # Crop mode rides along (M9): its toolbar keeps its pack slot under
+        # the timeline strip, and the crop editor owns the preview surface —
+        # the HUD chips only overlay playback.
+        if not (self.crop and self.crop.editing):
+            self.focus_hud.show()
+        self._refresh_preview_after_relayout()
+        self.update_legend()
+        self.set_status("Focus mode — TAB to exit.")
+
+    def exit_focus_mode(self):
+        if not self.focus_mode:
+            return
+        self.focus_mode = False
+        self.focus_hud.hide()
+
+        self.preview_frame.pack_configure(fill=tk.X, expand=False)
+        self.preview_bezel.pack_configure(fill=tk.X, expand=False)
+        # Restore the hidden rows in their original pack order. export_row
+        # must re-enter the pack list BEFORE the bezel: it packed first so
+        # it wins the space fight when a short window clips the column.
+        self.transport_frame.pack(fill=tk.X, pady=(px(4), 0),
+                                  after=self.timeline_row)
+        self.frame_row.pack(fill=tk.X, pady=(px(4), 0),
+                            after=self.transport_frame)
+        self.export_row.pack(side=tk.BOTTOM, fill=tk.X, pady=(px(12), 0),
+                             before=self.preview_bezel)
+        self.workspace_grid.columnconfigure(1, weight=2, minsize=px(360))
+        self.workspace_left.grid_configure(padx=(0, px(12)))
+        self.workspace_right.grid()
+        self.command_strip.grid()
+        # A live crop toolbar kept its focus-mode slot (under the strip);
+        # move it back to its standard place under the transport row.
+        if self.crop and self.crop.active:
+            self.crop.reposition_toolbar()
+
+        self._refresh_preview_after_relayout()
+        self.update_legend()
+        self.set_status("Focus mode off.")
+
+    def _refresh_preview_after_relayout(self):
+        """The preview frame just changed size wholesale: push the new size
+        to the engine now (not on the next idle <Configure>), and re-render
+        a visible paused still at the new resolution."""
+        self.root.update_idletasks()
+        self.on_preview_frame_resize()
+        if (self.playback.state == core_playback.PAUSED
+                and not self.user_is_seeking
+                and self.paused_frame_label is not None
+                and self.paused_frame_label.winfo_ismapped()):
+            self.last_scrub_frame_seconds = None  # bypass the dedup window
+            self.request_scrub_frame(self.current_seek_seconds())
 
     def update_legend(self):
         if not hasattr(self, "legend"):
@@ -297,19 +497,38 @@ class HaloApp:
 
         if self.is_exporting:
             hints = [("ESC", "CANCEL EXPORT")]
-        elif self.active_screen == "landing":
-            hints = [("CTRL+O", "OPEN CLIP"), ("DROP", "LOAD FILE")]
+            if self.focus_mode:
+                hints.append(("TAB", "EXIT FOCUS"))
+        elif self.export_drawer is not None and self.export_drawer.visible:
+            hints = [("ESC", "CLOSE DRAWER"), ("CTRL+K", "COMMANDS")]
+        elif self.focus_mode:
+            hints = [
+                ("TAB", "EXIT FOCUS"),
+                ("SPACE", "PLAY/PAUSE"),
+                ("← →", "SEEK"),
+                ("[ ]", "TRIM"),
+                ("CTRL+K", "COMMANDS"),
+            ]
         elif self.video_path:
             hints = [
                 ("SPACE", "PLAY/PAUSE"),
                 ("← →", "SEEK"),
-                ("WHEEL", "SEEK · VOLUME"),
+                ("TAB", "FOCUS"),
                 ("[ ]", "TRIM"),
-                ("CTRL+E", "EXPORT"),
-                ("ESC", "MENU"),
+                ("CTRL+K", "COMMANDS"),
+                ("CTRL+W", "CLOSE"),
             ]
+        elif (getattr(self, "recents_grid", None) is not None
+                and self.recents_grid.has_entries()):
+            hints = [("CTRL+O", "OPEN CLIP"), ("↑↓←→", "BROWSE"),
+                     ("ENTER", "LOAD"), ("CTRL+K", "COMMANDS")]
+            if self.job_history.jobs:
+                hints.insert(3, ("CTRL+E", "JOBS"))
         else:
-            hints = [("CTRL+O", "OPEN CLIP"), ("ESC", "MENU")]
+            hints = [("CTRL+O", "OPEN CLIP"), ("DROP", "LOAD FILE"),
+                     ("CTRL+K", "COMMANDS")]
+            if self.job_history.jobs:
+                hints.insert(2, ("CTRL+E", "JOBS"))
 
         self.legend.set_hints(hints)
 
@@ -322,8 +541,14 @@ class HaloApp:
         root.bind("<space>", lambda e: self.shortcut(self.toggle_preview))
         root.bind("<Key-bracketleft>", lambda e: self.shortcut(self.set_trim_start))
         root.bind("<Key-bracketright>", lambda e: self.shortcut(self.set_trim_end))
-        root.bind("<Left>", lambda e: self.shortcut(lambda: self.seek_relative(-5.0)))
-        root.bind("<Right>", lambda e: self.shortcut(lambda: self.seek_relative(5.0)))
+        root.bind("<Left>", lambda e: self.shortcut_seek_or_grid(-5.0, -1))
+        root.bind("<Right>", lambda e: self.shortcut_seek_or_grid(5.0, 1))
+        root.bind("<Up>", lambda e: self.shortcut_grid(
+            lambda: self.recents_grid.move_selection(0, -1)))
+        root.bind("<Down>", lambda e: self.shortcut_grid(
+            lambda: self.recents_grid.move_selection(0, 1)))
+        root.bind("<Return>", lambda e: self.shortcut_grid(self.activate_recent_selection))
+        root.bind("<Delete>", lambda e: self.shortcut_grid(self.remove_recent_selection))
         root.bind("<Shift-Left>", lambda e: self.shortcut(lambda: self.seek_relative(-1.0)))
         root.bind("<Shift-Right>", lambda e: self.shortcut(lambda: self.seek_relative(1.0)))
         root.bind("<Home>", lambda e: self.shortcut(lambda: self.seek_absolute(0.0)))
@@ -344,9 +569,20 @@ class HaloApp:
             root.bind(f"<Key-{digit}>",
                       lambda e, n=digit: self.shortcut(lambda: self.seek_to_fraction(n / 10.0)))
         root.bind("<Control-o>", lambda e: self.shortcut_load())
-        root.bind("<Control-e>", lambda e: self.shortcut(self.export_video_dialog))
+        root.bind("<Control-e>", lambda e: self.shortcut_export())
+        root.bind("<Control-w>", lambda e: self.shortcut_close())
+        root.bind("<Control-W>", lambda e: self.shortcut_close())
         root.bind("<Control-comma>", lambda e: self.shortcut_settings())
+        root.bind("<Control-k>", lambda e: self.toggle_command_palette())
+        root.bind("<Control-K>", lambda e: self.toggle_command_palette())
         root.bind("<Control-C>", lambda e: self.shortcut(self.copy_timestamp))
+        # Single-level undo/redo toggle (L3). Ctrl+Y / Ctrl+Shift+Z are the
+        # usual redo keys; since undo is a toggle they all call undo_edit.
+        root.bind("<Control-z>", lambda e: self.shortcut(self.undo_edit))
+        root.bind("<Control-Z>", lambda e: self.shortcut(self.undo_edit))
+        root.bind("<Control-y>", lambda e: self.shortcut(self.undo_edit))
+        root.bind("<Control-Y>", lambda e: self.shortcut(self.undo_edit))
+        root.bind("<Tab>", lambda e: self.shortcut_focus())
         root.bind("<Escape>", lambda e: self.shortcut_escape())
 
     def _typing_in_entry(self) -> bool:
@@ -357,9 +593,9 @@ class HaloApp:
         return isinstance(focus, (tk.Entry, tk.Text))
 
     def shortcut(self, action):
-        """Workspace shortcut with the standard guards."""
-        if self.active_screen != "workspace" or self.is_exporting:
-            return "break" if self.is_exporting else None
+        """Editor shortcut with the standard guards (needs a loaded clip)."""
+        if self.is_exporting:
+            return "break"
         if self._typing_in_entry():
             return None
         if not self.video_path:
@@ -390,16 +626,79 @@ class HaloApp:
         self.log(f"Copied timestamp {text}.")
 
     def shortcut_escape(self):
+        """Esc cancels an export, leaves a text entry, closes the export
+        drawer, or exits focus mode — it never unloads the clip (that's
+        Ctrl+W), so it can't yank the screen away."""
         if self.is_exporting:
             self.cancel_export()
             return "break"
         if self._typing_in_entry():
             self.root.focus_set()
             return "break"
-        if self.active_screen == "workspace":
-            self.show_landing()
+        if self.export_drawer is not None and self.export_drawer.visible:
+            self.export_drawer.close()
+            return "break"
+        if self.focus_mode:
+            self.exit_focus_mode()
             return "break"
         return None
+
+    def shortcut_focus(self):
+        """Tab toggles focus/HUD mode. Works during an export (the strip
+        becomes a full-width render view, and you can Tab back out), stays
+        out of the way while typing (field traversal must keep working) and
+        under modals, and does nothing on the empty state."""
+        if self._typing_in_entry():
+            return None  # let Tk's all-tag binding traverse the fields
+        if dialogs.a_modal_is_open():
+            return None
+        if not self.video_path:
+            return "break"
+        self.toggle_focus_mode()
+        return "break"
+
+    def shortcut_close(self):
+        if self.is_exporting or self._typing_in_entry():
+            return "break"
+        if self.video_path:
+            self.close_clip()
+        return "break"
+
+    def shortcut_export(self):
+        """Ctrl+E works clip-less (the job history is still worth opening)
+        and during an export (to get back to the progress row)."""
+        if self._typing_in_entry():
+            return None
+        self.toggle_export_drawer()
+        return "break"
+
+    def shortcut_grid(self, action):
+        """Empty-state grid keys (arrows/Enter/Delete): act only when no
+        clip is loaded, nothing is exporting, and focus isn't in an entry.
+        With a clip loaded these keys fall through to their editor roles."""
+        if self.is_exporting:
+            return "break"
+        if self.video_path or self._typing_in_entry():
+            return None
+        if not self.recents_grid.has_entries():
+            return None
+        action()
+        return "break"
+
+    def shortcut_seek_or_grid(self, delta: float, d_col: int):
+        """←/→ seek the loaded clip; with none they browse the grid."""
+        if self.video_path:
+            return self.shortcut(lambda: self.seek_relative(delta))
+        return self.shortcut_grid(
+            lambda: self.recents_grid.move_selection(d_col, 0))
+
+    def activate_recent_selection(self):
+        if self.recents_grid.activate_selected() == "missing":
+            self.set_status("That file is missing on disk.")
+
+    def remove_recent_selection(self):
+        # remove_recent_clip refreshes the grid, which clamps the selection.
+        self.recents_grid.remove_selected()
 
     def seek_relative(self, delta: float):
         duration = self.total_duration_seconds or 0
@@ -443,7 +742,7 @@ class HaloApp:
     def on_wheel_zoom(self, steps: int, x_px: int):
         """Ctrl+wheel over the seekbar: zoom the timeline view, anchored at
         the cursor (Vegas/LosslessCut-style)."""
-        if self.active_screen != "workspace" or not self.video_path:
+        if not self.video_path:
             return
         self.seekbar.zoom_at(steps, x_px)
 
@@ -456,8 +755,6 @@ class HaloApp:
         commits shortly after the last notch so spinning the wheel doesn't
         spawn a pipeline per click."""
         if self.is_exporting or not self.video_path or self.user_is_seeking:
-            return
-        if self.active_screen != "workspace":
             return
 
         state = self.playback.state
@@ -527,16 +824,16 @@ class HaloApp:
             self.recent_clips.remove(path)
         self.recent_clips.insert(0, path)
         del self.recent_clips[8:]
-        if hasattr(self, "refresh_landing_detail"):
-            self.refresh_landing_detail()
+        if hasattr(self, "refresh_recents_grid"):
+            self.refresh_recents_grid()
         self.save_settings()
 
     def remove_recent_clip(self, path: str):
         if path in self.recent_clips:
             self.recent_clips.remove(path)
             self.save_settings()
-            if hasattr(self, "refresh_landing_detail"):
-                self.refresh_landing_detail()
+            if hasattr(self, "refresh_recents_grid"):
+                self.refresh_recents_grid()
 
     # ------------------------------------------------------------------
     # Recent-clip thumbnails (cached beside the config)
@@ -547,15 +844,14 @@ class HaloApp:
         root = Path(base) / "ClipToolbox" if base else Path.home() / ".cliptoolbox"
         return root / "thumbs"
 
-    THUMBNAIL_HEIGHT = 36  # logical px; landing sizes its holder to match
+    THUMBNAIL_HEIGHT = 36  # logical px default; callers may ask for taller
 
-    def _thumb_cache_path(self, path: str) -> Path:
+    def _thumb_cache_path(self, path: str, height_px: int) -> Path:
         try:
             mtime = int(Path(path).stat().st_mtime)
         except Exception:
             mtime = 0
-        height = px(self.THUMBNAIL_HEIGHT)
-        key = hashlib.md5(f"{path}|{mtime}|{height}".encode("utf-8")).hexdigest()
+        key = hashlib.md5(f"{path}|{mtime}|{height_px}".encode("utf-8")).hexdigest()
         return self._thumb_dir() / f"{key}.png"
 
     def _load_thumbnail(self, cache_path: Path):
@@ -574,32 +870,38 @@ class HaloApp:
         except Exception:
             return None
 
-    def get_recent_thumbnail(self, path: str, on_ready):
+    def get_recent_thumbnail(self, path: str, on_ready, height: int | None = None):
         """Deliver a cached PhotoImage for a recent clip (or None). Extraction
-        runs on a worker and calls on_ready on the Tk thread when done."""
+        runs on a worker and calls on_ready on the Tk thread when done.
+        height is in logical px (defaults to THUMBNAIL_HEIGHT); it is part of
+        the cache key, so different surfaces can ask for different sizes."""
         if not PIL_AVAILABLE or not FFMPEG or not Path(path).exists():
             on_ready(None)
             return
 
-        cache_path = self._thumb_cache_path(path)
+        height_px = px(height if height is not None else self.THUMBNAIL_HEIGHT)
+        cache_path = self._thumb_cache_path(path, height_px)
         existing = self._load_thumbnail(cache_path)
         if existing is not None:
             on_ready(existing)
             return
 
-        def worker():
+        def work(token):
+            # Runs on a render-queue worker: extract one frame to cache_path.
+            # Only produces the PNG — the Tk PhotoImage is built in done().
             try:
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
                 cmd = [
                     FFMPEG, "-hide_banner", "-loglevel", "error",
                     "-ss", "1", "-i", path,
-                    "-vf", f"scale=-2:{px(self.THUMBNAIL_HEIGHT)}", "-frames:v", "1",
+                    "-vf", f"scale=-2:{height_px}", "-frames:v", "1",
                     "-y", str(cache_path),
                 ]
                 process = subprocess.Popen(
                     cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     creationflags=CREATE_NO_WINDOW,
                 )
+                token.attach_process(process)  # so cancel_group can kill it
                 assign_process_to_cleanup_job(process)
                 try:
                     process.wait(timeout=6)
@@ -607,9 +909,122 @@ class HaloApp:
                     process.kill()
             except Exception:
                 pass
-            self.ui(lambda: on_ready(self._load_thumbnail(cache_path)))
+            return cache_path
 
-        threading.Thread(target=worker, daemon=True).start()
+        def done(cache_path):
+            on_ready(self._load_thumbnail(cache_path))
+
+        # Dedup on the cache path: two cards wanting the same thumb spawn
+        # ffmpeg once and both get the result. Grouped so a clip load can
+        # cancel any still-pending thumbnails (the grid is gone by then).
+        self.render_queue.submit(
+            str(cache_path), work, done, group="thumbnails",
+        )
+
+    # ------------------------------------------------------------------
+    # Timeline strip assets (filmstrip; waveforms arrive with B1 S4)
+    # ------------------------------------------------------------------
+
+    def build_timeline_assets(self, streams):
+        """Kick off timeline strip extraction (filmstrip + per-track
+        waveforms) for the loaded clip on the render queue. Results land on
+        the Tk thread and are dropped if the clip changed meanwhile
+        (load-token guard); cancel_group("timeline") kills a mid-decode
+        ffmpeg on load/close. Waveforms run at priority 0 (audio-only
+        decodes finish fast); the whole-video filmstrip pass at 1."""
+        self.clear_timeline_assets()
+        duration = self.total_duration_seconds
+        if not (PIL_AVAILABLE and FFMPEG and self.video_path and duration):
+            return
+        token = self._load_token
+        video_path = self.video_path
+
+        def load_image(cache_path):
+            try:
+                image = Image.open(cache_path)
+                image.load()
+                return image
+            except Exception:
+                return None
+
+        # -- per-track waveforms (white-on-transparent; seekbar tints) ----
+        self.timeline_waveforms = [None] * len(streams)
+        if streams:
+            self.seekbar.set_waveforms(self.timeline_waveforms)
+            self.push_wave_states()
+        wave_w, wave_h = core_strips.WAVEFORM_WIDTH, px(32)
+
+        def make_wave_apply(row):
+            def apply(cache_path):
+                if token != self._load_token:
+                    return
+                image = load_image(cache_path)
+                if image is None:
+                    return
+                self.timeline_waveforms[row] = image
+                self.seekbar.set_waveforms(self.timeline_waveforms)
+            return apply
+
+        for row, info in enumerate(streams):
+            wave_cache = core_strips.waveform_cache_path(
+                video_path, info["index"], wave_w, wave_h)
+            apply_wave = make_wave_apply(row)
+            if wave_cache.exists():
+                apply_wave(wave_cache)
+                continue
+            self.render_queue.submit(
+                str(wave_cache),
+                core_strips.waveform_work(video_path, wave_cache,
+                                          info["index"], wave_w, wave_h),
+                apply_wave, group="timeline", priority=0,
+                on_error=lambda exc, r=row: self.log(
+                    f"Timeline waveform (track {r + 1}) failed: {exc}"),
+            )
+
+        # -- filmstrip (one whole-clip decode) ----------------------------
+        n = core_strips.filmstrip_tile_count(duration)
+        # The filmstrip lane absorbs the audio band when the clip has no
+        # tracks; extract at the height the lane will actually render.
+        h_phys = px(76 if not streams else 44)
+        cache_path = core_strips.filmstrip_cache_path(video_path, h_phys, n)
+
+        def apply_strip(cache_path):
+            if token != self._load_token:
+                return  # a newer load (or a close) superseded this job
+            image = load_image(cache_path)
+            if image is None:
+                return
+            self.seekbar.set_filmstrip(image, n)
+
+        if cache_path.exists():
+            apply_strip(cache_path)
+            return
+
+        self.render_queue.submit(
+            str(cache_path),
+            core_strips.filmstrip_work(video_path, cache_path, h_phys, n, duration),
+            apply_strip, group="timeline", priority=1,
+            on_error=lambda exc: self.log(f"Timeline filmstrip failed: {exc}"),
+        )
+
+    def clear_timeline_assets(self):
+        self.timeline_waveforms = []
+        self.seekbar.set_filmstrip(None, 0)
+        self.seekbar.set_waveforms([])
+
+    def push_wave_states(self):
+        """Mirror the roster's mix state onto the waveform lanes: accent
+        when soloed, dim when silenced, normal otherwise (same rules as the
+        row indicator strips)."""
+        states = []
+        for row in range(len(self.track_controls)):
+            if self.solo_row == row:
+                states.append("solo")
+            elif self.effective_volume(row) <= 0.0:
+                states.append("dim")
+            else:
+                states.append("normal")
+        self.seekbar.set_wave_states(states)
 
     def enable_drag_and_drop(self):
         if not DND_AVAILABLE:
@@ -688,8 +1103,17 @@ class HaloApp:
         state = tk.DISABLED if busy else tk.NORMAL
 
         self.load_button.config(state=state)
-        if hasattr(self, "back_button"):
-            self.back_button.config(state=tk.DISABLED if self.is_exporting else tk.NORMAL)
+
+        # Closing a clip / opening Settings stays allowed during playback;
+        # only a running export locks them (matching the Ctrl+W/Ctrl+, guards).
+        export_lock = tk.DISABLED if self.is_exporting else tk.NORMAL
+        self.close_clip_button.config(state=export_lock)
+        self.settings_button.config(state=export_lock)
+        # The timeline is read-only while an export renders: scrubbing or
+        # dragging trim mid-export would misrepresent the in-flight render.
+        # (Linked-var updates still flow — _state only gates interaction —
+        # so the progress sweep and end-of-export seek still paint.)
+        self.seekbar.config(state=export_lock)
 
         # Compression settings only affect export, so keep them editable during
         # preview/playback. Lock them only while an export is actually running.
@@ -701,11 +1125,20 @@ class HaloApp:
             self.compression_target_entry.config(state=export_state)
         if hasattr(self, "compression_resolution_combo"):
             self.compression_resolution_combo.config(state="readonly" if not self.is_exporting else tk.DISABLED)
+        if hasattr(self, "timestamp_watermark_checkbox"):
+            self.timestamp_watermark_checkbox.config(state=export_state)
+        if hasattr(self, "timestamp_watermark_duration_entry"):
+            self.timestamp_watermark_duration_entry.config(state=export_state)
+        if hasattr(self, "watermark_mode_seg"):
+            self.watermark_mode_seg.config(state=export_state)
+        if hasattr(self, "watermark_custom_entry"):
+            self.watermark_custom_entry.config(state=export_state)
+        # The drawer manages its own inputs (pattern/destination/GO) from the
+        # same is_exporting flag.
+        if self.export_drawer is not None:
+            self.export_drawer.refresh()
 
-        if self.is_exporting:
-            self.export_button.config(state=tk.DISABLED)
-        else:
-            self.export_button.config(state=tk.NORMAL)
+        self.update_file_strip()
 
         self.refresh_playback_button_state()
 
@@ -722,6 +1155,29 @@ class HaloApp:
         self.update_export_actions()
         self.update_legend()
 
+    def update_file_strip(self):
+        """The command strip follows the loaded clip: LOAD CLIP and the ✕
+        chip are packed only while one is loaded (the empty state loads via
+        the hero / recents grid instead). EXPORT lives in the editor body
+        and is disabled without a clip or while an export runs."""
+        if not hasattr(self, "close_clip_button"):
+            return
+        loaded = bool(self.video_path)
+
+        if loaded and not self.load_button.winfo_ismapped():
+            self.load_button.pack(side=tk.LEFT)
+        elif not loaded and self.load_button.winfo_ismapped():
+            self.load_button.pack_forget()
+
+        if loaded and not self.close_clip_button.winfo_ismapped():
+            self.close_clip_button.pack(side=tk.LEFT, padx=(px(8), 0))
+        elif not loaded and self.close_clip_button.winfo_ismapped():
+            self.close_clip_button.pack_forget()
+
+        # EXPORT toggles the drawer now, so it stays live during an export —
+        # that's how you get back to the in-flight job's progress row.
+        self.export_button.config(state=tk.NORMAL if loaded else tk.DISABLED)
+
     def update_export_actions(self):
         """Show the maroon CANCEL EXPORT button only while exporting."""
         if not hasattr(self, "stop_export_button"):
@@ -737,6 +1193,11 @@ class HaloApp:
         """Keep the single visible playback button in sync with engine state."""
         if not hasattr(self, "preview_button"):
             return
+
+        # The focus HUD's transport glyph mirrors the same state (no-op
+        # while hidden). Time ticks flow to it via var traces instead.
+        if getattr(self, "focus_hud", None) is not None:
+            self.focus_hud.refresh()
 
         if self.is_exporting:
             self.preview_button.config(text="PLAY", state=tk.DISABLED)
@@ -847,7 +1308,7 @@ class HaloApp:
             messagebox.showerror("File not found", str(path_obj))
             return
 
-        self.show_workspace()
+        self.show_editor()
 
         self.stop_preview()
 
@@ -857,14 +1318,36 @@ class HaloApp:
         self.persist_video_session()
         self._session_to_restore = video_sessions.load(str(path_obj))
 
+        self._load_token += 1
+        token = self._load_token
+        self._probe_done = False
+
+        # Kill any timeline extraction still running for the outgoing clip
+        # and blank the lanes before the new probe kicks off.
+        self.render_queue.cancel_group("timeline")
+        self.clear_timeline_assets()
+
         self.video_path = str(path_obj)
         self.video_fps = None
         self.video_dimensions = None
         self.playback.configure_media(self.video_path, None)
         self.file_label_var.set(path_obj.name)
+        self.update_window_title(path_obj.name)
+        self.update_file_strip()
         self.clear_tracks()
         self.set_seek_range(0)
+        # Trim state must not leak into the next clip: drop the enabled toggle
+        # and its full-range values now, before the probe. A restored session
+        # re-enables trim in after_probe; a failed load leaves this clean slate.
+        self.trim_enabled_var.set(False)
         self.clear_trim_points(silent=True)
+        self.update_trim_controls()
+        # Watermark mode/custom text are clip-scoped the same way (M11): a
+        # caption typed for one clip must never bleed into the next export.
+        self.watermark_mode_var.set("CONFIGURED")
+        self.watermark_custom_text_var.set("")
+        self.on_watermark_mode_changed()
+        self._undo_slot = None  # undo never crosses clips (L3)
         if self.crop:
             self.crop.reset()
         self.preview_placeholder_var.set("Preparing file...")
@@ -875,17 +1358,40 @@ class HaloApp:
         self.log("Reading audio streams and duration...")
 
         def worker():
-            streams = self.get_audio_streams(str(path_obj))
+            # A probe failure means the file itself is unreadable — report
+            # that alone, never the misleading "no audio tracks" cascade.
+            try:
+                streams = core_probe.probe_audio_streams(str(path_obj))
+            except core_probe.ProbeError as exc:
+                self.ui(self.after_probe_failed, token, path_obj, str(exc))
+                return
             duration = self.get_media_duration(str(path_obj))
             fps = core_mediainfo.probe_frame_rate(str(path_obj))
             dimensions = core_mediainfo.probe_video_dimensions(str(path_obj))
-            self.ui(self.after_probe, streams, duration, fps, dimensions)
+            self.ui(self.after_probe, token, streams, duration, fps, dimensions)
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def after_probe(self, streams: list[dict], duration: float | None,
-                    fps: float | None = None,
+    def after_probe_failed(self, token: int, path_obj: Path, detail: str):
+        """The file couldn't be probed at all (corrupt, or not a video):
+        one accurate error, clean state, back to the empty state."""
+        if token != self._load_token:
+            return  # a newer load (or a close) superseded this probe
+        self.log(f"Could not read {path_obj.name}: " + " ".join(detail.split()))
+        self.reset_clip_state()
+        self.show_empty_state()
+        messagebox.showerror(
+            "Could not read file",
+            f"{path_obj.name} could not be read as a video.\n"
+            "It may be corrupt or in an unsupported format.",
+        )
+
+    def after_probe(self, token: int, streams: list[dict],
+                    duration: float | None, fps: float | None = None,
                     dimensions: tuple[int, int] | None = None):
+        if token != self._load_token:
+            return  # a newer load (or a close) superseded this probe
+        self._probe_done = True
         self.audio_metadata = streams
         self.total_duration_seconds = duration
         self.video_fps = fps
@@ -893,6 +1399,8 @@ class HaloApp:
         self.playback.configure_media(self.video_path, duration)
         self.set_seek_range(duration)
         self.seekbar.set_fps(fps)  # enables the zoomed-in frame grid
+        # Before the no-streams early-return: video-only clips get a strip.
+        self.build_timeline_assets(streams)
         self.update_trim_controls()
         if self.crop:
             self.crop.set_source(dimensions, duration, fps)
@@ -900,12 +1408,18 @@ class HaloApp:
         self.clear_tracks()
         self.restore_video_session()
 
-        if not streams:
-            self.set_status("No audio tracks found.")
-            self.preview_placeholder_var.set("No audio tracks found.")
+        # Silent-video support (L1): a clip with no audio but a decodable video
+        # loads into the normal editor (video-only preview/export). Only a file
+        # with NEITHER audio nor video is a dead end.
+        has_video = dimensions is not None and dimensions[0] > 0
+        self.is_silent = not streams and has_video
+
+        if not streams and not has_video:
+            self.set_status("No audio or video streams found.")
+            self.preview_placeholder_var.set("No audio or video streams found.")
             messagebox.showinfo(
-                "No audio tracks",
-                "No audio streams were found in this file.",
+                "No streams",
+                "No audio or video streams were found in this file.",
             )
             self.refresh_playback_button_state()
             return
@@ -914,6 +1428,8 @@ class HaloApp:
             self.add_track_row(row_number, info)
 
         self.update_track_area_height(len(streams))
+        if self.is_silent:
+            self._show_silent_roster()
         # A restored session may start rows disabled; tint their strips now.
         self.update_track_row_styles()
         self.remember_recent_clip(self.video_path)
@@ -922,20 +1438,71 @@ class HaloApp:
         duration_text = self.format_seconds(duration) if duration else "unknown duration"
         self.preview_placeholder_var.set("Starting preview...")
         self.preview_placeholder.place(relx=0.5, rely=0.5, anchor="center")
-        self.set_status(f"Loaded {len(streams)} audio track(s), {duration_text}. Starting preview...")
-        self.log(f"Found {len(streams)} audio track(s). Duration: {duration_text}.")
-
-        for info in streams:
-            self.log(f"Audio stream available: {info['label']}")
+        if self.is_silent:
+            self.set_status(f"Loaded video (no audio), {duration_text}. Starting preview...")
+            self.log(f"No audio tracks — video-only clip. Duration: {duration_text}.")
+        else:
+            self.set_status(f"Loaded {len(streams)} audio track(s), {duration_text}. Starting preview...")
+            self.log(f"Found {len(streams)} audio track(s). Duration: {duration_text}.")
+            for info in streams:
+                self.log(f"Audio stream available: {info['label']}")
 
         self.update_compression_estimate()
 
+        # First-run coach marks (B6): fire once the editor has settled —
+        # this is the first moment the pointed-at controls all exist.
+        if not self.settings.coach_marks_seen:
+            self.root.after(700, lambda t=token: self._maybe_show_coach_marks(t))
+
         if self.auto_preview_after_load:
-            self.root.after(300, self.start_preview)
+            self.root.after(300, lambda t=token: self._auto_start_preview(t))
+
+    def _maybe_show_coach_marks(self, token: int):
+        """Deferred first-run trigger: skip if the clip changed/closed, a
+        modal or grab is up (e.g. the no-audio-tracks dialog — the flag
+        stays unset so the tour retries on the next load), or it already
+        showed."""
+        if token != self._load_token or not self.video_path:
+            return
+        if self.settings.coach_marks_seen or self.coach_marks is not None:
+            return
+        if dialogs.a_modal_is_open():
+            return
+        try:
+            if self.root.grab_current() is not None:
+                return
+        except Exception:
+            pass
+        self.show_coach_marks()
+
+    def show_coach_marks(self):
+        """The B6 tour — first run automatically, palette `help.coach` after.
+        It anchors to the standard editor layout, so focus mode and the
+        drawer step aside first."""
+        if self.coach_marks is not None or not self.video_path:
+            return
+        self.exit_focus_mode()
+        if self.export_drawer is not None and self.export_drawer.visible:
+            self.export_drawer.hide()
+        self.coach_marks = CoachMarks(self, on_dismiss=self._on_coach_dismissed)
+
+    def _on_coach_dismissed(self):
+        self.coach_marks = None
+        if not self.settings.coach_marks_seen:
+            self.settings.coach_marks_seen = True
+            self.save_settings()
+
+    def _auto_start_preview(self, token: int):
+        """Deferred auto-preview: skip if the clip changed or was closed
+        while the 300 ms grace timer was pending."""
+        if token != self._load_token or not self.video_path:
+            return
+        self.start_preview()
 
     def clear_tracks(self):
         self.track_controls.clear()
         self.track_state_strips.clear()
+        self.track_volume_labels.clear()
         self.preview_muted = False
         self.solo_row = None
 
@@ -944,6 +1511,68 @@ class HaloApp:
             widget.destroy()
 
         self.update_track_area_height(0)
+
+    def reset_clip_state(self):
+        """Return every clip-scoped var and widget to the no-video state.
+        Shared by close_clip and after_probe_failed; the editor widgets are
+        all null-safe against this (PLAY disables, estimate goes back to its
+        load-a-clip line, seekbar parks at zero)."""
+        self.exit_focus_mode()  # the empty state needs the standard layout
+        self.video_path = None
+        self._session_to_restore = None
+        self._probe_done = False
+        self.audio_metadata = []
+        self.is_silent = False
+        self._undo_slot = None  # undo never crosses clips (L3)
+        self.total_duration_seconds = None
+        self.video_fps = None
+        self.video_dimensions = None
+        self.playback.configure_media(None, None)
+        self.clear_tracks()
+        self.trim_enabled_var.set(False)
+        self.clear_trim_points(silent=True)
+        self.update_trim_controls()  # also resets the compression estimate
+        self.watermark_mode_var.set("CONFIGURED")
+        self.watermark_custom_text_var.set("")
+        # HaloSegmented's command only fires from a click, not a programmatic
+        # .set(), so the custom-text row's visibility needs an explicit sync
+        # or it can be left showing (empty) from the previous clip's mode.
+        self.on_watermark_mode_changed()
+        if self.crop:
+            self.crop.reset()
+        self.set_seek_range(0)
+        self.seekbar.set_fps(None)
+        self.seekbar.set_engine_starting(False)
+        self.render_queue.cancel_group("timeline")
+        self.clear_timeline_assets()
+        self.preview_placeholder_var.set(workspace.PLACEHOLDER_DEFAULT)
+        self.preview_placeholder.place(relx=0.5, rely=0.5, anchor="center")
+        self.file_label_var.set("No video loaded")
+        self.update_window_title()
+        self.update_file_strip()
+        self.refresh_playback_button_state()
+
+    def close_clip(self):
+        """Ctrl+W / the ✕ chip / the palette: unload the clip and return to
+        the empty state. The clip's setup is persisted first, so reopening
+        it restores trim/crop/mix exactly like a relaunch would."""
+        if self.is_exporting or not self.video_path:
+            return
+        self._load_token += 1  # orphan any in-flight probe + auto-preview timer
+        name = Path(self.video_path).name
+        self.stop_preview()
+        # A mid-probe close must NOT persist: capture_video_session would see
+        # load_video's cleared defaults, and saving a default state prunes
+        # the clip's stored session entry.
+        if self._probe_done:
+            self.persist_video_session()
+        dialogs.dismiss_tagged("session-restore")
+        if self.export_drawer is not None:
+            self.export_drawer.hide()  # the hero lifts over it; don't strand it open
+        self.reset_clip_state()
+        self.root.focus_set()  # focus must not linger in a destroyed-adjacent entry
+        self.show_empty_state()
+        self.log(f"Closed {name}.")
 
     # ========================================================
     # Per-video sessions (trim / crop keyframes / track mix)
@@ -966,6 +1595,93 @@ class HaloApp:
         if self.crop:
             state["crop"] = self.crop.export_state()
         return state
+
+    # ========================================================
+    # Single-level undo/redo of the edit state (L3)
+    # ========================================================
+
+    def _snapshot_edit(self) -> dict:
+        """Serializable snapshot of the undoable edit state (trim + crop +
+        track mix). Reuses the session capture, dropping the playhead — a
+        seek is not an edit and undo must not move it."""
+        snap = self.capture_video_session()
+        snap.pop("position", None)
+        return snap
+
+    def _restore_edit(self, snap: dict):
+        """Re-apply a snapshot to the CURRENT clip's controls (distinct from
+        restore_video_session, which is for a fresh load's not-yet-built rows)."""
+        trim = snap.get("trim") or {}
+        self.trim_start_seconds = trim.get("start")
+        self.trim_end_seconds = trim.get("end")
+        self.trim_enabled_var.set(bool(trim.get("enabled")))
+        self.update_trim_controls()
+
+        if self.crop:
+            self.crop.apply_snapshot(snap.get("crop") or {})
+
+        # Track mix: set each row's enable + volume from the snapshot, then push
+        # the whole mix to the engine once. slider.set() is silent (Q8), so the
+        # labels/styles are refreshed explicitly.
+        by_index = {t.get("index"): t for t in snap.get("tracks") or []}
+        for row, (stream_index, var, slider) in enumerate(self.track_controls):
+            saved = by_index.get(stream_index)
+            if saved is None:
+                continue
+            var.set(bool(saved.get("enabled", True)))
+            vol = float(saved.get("volume", 1.0))
+            slider.set(vol)
+            label = self.track_volume_labels.get(row)
+            if label is not None:
+                label.set(f"{int(round(vol * 100))}%")
+        self.apply_all_track_volumes()
+        self.update_track_row_styles()
+        self.update_compression_estimate()
+
+    def push_undo(self):
+        """Snapshot the current edit state into the undo slot BEFORE a
+        mutation. Skips a redundant push when nothing changed since the slot;
+        a fresh edit resets the undo/redo direction so the next Ctrl+Z undoes."""
+        if not self.video_path:
+            return
+        snap = self._snapshot_edit()
+        if snap != self._undo_slot:
+            self._undo_slot = snap
+            self._undo_redo = False
+
+    def arm_wheel_undo(self):
+        """Capture one undo snapshot for a burst of wheel-volume notches (L3):
+        push on the first notch, then disarm ~600 ms after the last one so a
+        fresh scroll captures again."""
+        if not self._wheel_undo_armed:
+            self.push_undo()
+            self._wheel_undo_armed = True
+        if self._wheel_undo_after is not None:
+            try:
+                self.root.after_cancel(self._wheel_undo_after)
+            except Exception:
+                pass
+        self._wheel_undo_after = self.root.after(
+            600, lambda: setattr(self, "_wheel_undo_armed", False))
+
+    def undo_edit(self):
+        """Ctrl+Z (and Ctrl+Y / Ctrl+Shift+Z): swap the current edit state with
+        the slot — one level of undo AND redo (pressing again re-applies)."""
+        if self._undo_slot is None:
+            self.set_status("Nothing to undo.")
+            return
+        current = self._snapshot_edit()
+        if current == self._undo_slot:
+            return  # already matches (e.g. push then immediate undo)
+        self._restore_edit(self._undo_slot)
+        self._undo_slot = current
+        self._undo_redo = not getattr(self, "_undo_redo", False)
+        if self._undo_redo:
+            self.set_status("Edit undone — Ctrl+Z again to redo.")
+            self.log("Edit undone.")
+        else:
+            self.set_status("Edit redone.")
+            self.log("Edit redone.")
 
     def persist_video_session(self):
         """Save the current clip's setup so reopening it restores everything."""
@@ -1021,7 +1737,10 @@ class HaloApp:
 
         crop_state = state.get("crop") or {}
         if self.crop and crop_state.get("keyframes"):
-            if self.crop.restore_state(crop_state):
+            if self.crop.restore_state(crop_state) and self.crop.active:
+                # Keyframes restored with crop off are inert until the user
+                # re-enables crop — counting them here would claim an effect
+                # the export doesn't have.
                 count = len(crop_state["keyframes"])
                 restored.append(f"{count} crop keyframe(s)")
 
@@ -1036,7 +1755,55 @@ class HaloApp:
             self.set_seek_position(position)
 
         if restored:
-            self.log("Restored saved setup: " + ", ".join(restored) + ".")
+            summary = ", ".join(restored)
+            self.log("Restored saved setup: " + summary + ".")
+            restored_path = self.video_path
+            dialogs.toast(
+                "Restored saved setup", summary + ".",
+                action_label="RESET",
+                action=lambda: self.reset_restored_session(restored_path),
+                duration_ms=8000,
+                tag="session-restore",  # dismissed if the clip closes
+            )
+
+    def reset_restored_session(self, path: str):
+        """RESET on the restore toast: discard the saved setup and put this
+        clip back to a fresh-load state (trim off, no crop, every track at
+        100%, playhead at 0)."""
+        if self.is_exporting or path != self.video_path:
+            return  # the clip changed since the toast appeared
+        self._session_to_restore = None
+
+        self.trim_enabled_var.set(False)
+        self.clear_trim_points(silent=True)
+        self.update_trim_controls()
+
+        if self.crop:
+            self.crop.reset()
+            self.crop.set_source(self.video_dimensions,
+                                 self.total_duration_seconds, self.video_fps)
+
+        # Rebuild the roster the same way a fresh load does; with the session
+        # gone the rows come back enabled at 100%.
+        self.clear_tracks()
+        for row_number, info in enumerate(self.audio_metadata):
+            self.add_track_row(row_number, info)
+        self.update_track_area_height(len(self.audio_metadata))
+        self.update_track_row_styles()
+        self.apply_all_track_volumes()
+
+        # Routes through the normal seek path, which also rebuilds/refreshes
+        # any live pipeline without the restored crop and mix.
+        self.seek_absolute(0.0)
+
+        try:
+            # Default state — this removes the stored entry.
+            video_sessions.save(path, self.capture_video_session())
+        except Exception:
+            pass
+
+        self.set_status("Saved setup reset.")
+        self.log("Saved setup reset: trim, crop and track mix back to defaults.")
 
     def update_track_area_height(self, track_count: int):
         # Keep the roster only as tall as the rows it actually needs; beyond
@@ -1054,11 +1821,29 @@ class HaloApp:
             if self.track_scrollbar.winfo_ismapped():
                 self.track_scrollbar.grid_remove()
 
-        self.roster_title_var.set(f"{track_count} TRACK(S) IN MIX")
+        # Silent-video support (L1): a video-only clip has no mix to show.
+        if track_count == 0 and self.is_silent:
+            self.roster_title_var.set("NO AUDIO — VIDEO ONLY")
+        else:
+            self.roster_title_var.set(f"{track_count} TRACK(S) IN MIX")
+        # RESET has nothing to act on without tracks.
+        if hasattr(self, "reset_volumes_button"):
+            self.reset_volumes_button.config(
+                state=tk.DISABLED if track_count == 0 else tk.NORMAL)
         self.track_canvas.itemconfigure(
             self.track_window,
             width=max(1, self.track_canvas.winfo_width()),
         )
+
+    def _show_silent_roster(self):
+        """Placeholder in the (empty) roster for a video-only clip (L1).
+        Destroyed by clear_tracks on the next load."""
+        tk.Label(
+            self.track_frame,
+            text="This clip has no audio — video only.",
+            font=theme.font_small(), bg=theme.PANEL_FILL, fg=theme.TEXT_DIM,
+            anchor="w", justify=tk.LEFT, wraplength=px(260),
+        ).grid(row=0, column=0, sticky="ew", padx=px(6), pady=px(10))
 
     def add_track_row(self, row_number: int, info: dict):
         from cliptoolbox.ui.widgets import HaloCheckbox, HaloSlider
@@ -1076,25 +1861,30 @@ class HaloApp:
             lambda *args, row=row_number: self.apply_track_volume(row),
         )
 
-        # Roster-style row: maroon name bar (the lobby player bar) + slider.
-        name_bar = tk.Frame(row, bg=theme.MAROON)
+        # Roster-style row: the lobby player name bar (maroon in H2, party
+        # green in Reach) + slider.
+        name_bar = tk.Frame(row, bg=theme.ROSTER)
         name_bar.grid(row=0, column=0, sticky="ew")
 
         # Left indicator strip — tinted for solo (accent) / silenced (dim).
-        state_strip = tk.Frame(name_bar, bg=theme.MAROON, width=px(4))
+        state_strip = tk.Frame(name_bar, bg=theme.ROSTER, width=px(4))
         state_strip.pack(side=tk.LEFT, fill=tk.Y)
         self.track_state_strips[row_number] = state_strip
 
         checkbox = HaloCheckbox(
             name_bar, text=info["label"], variable=var,
-            behind=theme.MAROON, text_color=theme.TEXT_BRIGHT,
+            behind=theme.ROSTER, text_color=theme.TEXT_BRIGHT,
             font=theme.font_body(13),
         )
         checkbox.pack(side=tk.LEFT, padx=px(6), pady=px(2))
+        # Snapshot before the enable toggle (L3): the checkbox flips on
+        # ButtonRelease, so a press bind captures the pre-toggle mix.
+        checkbox.bind("<ButtonPress-1>", lambda e: self.push_undo(), add="+")
 
         volume_label_var = tk.StringVar(value=f"{int(round(initial_volume * 100))}%")
+        self.track_volume_labels[row_number] = volume_label_var
         tk.Label(name_bar, textvariable=volume_label_var, font=theme.font_small(),
-                 bg=theme.MAROON, fg=theme.TEXT_BRIGHT).pack(side=tk.RIGHT, padx=px(8))
+                 bg=theme.ROSTER, fg=theme.TEXT_BRIGHT).pack(side=tk.RIGHT, padx=px(8))
 
         slider = HaloSlider(row, from_=0.0, to=2.0, resolution=0.01,
                             behind=theme.PANEL_FILL)
@@ -1116,6 +1906,10 @@ class HaloApp:
 
         slider.config(command=on_volume_change)
         slider.grid(row=1, column=0, sticky="ew", pady=(px(2), 0))
+        # Snapshot before a volume drag / double-click-reset (L3): the slider
+        # jumps-to-click on press, so use its bind_press hook (fires BEFORE the
+        # jump) to capture the true pre-press level.
+        slider.bind_press(self.push_undo)
 
         # Double-click the slider snaps it back to 100%.
         def reset_volume(_event=None, row=row_number):
@@ -1142,6 +1936,7 @@ class HaloApp:
             current = float(slider.get())
             value = min(2.0, max(0.0, round(current + steps * step, 2)))
             if value != current:
+                self.arm_wheel_undo()  # capture the pre-burst level (L3)
                 slider.set(value)
                 on_volume_change(value)
 
@@ -1152,17 +1947,6 @@ class HaloApp:
     # ========================================================
     # ffprobe
     # ========================================================
-
-    def get_audio_streams(self, filepath: str) -> list[dict]:
-        try:
-            return core_probe.probe_audio_streams(filepath)
-        except core_probe.ProbeError as exc:
-            self.ui(
-                messagebox.showerror,
-                "FFprobe Error",
-                str(exc),
-            )
-            return []
 
     def get_media_duration(self, filepath: str) -> float | None:
         return core_probe.probe_duration(filepath)
@@ -1372,11 +2156,23 @@ class HaloApp:
         self.crop.toggle_mode()
 
     def toggle_crop_mode(self):
-        """Keyboard 'C': flip crop mode when the clip has known dimensions."""
+        """Keyboard 'C': flip crop mode when the clip has known dimensions.
+        Works inside focus mode too (M9) — the crop toolbar packs under the
+        timeline strip there and the editor covers the enlarged preview."""
         if not self.video_dimensions:
             return
         self.crop_enabled_var.set(not self.crop_enabled_var.get())
         self.on_crop_toggle()
+
+    def on_crop_editing_changed(self, editing: bool):
+        """The crop editor opened/closed. In focus mode the HUD chips yield
+        the preview surface to the editor and come back for playback."""
+        if not self.focus_mode:
+            return
+        if editing:
+            self.focus_hud.hide()
+        else:
+            self.focus_hud.show()
 
     def on_crop_add_key(self):
         self.crop.add_key()
@@ -1404,6 +2200,9 @@ class HaloApp:
 
     def on_keyframe_commit(self, index, value):
         self.crop.on_kf_commit(index, value)
+
+    def on_keyframe_delete(self, index):
+        self.crop.on_kf_delete(index)
 
     def on_loop_toggle(self):
         if self.loop_enabled_var.get():
@@ -1464,8 +2263,93 @@ class HaloApp:
 
         return core_commands.parse_target_mb(self.compression_target_var.get())
 
+    def on_timestamp_watermark_toggle(self):
+        if not hasattr(self, "timestamp_watermark_options_frame"):
+            return
+
+        if self.timestamp_watermark_enabled_var.get():
+            self.timestamp_watermark_options_frame.pack(side=tk.LEFT, padx=(px(10), 0))
+            if hasattr(self, "watermark_text_options_frame"):
+                self.watermark_text_options_frame.pack(fill=tk.X, pady=(px(2), 0))
+                self.on_watermark_mode_changed()  # sync the custom-text row
+            self.log("Timestamp watermark enabled for export.")
+        else:
+            self.timestamp_watermark_options_frame.pack_forget()
+            if hasattr(self, "watermark_text_options_frame"):
+                self.watermark_text_options_frame.pack_forget()
+            self.log("Timestamp watermark disabled.")
+
+        if self.export_drawer is not None:
+            self.export_drawer.refresh()  # {stamp} token in the name preview
+
+    def watermark_text_mode(self) -> str:
+        """The per-export watermark text mode as a lowercase id
+        (configured/custom/both). The segmented control stores its uppercase
+        display label into watermark_mode_var, so normalize here rather than
+        scattering case handling across every read site."""
+        return (self.watermark_mode_var.get() or "configured").strip().lower()
+
+    def on_watermark_mode_changed(self):
+        """Show the custom-text entry only when the mode needs it."""
+        if not hasattr(self, "watermark_custom_frame"):
+            return
+        if self.watermark_text_mode() in ("custom", "both"):
+            if self.watermark_custom_frame.winfo_manager() == "":
+                self.watermark_custom_frame.pack(fill=tk.X, pady=(px(4), 0))
+        else:
+            self.watermark_custom_frame.pack_forget()
+
+    def get_timestamp_watermark_settings(self) -> tuple[list[str], float] | None:
+        """Return (text_lines, duration_seconds) for the watermark, or None.
+
+        text_lines has one entry for "configured" or "custom" mode, two for
+        "both" (configured on top, custom on the bottom line — build_
+        timestamp_watermark_filter stacks them in that order). Raises
+        ValueError with a user-facing message when enabled but the chosen
+        source(s) can't produce text, or the duration is invalid.
+        """
+        if not self.timestamp_watermark_enabled_var.get():
+            return None
+
+        mode = self.watermark_text_mode()
+        lines = []
+        if mode in ("configured", "both"):
+            lines.append(core_filters.resolve_watermark_text(
+                self.video_path or "",
+                self.settings.watermark_source,
+                self.settings.watermark_date_format,
+                bool(self.settings.watermark_include_time),
+            ))
+        if mode in ("custom", "both"):
+            custom_text = self.watermark_custom_text_var.get().strip()
+            if not custom_text:
+                raise ValueError(
+                    "Enter custom watermark text, or switch the watermark "
+                    "text option back to the configured setting."
+                )
+            lines.append(custom_text)
+
+        raw_duration = (
+            self.timestamp_watermark_duration_var.get().strip().lower().replace("ms", "").strip()
+        )
+        try:
+            duration_ms = int(raw_duration)
+        except Exception as exc:
+            raise ValueError(
+                "Watermark duration must be a whole number of milliseconds, like 3000."
+            ) from exc
+
+        if duration_ms <= 0:
+            raise ValueError("Watermark duration must be larger than 0 milliseconds.")
+
+        return lines, duration_ms / 1000.0
+
     def update_compression_estimate(self):
-        """Live bitrate estimate on the compression card (reuses core math)."""
+        """Live bitrate estimate on the compression card (reuses core math).
+        Every call site that can change the estimate can also change the
+        resolved output name, so the drawer preview rides along."""
+        if self.export_drawer is not None:
+            self.export_drawer.refresh()
         if not hasattr(self, "compression_estimate_var"):
             return
 
@@ -1514,6 +2398,7 @@ class HaloApp:
         return max(0.0, value)
 
     def set_trim_start(self):
+        self.push_undo()  # snapshot before the trim edit (L3)
         self.trim_start_seconds = self.current_seek_seconds()
 
         if (
@@ -1528,6 +2413,7 @@ class HaloApp:
         self.log(f"Trim start set to {self.format_seconds(self.trim_start_seconds)}.")
 
     def set_trim_end(self):
+        self.push_undo()  # snapshot before the trim edit (L3)
         self.trim_end_seconds = self.current_seek_seconds()
 
         if (
@@ -1553,6 +2439,14 @@ class HaloApp:
         if not silent:
             self.set_status("Trim points cleared.")
             self.log("Trim points cleared.")
+
+    def clear_trim_points_action(self):
+        """Trim CLEAR button: wipe the IN/OUT points. The general single-level
+        undo (Ctrl+Z, L3) restores them, superseding Q5's bespoke UNDO toast."""
+        if self.trim_start_seconds is None and self.trim_end_seconds is None:
+            return  # nothing was set — nothing to clear or undo
+        self.push_undo()  # snapshot before clearing (L3)
+        self.clear_trim_points()
 
     def get_active_trim_points(self) -> tuple[float | None, float | None]:
         if not self.trim_enabled_var.get():
@@ -1707,6 +2601,11 @@ class HaloApp:
 
     def on_trim_bracket_drag(self, kind: str, value: float):
         """Live update while a bracket is dragged on the seekbar."""
+        # Snapshot once at the start of a drag gesture (L3): the pre-drag
+        # bracket position is what Ctrl+Z should restore, not a mid-drag one.
+        if not self._trim_drag_undo:
+            self.push_undo()
+            self._trim_drag_undo = True
         if kind == "start":
             self.trim_start_seconds = float(value)
         else:
@@ -1718,6 +2617,7 @@ class HaloApp:
             self.schedule_scrub_frame(value)
 
     def on_trim_bracket_commit(self, kind: str):
+        self._trim_drag_undo = False  # end of the drag gesture (L3)
         self.update_trim_controls()
         seconds = self.trim_start_seconds if kind == "start" else self.trim_end_seconds
         if seconds is not None:
@@ -1823,11 +2723,16 @@ class HaloApp:
     def reset_all_volumes(self):
         if not self.track_controls or self.is_exporting:
             return
+        self.push_undo()  # snapshot before resetting the mix (L3)
         self.preview_muted = False
         self.solo_row = None
-        for _, var, slider in self.track_controls:
+        for row, (_, var, slider) in enumerate(self.track_controls):
             var.set(True)
             slider.set(1.0)
+            # slider.set() is silent, so the "NN%" label won't follow on its own.
+            label = self.track_volume_labels.get(row)
+            if label is not None:
+                label.set("100%")
         self.apply_all_track_volumes()
         self.update_track_row_styles()
         self.set_status("All track volumes reset to 100%.")
@@ -1835,7 +2740,7 @@ class HaloApp:
 
     def update_track_row_styles(self):
         """Recolor each row's left indicator strip: accent when soloed, dim
-        when silenced (muted, or not the soloed row), maroon otherwise."""
+        when silenced (muted, or not the soloed row), roster color otherwise."""
         for row in range(len(self.track_controls)):
             strip = self.track_state_strips.get(row)
             if strip is None:
@@ -1845,11 +2750,13 @@ class HaloApp:
             elif self.effective_volume(row) <= 0.0:
                 color = theme.TEXT_DIM
             else:
-                color = theme.MAROON
+                color = theme.ROSTER
             try:
                 strip.configure(bg=color)
             except Exception:
                 pass
+        # The timeline waveform lanes mirror the same mix state.
+        self.push_wave_states()
 
     def schedule_live_mix_fallback(self, delay_ms: int = 400):
         if self.live_mix_fallback_after_id is not None:
@@ -1940,6 +2847,98 @@ class HaloApp:
     # Embedded preview
     # ========================================================
 
+    # ========================================================
+    # Preview mouse gestures (M10)
+    # ========================================================
+    # The embedded player windows are input-disabled (win32), so clicks over
+    # live video fall through to the Tk preview surfaces these bind on.
+
+    PREVIEW_HOLD_MS = 450  # press this long = hold gesture, shorter = click
+
+    def bind_preview_gestures(self, widget):
+        widget.bind("<ButtonPress-1>", self.on_preview_press)
+        widget.bind("<ButtonRelease-1>", self.on_preview_release)
+        widget.bind("<Double-Button-1>", self.on_preview_double_click)
+        widget.bind("<ButtonPress-3>", self.on_preview_right_click)
+
+    def _preview_gestures_allowed(self) -> bool:
+        return bool(self.video_path) and not self.is_exporting
+
+    def _cancel_preview_hold_timer(self):
+        if self.preview_hold_after_id is not None:
+            try:
+                self.root.after_cancel(self.preview_hold_after_id)
+            except Exception:
+                pass
+            self.preview_hold_after_id = None
+
+    def on_preview_press(self, _event=None):
+        if not self._preview_gestures_allowed():
+            return
+        self._cancel_preview_hold_timer()
+        self.preview_hold_after_id = self.root.after(
+            self.PREVIEW_HOLD_MS, self._begin_preview_hold)
+
+    def _begin_preview_hold(self):
+        """The press outlived the click window: play at 2x while held."""
+        self.preview_hold_after_id = None
+        if not self._preview_gestures_allowed():
+            return
+        state = self.playback.state
+        if state == core_playback.PLAYING:
+            self.preview_hold_was_paused = False
+        elif state == core_playback.PAUSED:
+            self.preview_hold_was_paused = True
+        else:
+            return  # STARTING/IDLE: nothing sensible to speed up
+        self.preview_hold_active = True
+        applied_live = self.playback.set_rate(2.0)
+        if self.preview_hold_was_paused:
+            self.resume_playback()
+        elif not applied_live:
+            # ffplay: the rate only takes effect on a respawn — reuse the
+            # conceal-aware restart path so the switch doesn't flash.
+            self.restart_playback_at(self.playback.position)
+        self.set_status("Playing at 2× — release to drop back.")
+
+    def on_preview_release(self, _event=None):
+        self._cancel_preview_hold_timer()
+        if not self.preview_hold_active:
+            return  # short press: a plain click does nothing
+        self.preview_hold_active = False
+        was_paused = self.preview_hold_was_paused
+        self.preview_hold_was_paused = False
+        if was_paused:
+            # Skimmed from pause: park paused wherever the 2x run got to.
+            if self.playback.state in (core_playback.PLAYING, core_playback.STARTING):
+                self.pause_playback()
+            self.playback.set_rate(1.0)  # ffplay drops the paused 2x pipeline
+            pos = self.playback.position
+            self.set_seek_position(pos)
+            self.request_scrub_frame(pos)
+            self.set_status(f"Paused at {self.format_seconds(pos)}.")
+        else:
+            applied_live = self.playback.set_rate(1.0)
+            if not applied_live and self.playback.state in (
+                    core_playback.PLAYING, core_playback.STARTING):
+                self.restart_playback_at(self.playback.position)
+            self.set_status("Back to 1× speed.")
+
+    def on_preview_double_click(self, _event=None):
+        # The second press re-armed the hold timer; a slow first press may
+        # even have gone 2x already — unwind both before flipping focus.
+        self._cancel_preview_hold_timer()
+        if self.preview_hold_active:
+            self.on_preview_release()
+        if dialogs.a_modal_is_open() or not self.video_path:
+            return
+        self.toggle_focus_mode()
+
+    def on_preview_right_click(self, _event=None):
+        if not self._preview_gestures_allowed() or self.preview_hold_active:
+            return
+        self.toggle_preview()
+
     def toggle_preview(self):
         if self.is_exporting:
             return
@@ -1990,7 +2989,7 @@ class HaloApp:
             return
 
         tracks = self.superset_tracks()
-        if not tracks:
+        if not tracks and not self.is_silent:
             messagebox.showwarning(
                 "No tracks selected", "Please select at least one audio track."
             )
@@ -2018,7 +3017,7 @@ class HaloApp:
             return
 
         tracks = self.superset_tracks()
-        if not tracks:
+        if not tracks and not self.is_silent:
             return
 
         self.set_status("Seeking preview...")
@@ -2161,6 +3160,9 @@ class HaloApp:
     def on_playback_state(self, state: str):
         self.refresh_playback_button_state()
 
+        # The timeline's scanner cue tracks the STARTING state exactly.
+        self.seekbar.set_engine_starting(state == core_playback.STARTING)
+
         if self.is_exporting:
             return
 
@@ -2195,6 +3197,8 @@ class HaloApp:
         window in place (FFplay repositions it once at first-frame time)."""
         self.hide_paused_frame()
         self.preview_placeholder.place_forget()
+        # Belt and braces: mpv/ffplay promote states on different signals.
+        self.seekbar.set_engine_starting(False)
         self.schedule_anchor_burst()
         self.refresh_playback_button_state()
 
@@ -2383,26 +3387,85 @@ class HaloApp:
     # Export
     # ========================================================
 
-    def export_video_dialog(self):
+    def toggle_export_drawer(self):
+        if self.export_drawer is None:
+            return
+        self.export_drawer.toggle()
+
+    def open_export_drawer(self):
+        if self.export_drawer is None:
+            return
+        self.export_drawer.open()
+
+    # ---------------------------------------------- destination + naming
+
+    def resolved_export_dir(self) -> Path:
+        return Path(self.export_destination) if self.export_destination else OUTPUTS_DIR
+
+    def resolved_export_stem(self) -> str:
+        """The name pattern resolved against the current editor state."""
+        trim_start, trim_end = self.get_active_trim_points()
+        try:
+            size_mb = self.get_compression_target_mb()
+        except ValueError:
+            size_mb = None  # invalid target: preview the name without it
+        return core_jobs.resolve_name_pattern(
+            self.export_name_pattern_var.get() or DEFAULT_EXPORT_NAME_PATTERN,
+            Path(self.video_path).stem if self.video_path else "clip",
+            trim=trim_start is not None or trim_end is not None,
+            crop=bool(self.crop and self.crop.will_reencode()),
+            stamp=bool(self.timestamp_watermark_enabled_var.get()),
+            size_mb=size_mb,
+            res=self.get_compression_resolution_label() if size_mb is not None else None,
+        )
+
+    def browse_export_destination(self):
+        chosen = filedialog.askdirectory(
+            title="Export destination", initialdir=str(self.resolved_export_dir()))
+        if not chosen:
+            return
+        if Path(chosen).resolve() == OUTPUTS_DIR.resolve():
+            self.export_destination = None
+        else:
+            self.export_destination = str(Path(chosen))
+        self.export_drawer.refresh()
+        self.log(f"Export destination set to {self.resolved_export_dir()}.")
+
+    def reset_export_destination(self):
+        self.export_destination = None
+        self.export_drawer.refresh()
+        self.log("Export destination reset to the outputs folder.")
+
+    # -------------------------------------------------------- job launch
+
+    def build_export_spec(self) -> core_jobs.ExportJobSpec | None:
+        """Validate the editor state and snapshot it as an ExportJobSpec
+        (output_path left empty — the caller names it). Shows the failing
+        validation dialog and returns None when the export can't start."""
         if not self.video_path:
             messagebox.showwarning("No video loaded", "Please load a video file first.")
-            return
+            return None
 
         if not FFMPEG:
             messagebox.showerror("Missing ffmpeg", "ffmpeg was not found.")
-            return
+            return None
 
-        try:
-            filter_complex = self.build_audio_filter()
-        except ValueError as exc:
-            messagebox.showwarning("No tracks selected", str(exc))
-            return
+        # Silent-video support (L1): no audio graph for a video-only clip; the
+        # command builders read the empty filter_complex and emit -an.
+        if self.is_silent:
+            filter_complex = ""
+        else:
+            try:
+                filter_complex = self.build_audio_filter()
+            except ValueError as exc:
+                messagebox.showwarning("No tracks selected", str(exc))
+                return None
 
         try:
             compression_target_mb = self.get_compression_target_mb()
         except ValueError as exc:
             messagebox.showwarning("Invalid compression target", str(exc))
-            return
+            return None
 
         compression_resolution_label = (
             self.get_compression_resolution_label()
@@ -2410,29 +3473,107 @@ class HaloApp:
             else None
         )
 
-        source = Path(self.video_path)
-
-        OUTPUTS_DIR.mkdir(exist_ok=True)
+        try:
+            timestamp_watermark = self.get_timestamp_watermark_settings()
+        except ValueError as exc:
+            messagebox.showwarning("Invalid timestamp watermark", str(exc))
+            return None
 
         trim_start, trim_end = self.get_active_trim_points()
 
         crop_video_filter = self.crop.export_video_chain(trim_start) if self.crop else None
-        crop_prefilter = self.crop.export_prefilter(trim_start) if self.crop else None
-        crop_active = crop_video_filter is not None or crop_prefilter is not None
+        # The compressed path downscales to the resolution cap after the crop,
+        # so build the crop chain directly at that cap — a heavy zoom then
+        # never inflates the pre-scale frame to an invalid size.
+        prefilter_dims = None
+        if compression_target_mb is not None:
+            max_w, max_h, _ = core_commands.resolve_resolution_limit(
+                compression_resolution_label)
+            prefilter_dims = (max_w, max_h)
+        crop_prefilter = (
+            self.crop.export_prefilter(trim_start, prefilter_dims) if self.crop else None)
 
-        trim_suffix = "_trimmed" if (trim_start is not None or trim_end is not None) else ""
-        crop_suffix = "_crop" if crop_active else ""
-        compression_suffix = (
-            f"_compressed_{compression_target_mb:g}mb_{compression_resolution_label}"
-            if compression_target_mb is not None
-            else ""
+        # Burn the timestamp on top of any crop transform. In the standard path
+        # the watermark rides the -vf chain (crop or, alone, forcing a re-encode);
+        # in the compressed path it rides the prefilter that runs before scale, so
+        # drawtext's h-relative sizing stays proportional after the downscale.
+        watermark_filter = (
+            core_filters.build_timestamp_watermark_filter(*timestamp_watermark)
+            if timestamp_watermark is not None
+            else None
         )
-        default_output = OUTPUTS_DIR / f"{source.stem}_mixed_audio{trim_suffix}{crop_suffix}{compression_suffix}.mp4"
+        if watermark_filter:
+            crop_video_filter = (
+                f"{crop_video_filter},{watermark_filter}"
+                if crop_video_filter else watermark_filter
+            )
+            crop_prefilter = (
+                f"{crop_prefilter},{watermark_filter}"
+                if crop_prefilter else watermark_filter
+            )
+
+        return core_jobs.ExportJobSpec(
+            input_path=self.video_path,
+            filter_complex=filter_complex,
+            output_path="",
+            trim_start=trim_start,
+            trim_end=trim_end,
+            compression_target_mb=compression_target_mb,
+            compression_resolution_label=compression_resolution_label,
+            total_duration_seconds=self.total_duration_seconds,
+            video_filter=crop_video_filter,
+            video_prefilter=crop_prefilter,
+            clip_name=Path(self.video_path).name,
+        )
+
+    def export_go(self):
+        """START EXPORT: straight to the destination folder under the
+        pattern-resolved name — no save dialog (B4)."""
+        if self.is_exporting:
+            return
+        spec = self.build_export_spec()
+        if spec is None:
+            return
+
+        out_dir = self.resolved_export_dir()
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            messagebox.showerror(
+                "Invalid destination",
+                f"The export destination could not be created:\n\n{out_dir}\n\n{exc}",
+            )
+            return
+
+        output = core_jobs.unique_path(out_dir / f"{self.resolved_export_stem()}.mp4").resolve()
+        if output == Path(spec.input_path).resolve():
+            messagebox.showerror(
+                "Invalid output",
+                "The output file cannot be the same as the source video.",
+            )
+            return
+
+        spec.output_path = str(output)
+        self.start_export(spec)
+
+    def export_save_as(self):
+        """SAVE AS…: the classic save dialog, prefilled from the pattern."""
+        if self.is_exporting:
+            return
+        spec = self.build_export_spec()
+        if spec is None:
+            return
+
+        out_dir = self.resolved_export_dir()
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            out_dir = OUTPUTS_DIR
 
         output_path = filedialog.asksaveasfilename(
             title="Save merged video as",
-            initialdir=str(OUTPUTS_DIR),
-            initialfile=default_output.name,
+            initialdir=str(out_dir),
+            initialfile=f"{self.resolved_export_stem()}.mp4",
             defaultextension=".mp4",
             filetypes=[
                 ("MP4 video", "*.mp4"),
@@ -2445,12 +3586,35 @@ class HaloApp:
             return
 
         output_path_obj = Path(output_path).resolve()
-
-        if output_path_obj == source:
+        if output_path_obj == Path(spec.input_path).resolve():
             messagebox.showerror(
                 "Invalid output",
                 "The output file cannot be the same as the source video.",
             )
+            return
+
+        spec.output_path = str(output_path_obj)
+        self.start_export(spec)
+
+    # ---- taskbar progress (L2) — all run on the Tk/STA thread ----
+
+    def _root_hwnd(self):
+        return chrome.get_root_hwnd(self.root)
+
+    def taskbar_export_begin(self, indeterminate: bool):
+        self.taskbar_progress.begin(self._root_hwnd(), indeterminate)
+
+    def taskbar_export_value(self, percent: int):
+        self.taskbar_progress.value(self._root_hwnd(), percent)
+
+    def taskbar_export_clear(self):
+        self.taskbar_progress.clear(self._root_hwnd())
+
+    def start_export(self, spec: core_jobs.ExportJobSpec):
+        """Launch the export worker for a fully-named spec. Everything here
+        derives from the spec alone, so a RE-RUN from the job history goes
+        through the exact same door."""
+        if self.is_exporting:
             return
 
         if self.crop and self.crop.editing:
@@ -2460,53 +3624,70 @@ class HaloApp:
 
         self.update_trim_info()
 
-        if crop_active:
+        if spec.compression_target_mb is None and (spec.video_filter or spec.video_prefilter):
             self.log(
-                "Crop/zoom keyframes active: video will be re-encoded with "
+                "Crop/zoom or watermark active: video will be re-encoded with "
                 "H.265 NVENC (constant quality)."
             )
+
+        # A lingering "Export complete" from the last run must not sit on screen
+        # (reading COMPLETE) while this new export is compressing.
+        dialogs.dismiss_tagged("export")
 
         self.is_exporting = True
         self.stop_export_button.config(state=tk.NORMAL)
         self.set_busy(True)
+        # Taskbar progress (L2): the multi-attempt compression tuner has no
+        # honest determinate mapping, so it shows a marquee; a single-pass
+        # standard export shows a real 0..100 bar fed by on_progress.
+        self.taskbar_export_begin(indeterminate=spec.compression_target_mb is not None)
 
-        if compression_target_mb is not None:
-            self.set_status(f"Compressing merged video to under {compression_target_mb:g} MB (Windows/Explorer/Discord)...")
+        if spec.compression_target_mb is not None:
+            self.set_status(
+                f"Compressing merged video to under {spec.compression_target_mb:g} MB (Windows/Explorer/Discord)...")
             self.log(
-                f"Export requested with compression target under {compression_target_mb:g} MB "
-                f"(Windows/Explorer/Discord) using H.265 NVENC, {compression_resolution_label} max resolution, "
+                f"Export requested with compression target under {spec.compression_target_mb:g} MB "
+                f"(Windows/Explorer/Discord) using H.265 NVENC, {spec.compression_resolution_label} max resolution, "
                 f"preserved FPS, and 64 kbps AAC audio."
             )
-        elif trim_start is not None or trim_end is not None:
+        elif spec.trim_start is not None or spec.trim_end is not None:
             self.set_status("Exporting trimmed merged video...")
             self.log("Export requested with trim enabled.")
         else:
             self.set_status("Exporting merged video...")
             self.log("Export requested.")
 
-        if trim_start is not None or trim_end is not None:
-            trim_start_text = self.format_seconds(trim_start) if trim_start is not None else "start"
-            trim_end_text = self.format_seconds(trim_end) if trim_end is not None else "end"
+        if spec.trim_start is not None or spec.trim_end is not None:
+            trim_start_text = self.format_seconds(spec.trim_start) if spec.trim_start is not None else "start"
+            trim_end_text = self.format_seconds(spec.trim_end) if spec.trim_end is not None else "end"
             self.log(f"Trim range: {trim_start_text} to {trim_end_text}.")
 
-        self.log(f"Output path: {output_path_obj}")
+        self.log(f"Output path: {spec.output_path}")
+
+        # Record the job before the worker starts: a crash mid-export leaves
+        # an honest "interrupted" row in the next session's history.
+        job = self.job_history.new_job(spec)
+        self.export_job = job
+        self.job_history.save()
+        if self.export_drawer is not None:
+            self.export_drawer.refresh_jobs()
 
         self.export_thread = threading.Thread(
             target=core_export.run_export_job,
             args=(
-                self.video_path,
-                filter_complex,
-                str(output_path_obj),
-                trim_start,
-                trim_end,
-                compression_target_mb,
-                compression_resolution_label,
-                self.total_duration_seconds,
-                self.make_export_callbacks(),
+                spec.input_path,
+                spec.filter_complex,
+                spec.output_path,
+                spec.trim_start,
+                spec.trim_end,
+                spec.compression_target_mb,
+                spec.compression_resolution_label,
+                spec.total_duration_seconds,
+                self.make_export_callbacks(job),
                 lambda: not self.is_exporting,
                 self.register_export_process,
-                crop_video_filter,
-                crop_prefilter,
+                spec.video_filter,
+                spec.video_prefilter,
             ),
             daemon=True,
         )
@@ -2516,48 +3697,130 @@ class HaloApp:
     # Export execution (core) bridge
     # ========================================================
 
-    def make_export_callbacks(self):
+    def notify_export_attention(self):
+        """Flashes the taskbar button when an export ends while the app is in
+        the background, so a tabbed-away user knows to come back. Windows
+        stops the flash on its own the moment the app is focused.
+
+        Tk thread only (fetches the root HWND) — callers marshal via ui().
+        """
+        if not self.settings.notify_flash_taskbar or is_foreground_process():
+            return
+        flash_taskbar(chrome.get_root_hwnd(self.root), until_focused=True)
+
+    def make_export_callbacks(self, job: core_jobs.ExportJob):
         """Bridges core export events onto the Tk thread with the same
-        messages/dialogs the app has always shown."""
+        messages/dialogs the app has always shown, and mirrors every event
+        into the job's history record (B4)."""
         app = self
 
         class TkExportCallbacks:
             def on_status(self, text: str) -> None:
                 app.ui(app.set_status, text)
 
+            def on_progress(self, percent: int, attempt: int, attempts_max: int) -> None:
+                job.percent = percent
+                job.attempt = attempt
+                job.attempts_max = attempts_max
+                app.ui(app.seekbar.set_export_progress, percent, attempt, attempts_max)
+                # Only a single-pass (standard) export drives the determinate
+                # taskbar bar; the compression tuner stays indeterminate (begin).
+                if attempts_max <= 1:
+                    app.ui(app.taskbar_export_value, percent)
+                if app.export_drawer is not None:
+                    app.ui(app.export_drawer.update_job, job)
+
             def on_log(self, text: str) -> None:
+                job.add_log(text)
                 app.ui(app.log, text)
 
             def on_seek_to(self, seconds: float) -> None:
                 app.ui(app.set_seek_position, seconds)
 
             def on_error(self, title: str, message: str) -> None:
+                job.finish(core_jobs.FAILED, error=message)
+                app.ui(app.on_job_settled)
+                app.ui(app.notify_export_attention)
                 app.ui(messagebox.showerror, title, message)
 
             def on_complete(self, output_path: str, size_bytes: int | None) -> None:
-                # Success is a toast with an action, not a modal — and the
-                # folder opens on request instead of automatically.
+                if size_bytes is None:
+                    # The standard path doesn't measure — the row should
+                    # still show a real size.
+                    try:
+                        size_bytes = Path(output_path).stat().st_size
+                    except Exception:
+                        size_bytes = None
+                job.finish(core_jobs.DONE, size_bytes=size_bytes)
+                app.ui(app.on_job_settled)
+                app.ui(app.notify_export_attention)
+                # Success is a toast with an action, not a modal — and it
+                # points into the job history rather than being the only
+                # record of the export.
                 name = Path(output_path).name
                 if size_bytes is None:
                     message = name
                 else:
                     message = f"{name}\n{format_windows_discord_size(size_bytes)}"
                 app.ui(
-                    dialogs.toast,
-                    "Export complete",
-                    message,
-                    "success",
-                    "OPEN FOLDER",
-                    lambda: app.reveal_file(output_path),
-                    12000,
+                    lambda: dialogs.toast(
+                        "Export complete", message, "success",
+                        "SHOW JOBS", app.open_export_drawer,
+                        12000, tag="export",
+                    )
                 )
 
             def on_finished(self) -> None:
+                if job.is_running:  # neither complete nor failed: cancelled
+                    job.finish(core_jobs.CANCELLED, error="Cancelled.")
+                    app.ui(app.on_job_settled)
                 app.is_exporting = False
+                app.ui(app.seekbar.set_export_progress, None)
+                app.ui(app.taskbar_export_clear)
                 app.ui(app.stop_export_button.config, state=tk.DISABLED)
                 app.ui(app.set_busy, False)
 
         return TkExportCallbacks()
+
+    def on_job_settled(self):
+        """Tk-thread bookkeeping once a job reaches a terminal state:
+        persist the history and repaint the drawer's rows."""
+        self.job_history.save()
+        if self.export_drawer is not None:
+            self.export_drawer.refresh_jobs()
+
+    # ------------------------------------------------------ job actions
+
+    def job_open(self, job_id: str):
+        job = self.job_history.get(job_id)
+        if job is None:
+            return
+        try:
+            os.startfile(job.spec.output_path)  # noqa: S606 — user-initiated
+        except Exception:
+            self.set_status("That export is missing on disk.")
+
+    def job_reveal(self, job_id: str):
+        job = self.job_history.get(job_id)
+        if job is None:
+            return
+        if Path(job.spec.output_path).exists():
+            core_reveal_file(job.spec.output_path)
+        else:
+            self.set_status("That export is missing on disk.")
+
+    def job_rerun(self, job_id: str):
+        """Replay a history row's spec verbatim — same inputs, same filters,
+        same output path (ffmpeg -y overwrites the old file)."""
+        job = self.job_history.get(job_id)
+        if job is None or self.is_exporting:
+            return
+        if not Path(job.spec.input_path).exists():
+            self.set_status("The source clip for that job is missing on disk.")
+            return
+        spec = core_jobs.ExportJobSpec(**vars(job.spec))
+        self.log(f"Re-running export: {Path(spec.output_path).name}")
+        self.start_export(spec)
 
     def register_export_process(self, process: subprocess.Popen | None):
         self.export_process = process
@@ -2571,6 +3834,8 @@ class HaloApp:
                 pass
 
         self.is_exporting = False
+        self.seekbar.set_export_progress(None)
+        self.taskbar_export_clear()
         self.stop_export_button.config(state=tk.DISABLED)
         self.set_status("Export cancelled.")
 
@@ -2685,6 +3950,8 @@ class HaloApp:
 
         self.persist_video_session()
         self.save_settings()
+        self.taskbar_progress.shutdown()
+        self.render_queue.shutdown()
         self.playback.shutdown()
         self.root.destroy()
 
@@ -2750,27 +4017,6 @@ def create_root_window():
             pass
 
     return root
-
-
-def main():
-    startup_file = get_startup_file_from_args()
-
-    dpi.init()
-    fonts.load_private_fonts()
-
-    root = create_root_window()
-    fonts.verify_with_tk(root)
-
-    app = HaloApp(root)
-
-    if startup_file:
-        root.after(250, lambda: app.load_video(startup_file))
-
-    root.mainloop()
-
-
-if __name__ == "__main__":
-    main()
 
 
 def main():

@@ -107,8 +107,49 @@ class CropController:
             self.app.crop_enabled_var.set(True)
             self._show_toolbar()
             self._update_mode_button()
-            self._refresh_markers()
+        # Markers render either way: inert (ghosted) when crop is off, so a
+        # restored session's keyframes are never invisible (F6).
+        self._refresh_markers()
         return True
+
+    def apply_snapshot(self, state: dict):
+        """Undo/redo (L3): fully replace the crop state from a snapshot. Unlike
+        restore_state (the load path, which ignores empty keyframes and only
+        turns crop ON), this also restores to empty keyframes and to the
+        disabled state, then repaints the preview so the change is visible."""
+        try:
+            keyframes = tuple(sorted(
+                (CropKeyframe(float(t), float(x), float(y), float(w), float(h))
+                 for t, x, y, w, h in state.get("keyframes") or []),
+                key=lambda kf: kf.t,
+            ))
+        except (TypeError, ValueError):
+            keyframes = ()
+        self.track.keyframes = keyframes
+        want_enabled = bool(state.get("enabled")) and self.src_w > 0
+
+        if want_enabled:
+            self.track.enabled = True
+            self.app.crop_enabled_var.set(True)
+            self._show_toolbar()
+            self._update_mode_button()
+            if self._editing:
+                seconds = self.app.current_seek_seconds()
+                rect = self.track.rect_at(seconds) or self.app.cropbox.full_frame_rect()
+                self.app.cropbox.set_rect(*rect)
+                self._update_info(seconds)
+        else:
+            self.track.enabled = False
+            self.app.crop_enabled_var.set(False)
+            self._exit_edit()
+            self._hide_toolbar()
+
+        self._refresh_markers()
+        self._invalidate_pipeline()
+        if self.app.playback.state == core_playback.PAUSED:
+            pos = self.app.current_seek_seconds()
+            self.app.pending_still_request = self.app.playback.request_still(
+                pos, vf=self.still_vf(pos))
 
     def on_toggle(self):
         if self.app.crop_enabled_var.get():
@@ -127,7 +168,7 @@ class CropController:
             self.track.enabled = False
             self._exit_edit()
             self._hide_toolbar()
-            self.app.seekbar.set_keyframes([])
+            self._refresh_markers()  # diamonds stay, ghosted
             self._invalidate_pipeline()
             self.app.update_compression_estimate()
             # The cropbox is gone; refresh the plain (uncropped) paused frame so
@@ -163,7 +204,9 @@ class CropController:
 
     def enter_preview(self):
         """Switch to preview mode: play the clip back with the crop applied."""
-        if not self.app.superset_tracks():
+        # Silent clips (L1) preview video-only; only a non-silent clip with all
+        # tracks deselected still needs the "pick a track" nudge.
+        if not self.app.superset_tracks() and not self.app.is_silent:
             dialogs.showinfo(
                 "Preview needs a track",
                 "Preview playback needs at least one audio track. Keep working "
@@ -227,6 +270,7 @@ class CropController:
         # Uncropped backdrop (vf=None) so the editor shows the whole frame.
         self.app.pending_still_request = self.app.playback.request_still(seconds, vf=None)
         self._update_info(seconds)
+        self.app.on_crop_editing_changed(True)
 
     def _exit_edit(self):
         if not self._editing:
@@ -236,6 +280,7 @@ class CropController:
             self.app.cropbox.place_forget()
         except Exception:
             pass
+        self.app.on_crop_editing_changed(False)
 
     def _ensure_paused_still(self):
         """Get to a concealed paused state so Tk can own the preview surface
@@ -268,11 +313,20 @@ class CropController:
             time_offset=start_seconds, scale_flags=PREVIEW_MOTION_SCALE_FLAGS,
         )
 
-    def _export_motion(self, trim_start):
+    def _export_motion(self, trim_start, max_dims=None):
         if not self.track.enabled or self.src_w <= 0:
             return None
-        out_w = motion.even_floor(self.src_w)
-        out_h = motion.even_floor(self.src_h)
+        # Build at the capped output size when the compressed path passes its
+        # resolution limit: a zoom then scales the WHOLE frame up before
+        # cropping, so building at 4K when the export lands at 1080p forces a
+        # needlessly huge (often invalid) intermediate. Capping first keeps
+        # the intermediate proportional to the real output — the aspect and
+        # geometry are identical, and the later scale=min(box,iw) is a no-op.
+        if max_dims is not None:
+            out_w, out_h = motion.cap_size(self.src_w, self.src_h, *max_dims)
+        else:
+            out_w = motion.even_floor(self.src_w)
+            out_h = motion.even_floor(self.src_h)
         return motion.build_motion_chain(
             self.track, self.src_w, self.src_h, out_w, out_h,
             time_offset=trim_start or 0.0,
@@ -283,9 +337,11 @@ class CropController:
         chain = self._export_motion(trim_start)
         return f"{chain},setsar=1" if chain else None
 
-    def export_prefilter(self, trim_start):
-        """Compressed export prefix (prepended before the scale cap)."""
-        return self._export_motion(trim_start)
+    def export_prefilter(self, trim_start, max_dims=None):
+        """Compressed export prefix (prepended before the scale cap).
+        max_dims is the compression resolution limit (w, h); the chain builds
+        at that capped size so the pre-scale intermediate stays bounded."""
+        return self._export_motion(trim_start, max_dims)
 
     def will_reencode(self) -> bool:
         """True when the active crop forces the standard export to re-encode."""
@@ -351,6 +407,7 @@ class CropController:
 
     def _commit_rect(self, rect):
         seconds = self.app.current_seek_seconds()
+        self.app.push_undo()  # snapshot before the keyframe edit (L3)
         self.track.upsert(CropKeyframe(seconds, *rect), self._eps())
         self._refresh_markers()
         self._invalidate_pipeline()
@@ -370,6 +427,9 @@ class CropController:
 
     def delete_key(self):
         seconds = self.app.current_seek_seconds()
+        if self.track.index_near(seconds, self._eps()) is None:
+            return  # nothing here to delete — don't consume the undo slot
+        self.app.push_undo()  # snapshot before the delete (L3)
         if self.track.remove_near(seconds, self._eps()):
             self._refresh_markers()
             self._invalidate_pipeline()
@@ -384,6 +444,7 @@ class CropController:
         if not dialogs.askyesno("Clear crop keyframes",
                                 "Remove all crop keyframes for this clip?"):
             return
+        self.app.push_undo()  # snapshot before wiping all keyframes (L3)
         self.track.clear()
         self._refresh_markers()
         self._invalidate_pipeline()
@@ -425,10 +486,26 @@ class CropController:
     def on_kf_commit(self, index, value):
         if not (0 <= index < len(self.track.keyframes)):
             return
+        self.app.push_undo()  # snapshot before the retime (L3)
         applied = self.track.retime(index, value, self._eps())
         self._refresh_markers()
-        self._invalidate_pipeline()
+        if self.track.enabled:  # inert keyframes don't touch the pipeline
+            self._invalidate_pipeline()
         self.app.log(f"Crop keyframe moved to {self.app.format_seconds(applied)}.")
+
+    def on_kf_delete(self, index):
+        """Right-click on a diamond removes it — enabled or inert alike."""
+        times = self.track.times()
+        if not (0 <= index < len(times)):
+            return
+        self.app.push_undo()  # snapshot before the right-click delete (L3)
+        self.track.remove_near(times[index], self._eps())
+        self._refresh_markers()
+        if self.track.enabled:
+            self._invalidate_pipeline()
+        self.app.log(
+            f"Crop keyframe at {self.app.format_seconds(times[index])} deleted."
+        )
 
     # ------------------------------------------------------------------
     # Internals
@@ -462,14 +539,27 @@ class CropController:
         return 0.5 / max(1.0, self.fps or 30.0)
 
     def _refresh_markers(self):
-        self.app.seekbar.set_keyframes(self.track.times())
+        # Keyframes stay visible whenever they exist — ghosted ("inert")
+        # while crop is off, since they persist with the session but have
+        # no effect on preview/export. Structural fix for F6.
+        self.app.seekbar.set_keyframes(self.track.times(),
+                                       inert=not self.track.enabled)
         # The compression card hint reflects whether export will re-encode.
         self.app.update_compression_estimate()
 
     def _show_toolbar(self):
+        # In focus mode the transport row is hidden (pack_forget), so the
+        # toolbar slots in right under the timeline strip instead.
+        anchor = (self.app.timeline_row if getattr(self.app, "focus_mode", False)
+                  else self.app.transport_frame)
         self.app.crop_toolbar_frame.pack(
-            fill=tk.X, pady=(px(4), 0), after=self.app.transport_frame
+            fill=tk.X, pady=(px(4), 0), after=anchor
         )
+
+    def reposition_toolbar(self):
+        """Re-pack the toolbar for the current layout (focus enter/exit)."""
+        if self.track.enabled:
+            self._show_toolbar()
 
     def _hide_toolbar(self):
         try:
