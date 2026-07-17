@@ -141,16 +141,11 @@ def build_playback_filter(
     so it already produces the correct display geometry and there is nothing
     left to scale afterwards.
     """
-    audio = core_filters.build_audio_filter(tracks)
     width = max(2, int(width))
     height = max(2, int(height))
     # rate != 1 bakes the playback speed into the graph (FFplay has no live
     # speed control): setpts squeezes the video timeline, atempo the audio.
-    # atempo appends AFTER the amix, so the Parsed_volume_i instance names
-    # the live volume commands target keep lining up with track rows.
     rate_v = f",setpts=PTS/{rate:g}" if abs(rate - 1.0) > 1e-9 else ""
-    if abs(rate - 1.0) > 1e-9:
-        audio = audio.replace("[aout]", "[amix]") + f";[amix]atempo={rate:g}[aout]"
     if video_chain:
         video = f"[0:v:0]{video_chain}{rate_v}[vout]"
     else:
@@ -158,6 +153,15 @@ def build_playback_filter(
             f"[0:v:0]scale={width}:{height}:"
             f"force_original_aspect_ratio=decrease:force_divisible_by=2{rate_v}[vout]"
         )
+    # Silent-video support (L1): no tracks -> video-only graph, no [aout].
+    if not tracks:
+        return video
+    # atempo appends AFTER the amix, so the Parsed_volume_i instance names the
+    # live volume commands target keep lining up with track rows; the audio
+    # graph comes first for the same reason.
+    audio = core_filters.build_audio_filter(tracks)
+    if abs(rate - 1.0) > 1e-9:
+        audio = audio.replace("[aout]", "[amix]") + f";[amix]atempo={rate:g}[aout]"
     return f"{audio};{video}"
 
 
@@ -168,6 +172,10 @@ def build_playback_stream_cmds(
     width: int,
     height: int,
 ) -> tuple[list[str], list[str]]:
+    # Silent-video support (L1): a video-only graph has no [aout] label, so
+    # map only video and drop the audio codec. The filter itself is the source
+    # of truth for whether audio exists.
+    has_audio = "[aout]" in filter_complex
     ffmpeg_cmd = [
         paths.FFMPEG,
         "-hide_banner",
@@ -182,18 +190,13 @@ def build_playback_stream_cmds(
         filter_complex,
         "-map",
         "[vout]",
-        "-map",
-        "[aout]",
-        "-c:v",
-        "rawvideo",
-        "-pix_fmt",
-        "yuv420p",
-        "-c:a",
-        "pcm_s16le",
-        "-f",
-        "nut",
-        "pipe:1",
     ]
+    if has_audio:
+        ffmpeg_cmd += ["-map", "[aout]"]
+    ffmpeg_cmd += ["-c:v", "rawvideo", "-pix_fmt", "yuv420p"]
+    if has_audio:
+        ffmpeg_cmd += ["-c:a", "pcm_s16le"]
+    ffmpeg_cmd += ["-f", "nut", "pipe:1"]
 
     ffplay_cmd = [
         paths.FFPLAY,
@@ -482,12 +485,11 @@ class PlaybackEngine:
         Start (or restart) the pipeline at start_seconds.
 
         tracks is the full superset in track-row order: (stream_index, volume)
-        with disabled rows already mapped to volume 0.0.
+        with disabled rows already mapped to volume 0.0. An empty list is a
+        silent (audio-less) clip — the graph then carries video only (L1).
         """
         if not self._video_path:
             return
-        if not tracks:
-            raise ValueError("Please select at least one audio track.")
 
         start_seconds = self._clamp_position(start_seconds)
 

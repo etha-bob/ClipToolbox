@@ -56,9 +56,30 @@ Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 
 | ID | Item | Fixes | Status |
 |----|------|-------|--------|
-| L1 | Silent-video support: audio-optional probe/preview/export (`-an` path, skip amix) | F2 | todo |
+| L1 | Silent-video support: audio-optional probe/preview/export (`-an` path, skip amix) | F2 | in-progress |
 | L2 | ITaskbarList3 taskbar progress (COM spec in report §roadmap-13; only after M1) | F5 | todo |
 | L3 | Single-level undo for edit state (supersedes Q5 if done) | F8 | todo |
+
+**L1 stage checklist** (design approved 2026-07-16 in plan mode;
+`feature/silent-video`, one commit per stage; decisions: "silent" strictly =
+zero probed audio streams — an audio clip with all tracks deselected keeps the
+existing "select at least one track" warning; preview builds a video-only
+graph/pipe, export uses `-an`; the golden-checked command/mpv builders get their
+`tools/dump_commands.py` sections regenerated):
+
+- [x] S1 Core silent preview path: `after_probe` falls through to the editor for
+      video-only clips (no dialog+return), `is_silent` state; `build_playback_filter`
+      / `build_playback_stream_cmds` video-only when tracks empty; `PlaybackEngine`
+      / mpv `play()` allow empty tracks; `start_preview` / `restart_playback_at`
+      permit the empty path only when silent. Preview a real silent clip on ffplay + mpv
+      (15-check driver × ffplay + mpv: pure video-only builders, silent preview/pause/
+      resume/seek, normal-clip regression; playback golden output byte-identical)
+- [ ] S2 Silent export + crop: `build_export_spec` skips `build_audio_filter`;
+      audio-optional standard + compressed command builders (`-an`, no `[aout]` map)
+      + `run_export_job` mapping; regenerate golden sections; crop `enter_preview`
+      allows silent. Real silent stream-copy + NVENC-compressed-with-crop exports
+- [ ] S3 Roster "No audio — video only" state + inert mix affordances; recents /
+      coach-marks still fire; driver × both skins + gallery; roadmap close-out
 
 ## Bold track — surface rebuilds (choose per surface: patch OR rebuild, never both)
 

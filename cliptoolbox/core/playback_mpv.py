@@ -248,8 +248,8 @@ class MpvPlaybackEngine:
     def play(self, start_seconds: float, tracks, width: int, height: int):
         if not self._video_path:
             return
-        if not tracks:
-            raise ValueError("Please select at least one audio track.")
+        # An empty track list is a silent clip (L1): build_mpv_lavfi then emits
+        # a video-only graph ([vid1]null[vo], no [ao]).
 
         start_seconds = self._clamp(start_seconds)
         self._generation += 1

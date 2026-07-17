@@ -133,6 +133,10 @@ class HaloApp:
         # after_probe (and read by add_track_row) once probing finishes.
         self._session_to_restore: dict | None = None
         self.audio_metadata: list[dict] = []
+        # Silent-video support (L1): a clip that probed zero audio streams but
+        # has a decodable video. Drives the video-only preview/export path and
+        # the roster placeholder. Set in after_probe, cleared on reset.
+        self.is_silent = False
         self.track_controls: list[tuple[int, tk.BooleanVar, object]] = []
         self.timeline_waveforms: list = []  # PIL sources, roster-row order
 
@@ -1385,12 +1389,18 @@ class HaloApp:
         self.clear_tracks()
         self.restore_video_session()
 
-        if not streams:
-            self.set_status("No audio tracks found.")
-            self.preview_placeholder_var.set("No audio tracks found.")
+        # Silent-video support (L1): a clip with no audio but a decodable video
+        # loads into the normal editor (video-only preview/export). Only a file
+        # with NEITHER audio nor video is a dead end.
+        has_video = dimensions is not None and dimensions[0] > 0
+        self.is_silent = not streams and has_video
+
+        if not streams and not has_video:
+            self.set_status("No audio or video streams found.")
+            self.preview_placeholder_var.set("No audio or video streams found.")
             messagebox.showinfo(
-                "No audio tracks",
-                "No audio streams were found in this file.",
+                "No streams",
+                "No audio or video streams were found in this file.",
             )
             self.refresh_playback_button_state()
             return
@@ -1407,11 +1417,14 @@ class HaloApp:
         duration_text = self.format_seconds(duration) if duration else "unknown duration"
         self.preview_placeholder_var.set("Starting preview...")
         self.preview_placeholder.place(relx=0.5, rely=0.5, anchor="center")
-        self.set_status(f"Loaded {len(streams)} audio track(s), {duration_text}. Starting preview...")
-        self.log(f"Found {len(streams)} audio track(s). Duration: {duration_text}.")
-
-        for info in streams:
-            self.log(f"Audio stream available: {info['label']}")
+        if self.is_silent:
+            self.set_status(f"Loaded video (no audio), {duration_text}. Starting preview...")
+            self.log(f"No audio tracks — video-only clip. Duration: {duration_text}.")
+        else:
+            self.set_status(f"Loaded {len(streams)} audio track(s), {duration_text}. Starting preview...")
+            self.log(f"Found {len(streams)} audio track(s). Duration: {duration_text}.")
+            for info in streams:
+                self.log(f"Audio stream available: {info['label']}")
 
         self.update_compression_estimate()
 
@@ -1488,6 +1501,7 @@ class HaloApp:
         self._session_to_restore = None
         self._probe_done = False
         self.audio_metadata = []
+        self.is_silent = False
         self.total_duration_seconds = None
         self.video_fps = None
         self.video_dimensions = None
@@ -2842,7 +2856,7 @@ class HaloApp:
             return
 
         tracks = self.superset_tracks()
-        if not tracks:
+        if not tracks and not self.is_silent:
             messagebox.showwarning(
                 "No tracks selected", "Please select at least one audio track."
             )
@@ -2870,7 +2884,7 @@ class HaloApp:
             return
 
         tracks = self.superset_tracks()
-        if not tracks:
+        if not tracks and not self.is_silent:
             return
 
         self.set_status("Seeking preview...")
