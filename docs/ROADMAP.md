@@ -7,11 +7,11 @@ Single source of truth for planned UX/feature work. Seeded from the 2026-07-12 u
 sets items `in-progress`/`done` as it goes, appends a Session log entry, and commits roadmap updates
 in the same commit as the work. Newly discovered work gets a new row, not silent scope creep.
 
-**Now / Next:** The bold track (B0–B6), the M6–M13 batch, and **all three large items** are done —
-L1 (silent-video) + L2 (taskbar progress) + L3 (single-level undo) all shipped 2026-07-17. The only
-remaining `todo` is the downgraded minor **M5** (left column clips ~34px at the 700px-minsize floor;
-fix = collapsible sections or responsive preview height). Every audit finding (F1–F14) is now
-addressed.
+**Now / Next:** **Everything on the roadmap is done.** The bold track (B0–B6), the M-series (M1–M13),
+and all three large items (L1 silent-video, L2 taskbar progress, L3 single-level undo) have shipped;
+the last remaining item, **M5** (left-column clip at the 700px-minsize floor), shipped 2026-07-17 via
+a responsive preview height. Every audit finding (F1–F14) is addressed. No open `todo` items — the
+next session should propose new work with the user rather than pull from this file.
 
 Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 
@@ -43,7 +43,7 @@ Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 | M2 | F1/? shortcut cheat-sheet overlay + legend hint (obsolete if B3 lands) | F7 | dropped (absorbed by B3 2026-07-15) |
 | M3 | Landing menu keyboard navigation (obsolete if B2 lands) | F12 | dropped (absorbed by B2 2026-07-15: the recents grid is arrow/Enter/Delete-navigable) |
 | M4 | Animated "starting preview" cue | F13 | done 2026-07-15 (absorbed by B1 S7) |
-| M5 | Left column can't shrink: below ~884px window height w/ trim+crop toolbars open the compression card clips bottom-first (pre-B1 legacy, measured 2026-07-15; export stays visible since it packs first). Fix = collapsible sections or responsive preview height. 2026-07-16: B4 moved the compression/watermark cards into the drawer — toolbars-open requirement re-measured at ~734 logical px (was ~796), so every window ≥734 now fits; only the 700 minsize floor still clips ~34px. Downgraded to minor | — | todo |
+| M5 | Left column can't shrink: below ~884px window height w/ trim+crop toolbars open the compression card clips bottom-first (pre-B1 legacy, measured 2026-07-15; export stays visible since it packs first). Fix = collapsible sections or responsive preview height. 2026-07-16: B4 moved the compression/watermark cards into the drawer — toolbars-open requirement re-measured at ~734 logical px (was ~796), so every window ≥734 now fits; only the 700 minsize floor still clips ~34px. Downgraded to minor. **Fixed 2026-07-17** with responsive preview height (`_reflow_preview_height`): the fixed preview box shrinks to hand its ~34px slack to the column at short heights and grows back to the ideal 16:9-ish size when there's room | — | done 2026-07-17 |
 | M6 | Timeline: precise seeking around trim brackets — clicks near a bracket steal the seek and shift the trim (Ethan 2026-07-16). Fix: ruler band becomes a dedicated always-seek scrub lane (bracket/keyframe grabs live in the strip body), brackets grab with an offset + drag threshold instead of snapping to the cursor, and click-without-drag on a bracket seeks the playhead to that trim time | — | done 2026-07-16 |
 | M7 | Timeline: zoomed-view navigation (Ethan 2026-07-16) — the 2px zoom indicator grows into a draggable navigator scrollbar (drag thumb pans the window, click jumps it), middle-mouse drag pans the strip 1:1, persistent filmstrip tile cache keeps pan recomposes cheap | — | done 2026-07-16 |
 | M8 | Timeline: edge auto-scroll (Ethan 2026-07-16) — dragging the playhead/trim bracket/keyframe to the edge of a zoomed view pans the view so the drag continues past it (M7 follow-up) | — | done 2026-07-16 |
@@ -282,6 +282,27 @@ Bold sequencing if chosen: B3 → B0 → B1 → B4 → B2 → B5/B6 (B2 pulled f
 XL items get a stage checklist added under their row when work starts (plan-mode design first).
 
 ## Session log (newest first)
+
+- **2026-07-17** — Shipped **M5 (responsive preview height)** on `feature/responsive-preview`, one
+  commit — the last open roadmap item, so **the whole roadmap is now done**. The left column packs
+  `export_row` first (bottom-pinned) so overflow clips the middle rows rather than the export button;
+  at the 700px minsize floor with the crop toolbar open that clip was ~34 logical px. Rather than clip,
+  the fixed-height preview box now gives that slack up. New `HaloApp._reflow_preview_height()` measures
+  the left column's live overflow (`workspace_left.winfo_reqheight() - winfo_height()`) and moves it
+  into/out of the preview's configured height, clamped to `[px(180), px(PREVIEW_HEIGHT)]` — so the
+  preview shrinks just enough at short heights and grows back to the ideal 16:9-ish size when there's
+  room; the resulting `<Configure>` on the preview frame re-drives the engine size through the existing
+  `on_preview_frame_resize`. Coalesced via `_schedule_preview_reflow()` (30ms debounce) and triggered
+  from: a `<Configure>` bind on `workspace_left` (window resize), the crop toolbar show/hide, the trim
+  toggle, and `_refresh_preview_after_relayout` (so leaving focus mode re-evaluates). Skipped in focus
+  mode, which drives the bezel via pack `expand` instead. Verified: an 8-check in-process driver ×
+  both skins with a real synthetic 1280×720 clip — at the 700px floor the preview shrinks 732→664 px
+  (exactly the ~34 logical-px deficit), the left column's overflow drops to 0, and the crop toolbar /
+  FRAME row / EXPORT button are all unclipped; at a tall window the preview restores to the ideal
+  732 px — plus a floor screenshot each skin and gallery both skins. Lesson: an in-process driver that
+  resizes the window must call `root.state("normal")` before `root.geometry(...)` — the app restores a
+  maximized (zoomed) window from the saved geometry, and `geometry()` is silently ignored while zoomed
+  (the window stayed at 3840×2019 and every size assertion read the wrong dimensions).
 
 - **2026-07-17** — Shipped **L3 single-level undo/redo** on `feature/edit-undo`, 2 stage commits;
   the last large item, so **all of L1–L3 and every audit finding are now done**. Ctrl+Z undoes the

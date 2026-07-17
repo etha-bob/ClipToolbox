@@ -53,6 +53,11 @@ def build(app):
     app.workspace_left = left
     app.workspace_right = right
 
+    # M5: keep the fixed-height preview box responsive — when the left column
+    # is allocated less height (short window near the minsize floor), hand the
+    # overflow to the preview so the crop/frame rows below stop clipping.
+    left.bind("<Configure>", app._schedule_preview_reflow, add="+")
+
     # ------------------------------------------------------------------
     # Left: EXPORT — the terminal action, pinned to the bottom of the
     # column right under the compression settings it depends on. Packed

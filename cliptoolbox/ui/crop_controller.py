@@ -555,6 +555,9 @@ class CropController:
         self.app.crop_toolbar_frame.pack(
             fill=tk.X, pady=(px(4), 0), after=anchor
         )
+        # The extra toolbar row raises the left column's height request; let
+        # the preview give it room instead of clipping (M5).
+        self.app._schedule_preview_reflow()
 
     def reposition_toolbar(self):
         """Re-pack the toolbar for the current layout (focus enter/exit)."""
@@ -566,6 +569,8 @@ class CropController:
             self.app.crop_toolbar_frame.pack_forget()
         except Exception:
             pass
+        # Toolbar gone — the preview can reclaim that height (M5).
+        self.app._schedule_preview_reflow()
 
     def _update_info(self, seconds):
         count = len(self.track.keyframes)
