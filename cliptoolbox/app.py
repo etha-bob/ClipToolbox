@@ -3317,11 +3317,16 @@ class HaloApp:
             messagebox.showerror("Missing ffmpeg", "ffmpeg was not found.")
             return None
 
-        try:
-            filter_complex = self.build_audio_filter()
-        except ValueError as exc:
-            messagebox.showwarning("No tracks selected", str(exc))
-            return None
+        # Silent-video support (L1): no audio graph for a video-only clip; the
+        # command builders read the empty filter_complex and emit -an.
+        if self.is_silent:
+            filter_complex = ""
+        else:
+            try:
+                filter_complex = self.build_audio_filter()
+            except ValueError as exc:
+                messagebox.showwarning("No tracks selected", str(exc))
+                return None
 
         try:
             compression_target_mb = self.get_compression_target_mb()

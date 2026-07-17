@@ -74,10 +74,13 @@ graph/pipe, export uses `-an`; the golden-checked command/mpv builders get their
       permit the empty path only when silent. Preview a real silent clip on ffplay + mpv
       (15-check driver × ffplay + mpv: pure video-only builders, silent preview/pause/
       resume/seek, normal-clip regression; playback golden output byte-identical)
-- [ ] S2 Silent export + crop: `build_export_spec` skips `build_audio_filter`;
-      audio-optional standard + compressed command builders (`-an`, no `[aout]` map)
-      + `run_export_job` mapping; regenerate golden sections; crop `enter_preview`
-      allows silent. Real silent stream-copy + NVENC-compressed-with-crop exports
+- [x] S2 Silent export + crop: `build_export_spec` passes an empty filter_complex
+      when silent; audio-optional standard + compressed command builders (`bool(filter_
+      complex)` gates `-map [aout]`/`-c:a`, else `-an`) + `run_export_job` log; new
+      SILENT golden sections in `dump_commands.py` (audio cases byte-identical); crop
+      `enter_preview` allows silent. Verified: 9-check driver (real silent stream-copy +
+      NVENC-compressed-with-crop exports both `done` w/ 0 audio streams, crop-preview on a
+      silent clip) + audio-export regression (drive_fixes 11/11) green
 - [ ] S3 Roster "No audio — video only" state + inert mix affordances; recents /
       coach-marks still fire; driver × both skins + gallery; roadmap close-out
 

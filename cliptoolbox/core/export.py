@@ -131,12 +131,14 @@ def run_export_job(
                 video_filter,
             )
 
+            # Silent-video support (L1): no audio graph means a video-only file.
+            audio_note = "AAC mixed audio" if filter_complex else "no audio (silent)"
             if video_filter:
                 callbacks.on_log(
-                    "Starting standard export: crop/zoom re-encode (NVENC quality) + AAC mixed audio."
+                    f"Starting standard export: crop/zoom re-encode (NVENC quality) + {audio_note}."
                 )
             else:
-                callbacks.on_log("Starting standard export: video copy + AAC mixed audio.")
+                callbacks.on_log(f"Starting standard export: video copy + {audio_note}.")
             return_code, stderr_text = run_export_command(
                 cmd,
                 progress_duration,

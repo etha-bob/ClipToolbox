@@ -107,17 +107,24 @@ def build_standard_export_command(
 
     is_mp4_like = Path(output_path).suffix.lower() in {".mp4", ".mov", ".m4v"}
 
-    cmd.extend(
-        [
-            "-filter_complex",
-            filter_complex,
+    # Silent-video support (L1): a video-only clip has no audio graph, so the
+    # filter_complex is empty — map only video and drop the audio encode (-an).
+    has_audio = bool(filter_complex)
 
-            "-map",
-            "0:v:0?",
-            "-map",
-            "[aout]",
-        ]
-    )
+    if has_audio:
+        cmd.extend(
+            [
+                "-filter_complex",
+                filter_complex,
+
+                "-map",
+                "0:v:0?",
+                "-map",
+                "[aout]",
+            ]
+        )
+    else:
+        cmd.extend(["-map", "0:v:0?"])
 
     if video_filter:
         # A crop/zoom transform cannot be stream-copied; re-encode the video
@@ -146,14 +153,17 @@ def build_standard_export_command(
     else:
         cmd.extend(["-c:v", "copy"])
 
-    cmd.extend(
-        [
-            "-c:a",
-            "aac",
-            "-b:a",
-            "192k",
-        ]
-    )
+    if has_audio:
+        cmd.extend(
+            [
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+            ]
+        )
+    else:
+        cmd.extend(["-an"])
 
     if is_mp4_like:
         cmd.extend(["-movflags", "+faststart"])
@@ -226,16 +236,26 @@ def build_compressed_export_command(
 
     add_export_input_args(cmd, input_path, trim_start, trim_end)
 
+    # Silent-video support (L1): no audio graph -> map only video, encode -an.
+    has_audio = bool(filter_complex)
+
+    if has_audio:
+        cmd.extend(
+            [
+                "-filter_complex",
+                filter_complex,
+
+                "-map",
+                "0:v:0?",
+                "-map",
+                "[aout]",
+            ]
+        )
+    else:
+        cmd.extend(["-map", "0:v:0?"])
+
     cmd.extend(
         [
-            "-filter_complex",
-            filter_complex,
-
-            "-map",
-            "0:v:0?",
-            "-map",
-            "[aout]",
-
             "-vf",
             (
                 (f"{video_prefilter}," if video_prefilter else "")
@@ -259,15 +279,22 @@ def build_compressed_export_command(
             f"{max(video_kbps, 100)}k",
             "-pix_fmt",
             "yuv420p",
-
-            "-c:a",
-            "aac",
-            "-b:a",
-            f"{audio_kbps}k",
-            "-ac",
-            "2",
         ]
     )
+
+    if has_audio:
+        cmd.extend(
+            [
+                "-c:a",
+                "aac",
+                "-b:a",
+                f"{audio_kbps}k",
+                "-ac",
+                "2",
+            ]
+        )
+    else:
+        cmd.extend(["-an"])
 
     if Path(output_path).suffix.lower() in {".mp4", ".mov", ".m4v"}:
         cmd.extend(["-tag:v", "hvc1", "-movflags", "+faststart"])

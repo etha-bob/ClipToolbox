@@ -165,7 +165,9 @@ class CropController:
 
     def enter_preview(self):
         """Switch to preview mode: play the clip back with the crop applied."""
-        if not self.app.superset_tracks():
+        # Silent clips (L1) preview video-only; only a non-silent clip with all
+        # tracks deselected still needs the "pick a track" nudge.
+        if not self.app.superset_tracks() and not self.app.is_silent:
             dialogs.showinfo(
                 "Preview needs a track",
                 "Preview playback needs at least one audio track. Keep working "
