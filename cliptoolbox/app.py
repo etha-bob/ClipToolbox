@@ -1409,6 +1409,8 @@ class HaloApp:
             self.add_track_row(row_number, info)
 
         self.update_track_area_height(len(streams))
+        if self.is_silent:
+            self._show_silent_roster()
         # A restored session may start rows disabled; tint their strips now.
         self.update_track_row_styles()
         self.remember_recent_clip(self.video_path)
@@ -1712,11 +1714,29 @@ class HaloApp:
             if self.track_scrollbar.winfo_ismapped():
                 self.track_scrollbar.grid_remove()
 
-        self.roster_title_var.set(f"{track_count} TRACK(S) IN MIX")
+        # Silent-video support (L1): a video-only clip has no mix to show.
+        if track_count == 0 and self.is_silent:
+            self.roster_title_var.set("NO AUDIO — VIDEO ONLY")
+        else:
+            self.roster_title_var.set(f"{track_count} TRACK(S) IN MIX")
+        # RESET has nothing to act on without tracks.
+        if hasattr(self, "reset_volumes_button"):
+            self.reset_volumes_button.config(
+                state=tk.DISABLED if track_count == 0 else tk.NORMAL)
         self.track_canvas.itemconfigure(
             self.track_window,
             width=max(1, self.track_canvas.winfo_width()),
         )
+
+    def _show_silent_roster(self):
+        """Placeholder in the (empty) roster for a video-only clip (L1).
+        Destroyed by clear_tracks on the next load."""
+        tk.Label(
+            self.track_frame,
+            text="This clip has no audio — video only.",
+            font=theme.font_small(), bg=theme.PANEL_FILL, fg=theme.TEXT_DIM,
+            anchor="w", justify=tk.LEFT, wraplength=px(260),
+        ).grid(row=0, column=0, sticky="ew", padx=px(6), pady=px(10))
 
     def add_track_row(self, row_number: int, info: dict):
         from cliptoolbox.ui.widgets import HaloCheckbox, HaloSlider

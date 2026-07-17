@@ -7,10 +7,10 @@ Single source of truth for planned UX/feature work. Seeded from the 2026-07-12 u
 sets items `in-progress`/`done` as it goes, appends a Session log entry, and commits roadmap updates
 in the same commit as the work. Newly discovered work gets a new row, not silent scope creep.
 
-**Now / Next:** The bold track is complete — T1, Q1–Q9, and B0–B6 are all done (F7 is now
-fully closed: palette for reference, coach marks for cold start). Remaining: L1
-(silent-video support) is the highest-value item; L2 (taskbar progress) is easy on top of
-the job pipeline; L3 (single-level undo) and the downgraded M5 round out the list.
+**Now / Next:** The bold track (B0–B6) and the M6–M13 timeline/focus/watermark batch are done,
+and L1 (silent-video support) shipped 2026-07-16. Remaining: **L2** (ITaskbarList3 taskbar
+progress — easy on top of the B4 job pipeline) is the next pick; **L3** (single-level undo) and
+the downgraded minor **M5** (700px-minsize left-column clip) round out the list.
 
 Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 
@@ -56,7 +56,7 @@ Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 
 | ID | Item | Fixes | Status |
 |----|------|-------|--------|
-| L1 | Silent-video support: audio-optional probe/preview/export (`-an` path, skip amix) | F2 | in-progress |
+| L1 | Silent-video support: audio-optional probe/preview/export (`-an` path, skip amix) | F2 | done 2026-07-16 |
 | L2 | ITaskbarList3 taskbar progress (COM spec in report §roadmap-13; only after M1) | F5 | todo |
 | L3 | Single-level undo for edit state (supersedes Q5 if done) | F8 | todo |
 
@@ -81,8 +81,11 @@ graph/pipe, export uses `-an`; the golden-checked command/mpv builders get their
       `enter_preview` allows silent. Verified: 9-check driver (real silent stream-copy +
       NVENC-compressed-with-crop exports both `done` w/ 0 audio streams, crop-preview on a
       silent clip) + audio-export regression (drive_fixes 11/11) green
-- [ ] S3 Roster "No audio — video only" state + inert mix affordances; recents /
-      coach-marks still fire; driver × both skins + gallery; roadmap close-out
+- [x] S3 Roster "NO AUDIO — VIDEO ONLY" header + placeholder line, RESET disabled
+      with no tracks (mute/solo/reset already guard on `track_controls`, confirmed
+      inert); recents fire for silent clips; a normal clip reload restores the mix
+      roster with no leftover placeholder. Verified: 8-check driver × both skins +
+      silent-editor screenshot + gallery both skins
 
 ## Bold track — surface rebuilds (choose per surface: patch OR rebuild, never both)
 
@@ -231,6 +234,32 @@ Bold sequencing if chosen: B3 → B0 → B1 → B4 → B2 → B5/B6 (B2 pulled f
 XL items get a stage checklist added under their row when work starts (plan-mode design first).
 
 ## Session log (newest first)
+
+- **2026-07-16 (latest+2)** — Shipped **L1 silent-video support** on `feature/silent-video`
+  (design approved in plan mode), 3 stage commits. A clip with zero audio streams is no
+  longer a dead end (F2): `after_probe` sets `is_silent` (zero audio + decodable video) and
+  falls through to the normal editor instead of the "No audio tracks" dialog+return; only a
+  file with neither audio nor video stops. **S1 (preview):** `build_playback_filter` returns a
+  video-only `[vout]` graph (no amix/`[aout]`) when tracks are empty, `build_playback_stream_cmds`
+  maps only `[vout]` and drops `-c:a` (keyed off whether the filter contains `[aout]`), and both
+  `PlaybackEngine.play()` and `MpvPlaybackEngine.play()` stopped raising on an empty track list
+  (mpv's `build_mpv_lavfi` already emitted video-only); `start_preview`/`restart_playback_at`
+  allow the empty path only when `is_silent`, so a normal clip with all tracks deselected keeps
+  the "select at least one track" warning. **S2 (export):** `build_export_spec` passes an empty
+  `filter_complex` when silent; the standard + compressed command builders read
+  `bool(filter_complex)` as "has audio" and emit `-an` (no `[aout]` map / `-c:a`) otherwise,
+  covering stream-copy, NVENC crop-reencode, and compressed; `dump_commands.py` gained three
+  SILENT golden sections (the audio cases stayed byte-identical); crop `enter_preview` no longer
+  blocks a silent clip. **S3 (UI):** roster shows "NO AUDIO — VIDEO ONLY" + a placeholder line,
+  RESET disables with no tracks, and the mute/solo/reset gestures were already `track_controls`-
+  guarded (inert); a normal reload restores the mix roster cleanly. Verified: S1 15-check driver
+  × ffplay + mpv (video-only builders, silent preview/pause/resume/seek, normal-clip regression);
+  S2 9-check driver (real 1080p silent stream-copy + NVENC-compressed-with-crop exports both
+  `done` with 0 audio streams via ffprobe, silent crop-preview) + audio-export regression
+  (drive_fixes 11/11); S3 8-check driver × both skins + silent-editor screenshot; gallery both
+  skins. Lesson: a driver that reads a custom widget's disabled state must check its internal
+  `_state`, not `cget("state")` — HaloButton is a `tk.Canvas`, whose own `state` attribute is
+  unrelated to the widget's logical state (a green test would have missed a real regression).
 
 - **2026-07-16 (latest+1)** — Fixed two bugs Ethan hit testing M12, on `feature/watermark-options`
   (touching app.py, core/motion.py, ui/crop_controller.py — none in the frozen diff-verifiable
