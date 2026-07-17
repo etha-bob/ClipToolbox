@@ -7,10 +7,10 @@ Single source of truth for planned UX/feature work. Seeded from the 2026-07-12 u
 sets items `in-progress`/`done` as it goes, appends a Session log entry, and commits roadmap updates
 in the same commit as the work. Newly discovered work gets a new row, not silent scope creep.
 
-**Now / Next:** The bold track (B0–B6) and the M6–M13 timeline/focus/watermark batch are done,
-and L1 (silent-video support) shipped 2026-07-16. Remaining: **L2** (ITaskbarList3 taskbar
-progress — easy on top of the B4 job pipeline) is the next pick; **L3** (single-level undo) and
-the downgraded minor **M5** (700px-minsize left-column clip) round out the list.
+**Now / Next:** The bold track (B0–B6) and the M6–M13 batch are done; L1 (silent-video) shipped
+2026-07-16 and L2 (taskbar progress) shipped 2026-07-17. Remaining: **L3** (single-level undo for
+trim/crop/mix — the last large item) is the next pick; the downgraded minor **M5** (700px-minsize
+left-column clip) rounds out the list.
 
 Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 
@@ -57,7 +57,7 @@ Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 | ID | Item | Fixes | Status |
 |----|------|-------|--------|
 | L1 | Silent-video support: audio-optional probe/preview/export (`-an` path, skip amix) | F2 | done 2026-07-16 |
-| L2 | ITaskbarList3 taskbar progress (COM spec in report §roadmap-13; only after M1) | F5 | todo |
+| L2 | ITaskbarList3 taskbar progress (COM spec in report §roadmap-13; only after M1) | F5 | done 2026-07-17 |
 | L3 | Single-level undo for edit state (supersedes Q5 if done) | F8 | todo |
 
 **L1 stage checklist** (design approved 2026-07-16 in plan mode;
@@ -86,6 +86,27 @@ graph/pipe, export uses `-an`; the golden-checked command/mpv builders get their
       inert); recents fire for silent clips; a normal clip reload restores the mix
       roster with no leftover placeholder. Verified: 8-check driver × both skins +
       silent-editor screenshot + gallery both skins
+
+**L2 stage checklist** (design pre-specified in the usability report §roadmap-13;
+`feature/taskbar-progress`; single-stage — no open design decisions: standard
+single-pass export = determinate `TBPF_NORMAL` + `SetProgressValue(percent,100)`;
+compression's multi-attempt tuner = `TBPF_INDETERMINATE` throughout; clear
+`TBPF_NOPROGRESS` on finish/cancel/close; per-export COM lifecycle sidesteps
+Explorer-restart pointer invalidation; all calls marshalled to the Tk/STA thread):
+
+- [x] S1 `win32.TaskbarProgress` (hand-rolled ITaskbarList3 vtable ctypes:
+      CoInitializeEx STA + CoCreateInstance + HrInit(3)/SetProgressValue(9)/
+      SetProgressState(10)/Release(2); begin/value/clear/shutdown, fresh object per
+      export, failure resets the pointer); wired into `start_export` (indeterminate
+      when compressing else determinate 0%), `on_progress` (value only when
+      attempts_max==1), `on_finished`/`cancel_export`/`on_close` (clear). Verified:
+      16-check driver × both skins — real COM against a live Tk HWND (create/HrInit/
+      set/clear all succeed against the live shell; safe no-ops when no object) + real
+      standard export (begin-determinate → value(s) → clear) and real compressed export
+      (begin-indeterminate → clear, zero value() calls) spied through the pipeline;
+      gallery both skins. (Automated taskbar-strip grab inconclusive — the in-process
+      test window groups under python.exe's button; the succeeding shell COM calls are
+      the authoritative proof.)
 
 ## Bold track — surface rebuilds (choose per surface: patch OR rebuild, never both)
 
@@ -234,6 +255,29 @@ Bold sequencing if chosen: B3 → B0 → B1 → B4 → B2 → B5/B6 (B2 pulled f
 XL items get a stage checklist added under their row when work starts (plan-mode design first).
 
 ## Session log (newest first)
+
+- **2026-07-17** — Shipped **L2 taskbar progress (ITaskbarList3)** on `feature/taskbar-progress`,
+  one commit. New `win32.TaskbarProgress` hand-rolls the COM interface over its vtable with pure
+  ctypes (no comtypes/pywin32): `CoInitializeEx` STA + `CoCreateInstance(CLSID_TaskbarList,
+  IID_ITaskbarList3)` then calls `HrInit`(vtable 3) / `SetProgressValue`(9) / `SetProgressState`(10)
+  / `Release`(2) through `WINFUNCTYPE` protos built from the vtable function pointers. Lifecycle is
+  per-export — `begin()` lazily creates a fresh object, `clear()`/`shutdown()` release it — which
+  sidesteps the pointer invalidation an Explorer restart would cause on a long-lived object; any
+  failed call resets the pointer so the next `begin()` rebuilds. All calls run on the Tk/STA thread
+  (the worker marshals via `app.ui`). Wired into the export pipeline: `start_export` calls
+  `begin(indeterminate = compression_target_mb is not None)` — the multi-attempt compression tuner
+  has no honest determinate mapping so it shows `TBPF_INDETERMINATE` (marquee), while a single-pass
+  standard export shows a `TBPF_NORMAL` 0..100 bar fed by `on_progress` (only when `attempts_max<=1`);
+  `on_finished` / `cancel_export` / `on_close` clear it (`TBPF_NOPROGRESS` + release). No-ops off
+  Windows or if COM is unavailable, so the wiring needs no guards. Verified: 16-check driver × both
+  skins — the raw COM object created and every call (`HrInit`/`SetProgressValue`/`SetProgressState`)
+  succeeded against the live Windows shell on a real Tk HWND (authoritative: wrong GUIDs/ordinals
+  would fail `CoCreateInstance`/`HrInit` and leave `_ptr` None), plus real standard (determinate
+  begin→value(s)→clear) and compressed (indeterminate begin→clear, zero value() calls) exports
+  spied through the pipeline; gallery both skins. Lesson: a determinate taskbar bar wants a single
+  monotonic 0..100; the export's attempt-based `on_progress` (which resets per compression attempt)
+  only maps cleanly for the single-pass path, so gating `value()` on `attempts_max<=1` and leaving
+  compression on the marquee is the honest choice the report already called.
 
 - **2026-07-16 (latest+2)** — Shipped **L1 silent-video support** on `feature/silent-video`
   (design approved in plan mode), 3 stage commits. A clip with zero audio streams is no

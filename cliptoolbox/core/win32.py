@@ -596,6 +596,156 @@ def flash_taskbar(hwnd: int | None, until_focused: bool = True) -> bool:
         return False
 
 
+# ============================================================
+# Taskbar progress (ITaskbarList3) — roadmap L2
+# ============================================================
+
+if IS_WINDOWS:
+    ole32 = ctypes.windll.ole32
+
+    class _GUID(ctypes.Structure):
+        _fields_ = [
+            ("Data1", ctypes.c_uint32),
+            ("Data2", ctypes.c_uint16),
+            ("Data3", ctypes.c_uint16),
+            ("Data4", ctypes.c_ubyte * 8),
+        ]
+
+    def _make_guid(d1, d2, d3, tail):
+        g = _GUID()
+        g.Data1, g.Data2, g.Data3 = d1, d2, d3
+        for i, b in enumerate(tail):
+            g.Data4[i] = b
+        return g
+
+    # CLSID_TaskbarList {56FDF344-FD6D-11D0-958A-006097C9A090}
+    _CLSID_TaskbarList = _make_guid(
+        0x56FDF344, 0xFD6D, 0x11D0,
+        (0x95, 0x8A, 0x00, 0x60, 0x97, 0xC9, 0xA0, 0x90))
+    # IID_ITaskbarList3 {EA1AFB91-9E28-4B86-90E9-9E9F8A5EEFAF}
+    _IID_ITaskbarList3 = _make_guid(
+        0xEA1AFB91, 0x9E28, 0x4B86,
+        (0x90, 0xE9, 0x9E, 0x9F, 0x8A, 0x5E, 0xEF, 0xAF))
+
+    _CLSCTX_INPROC_SERVER = 0x1
+    _COINIT_APARTMENTTHREADED = 0x2
+
+# TBPFLAG progress states (defined on every OS; only used on Windows).
+TBPF_NOPROGRESS = 0x0
+TBPF_INDETERMINATE = 0x1
+TBPF_NORMAL = 0x2
+TBPF_ERROR = 0x4
+
+
+class TaskbarProgress:
+    """ITaskbarList3 taskbar-button progress (L2), hand-rolled over the COM
+    vtable with ctypes (no comtypes/pywin32 dependency).
+
+    Per-export lifecycle: begin() lazily creates a fresh COM object, and
+    clear()/shutdown() release it. Recreating each run sidesteps the pointer
+    invalidation an Explorer restart causes on a long-lived object, and any
+    failed vtable call resets the pointer so the next begin() rebuilds it.
+    All methods must run on the STA (Tk main) thread — callers marshal via
+    app.ui(). Every method is a silent no-op off Windows or if COM is
+    unavailable, so wiring never needs its own guards.
+    """
+
+    def __init__(self):
+        self._ptr = None
+        self._co_init = False
+        self._set_value = None
+        self._set_state = None
+        self._release = None
+
+    def _ensure(self) -> bool:
+        if not IS_WINDOWS:
+            return False
+        if self._ptr is not None:
+            return True
+        try:
+            if not self._co_init:
+                # S_OK / S_FALSE (already STA) are fine; RPC_E_CHANGED_MODE
+                # (already MTA) is returned, not raised, by windll — COM is
+                # still usable, so proceed either way.
+                ole32.CoInitializeEx(None, _COINIT_APARTMENTTHREADED)
+                self._co_init = True
+            ptr = ctypes.c_void_p()
+            hr = ole32.CoCreateInstance(
+                ctypes.byref(_CLSID_TaskbarList), None, _CLSCTX_INPROC_SERVER,
+                ctypes.byref(_IID_ITaskbarList3), ctypes.byref(ptr))
+            if hr != 0 or not ptr.value:
+                return False
+            vtbl = ctypes.cast(ptr, ctypes.POINTER(ctypes.c_void_p))[0]
+            fns = ctypes.cast(vtbl, ctypes.POINTER(ctypes.c_void_p))
+            hres = ctypes.c_long
+            self._release = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)(fns[2])
+            # ITaskbarList3 vtable ordinals: SetProgressValue=9, SetProgressState=10.
+            self._set_value = ctypes.WINFUNCTYPE(
+                hres, ctypes.c_void_p, ctypes.c_void_p,
+                ctypes.c_ulonglong, ctypes.c_ulonglong)(fns[9])
+            self._set_state = ctypes.WINFUNCTYPE(
+                hres, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int)(fns[10])
+            self._ptr = ptr
+            hr_init = ctypes.WINFUNCTYPE(hres, ctypes.c_void_p)(fns[3])  # HrInit
+            if hr_init(ptr) != 0:
+                self._reset()
+                return False
+            return True
+        except Exception:
+            self._reset()
+            return False
+
+    def _reset(self):
+        ptr, rel = self._ptr, self._release
+        self._ptr = self._set_value = self._set_state = self._release = None
+        if ptr is not None and rel is not None:
+            try:
+                rel(ptr)
+            except Exception:
+                pass
+
+    def begin(self, hwnd, indeterminate: bool = False):
+        """Start showing progress on the taskbar button. Indeterminate is the
+        marquee used for the compression tuner (per-attempt resets map poorly
+        to a determinate bar); otherwise a green 0% bar ready for value()."""
+        if not hwnd or not self._ensure():
+            return
+        try:
+            if indeterminate:
+                self._set_state(self._ptr, hwnd, TBPF_INDETERMINATE)
+            else:
+                self._set_state(self._ptr, hwnd, TBPF_NORMAL)
+                self._set_value(self._ptr, hwnd, 0, 100)
+        except Exception:
+            self._reset()
+
+    def value(self, hwnd, percent: int):
+        """Update the determinate bar (ignored while no object is live, e.g.
+        an indeterminate compression run never calls this)."""
+        if not hwnd or self._ptr is None:
+            return
+        try:
+            pct = max(0, min(100, int(percent)))
+            self._set_value(self._ptr, hwnd, pct, 100)
+        except Exception:
+            self._reset()
+
+    def clear(self, hwnd):
+        """Remove the progress state and release the object."""
+        if self._ptr is None:
+            return
+        try:
+            if hwnd:
+                self._set_state(self._ptr, hwnd, TBPF_NOPROGRESS)
+        except Exception:
+            pass
+        self._reset()
+
+    def shutdown(self):
+        """Release any live object (app close)."""
+        self._reset()
+
+
 def capture_window_frame(hwnd: int | None) -> tuple[bytes, int, int] | None:
     """
     Snapshots the client area of a window as raw top-down BGRA bytes.

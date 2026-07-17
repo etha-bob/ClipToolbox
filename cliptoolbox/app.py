@@ -64,6 +64,7 @@ from cliptoolbox.core.paths import (
     reveal_file as core_reveal_file,
 )
 from cliptoolbox.core.win32 import (
+    TaskbarProgress,
     assign_process_to_cleanup_job,
     flash_taskbar,
     is_foreground_process,
@@ -216,6 +217,8 @@ class HaloApp:
 
         self.user_is_seeking = False
         self.is_exporting = False
+        # Taskbar-button progress during exports (L2). No-op off Windows.
+        self.taskbar_progress = TaskbarProgress()
         self.command_palette = None
         # Focus/HUD mode (B5): transient view state, never persisted.
         self.focus_mode = False
@@ -3483,6 +3486,20 @@ class HaloApp:
         spec.output_path = str(output_path_obj)
         self.start_export(spec)
 
+    # ---- taskbar progress (L2) — all run on the Tk/STA thread ----
+
+    def _root_hwnd(self):
+        return chrome.get_root_hwnd(self.root)
+
+    def taskbar_export_begin(self, indeterminate: bool):
+        self.taskbar_progress.begin(self._root_hwnd(), indeterminate)
+
+    def taskbar_export_value(self, percent: int):
+        self.taskbar_progress.value(self._root_hwnd(), percent)
+
+    def taskbar_export_clear(self):
+        self.taskbar_progress.clear(self._root_hwnd())
+
     def start_export(self, spec: core_jobs.ExportJobSpec):
         """Launch the export worker for a fully-named spec. Everything here
         derives from the spec alone, so a RE-RUN from the job history goes
@@ -3510,6 +3527,10 @@ class HaloApp:
         self.is_exporting = True
         self.stop_export_button.config(state=tk.NORMAL)
         self.set_busy(True)
+        # Taskbar progress (L2): the multi-attempt compression tuner has no
+        # honest determinate mapping, so it shows a marquee; a single-pass
+        # standard export shows a real 0..100 bar fed by on_progress.
+        self.taskbar_export_begin(indeterminate=spec.compression_target_mb is not None)
 
         if spec.compression_target_mb is not None:
             self.set_status(
@@ -3592,6 +3613,10 @@ class HaloApp:
                 job.attempt = attempt
                 job.attempts_max = attempts_max
                 app.ui(app.seekbar.set_export_progress, percent, attempt, attempts_max)
+                # Only a single-pass (standard) export drives the determinate
+                # taskbar bar; the compression tuner stays indeterminate (begin).
+                if attempts_max <= 1:
+                    app.ui(app.taskbar_export_value, percent)
                 if app.export_drawer is not None:
                     app.ui(app.export_drawer.update_job, job)
 
@@ -3641,6 +3666,7 @@ class HaloApp:
                     app.ui(app.on_job_settled)
                 app.is_exporting = False
                 app.ui(app.seekbar.set_export_progress, None)
+                app.ui(app.taskbar_export_clear)
                 app.ui(app.stop_export_button.config, state=tk.DISABLED)
                 app.ui(app.set_busy, False)
 
@@ -3699,6 +3725,7 @@ class HaloApp:
 
         self.is_exporting = False
         self.seekbar.set_export_progress(None)
+        self.taskbar_export_clear()
         self.stop_export_button.config(state=tk.DISABLED)
         self.set_status("Export cancelled.")
 
@@ -3813,6 +3840,7 @@ class HaloApp:
 
         self.persist_video_session()
         self.save_settings()
+        self.taskbar_progress.shutdown()
         self.render_queue.shutdown()
         self.playback.shutdown()
         self.root.destroy()
