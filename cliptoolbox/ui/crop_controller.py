@@ -112,6 +112,45 @@ class CropController:
         self._refresh_markers()
         return True
 
+    def apply_snapshot(self, state: dict):
+        """Undo/redo (L3): fully replace the crop state from a snapshot. Unlike
+        restore_state (the load path, which ignores empty keyframes and only
+        turns crop ON), this also restores to empty keyframes and to the
+        disabled state, then repaints the preview so the change is visible."""
+        try:
+            keyframes = tuple(sorted(
+                (CropKeyframe(float(t), float(x), float(y), float(w), float(h))
+                 for t, x, y, w, h in state.get("keyframes") or []),
+                key=lambda kf: kf.t,
+            ))
+        except (TypeError, ValueError):
+            keyframes = ()
+        self.track.keyframes = keyframes
+        want_enabled = bool(state.get("enabled")) and self.src_w > 0
+
+        if want_enabled:
+            self.track.enabled = True
+            self.app.crop_enabled_var.set(True)
+            self._show_toolbar()
+            self._update_mode_button()
+            if self._editing:
+                seconds = self.app.current_seek_seconds()
+                rect = self.track.rect_at(seconds) or self.app.cropbox.full_frame_rect()
+                self.app.cropbox.set_rect(*rect)
+                self._update_info(seconds)
+        else:
+            self.track.enabled = False
+            self.app.crop_enabled_var.set(False)
+            self._exit_edit()
+            self._hide_toolbar()
+
+        self._refresh_markers()
+        self._invalidate_pipeline()
+        if self.app.playback.state == core_playback.PAUSED:
+            pos = self.app.current_seek_seconds()
+            self.app.pending_still_request = self.app.playback.request_still(
+                pos, vf=self.still_vf(pos))
+
     def on_toggle(self):
         if self.app.crop_enabled_var.get():
             if self.src_w <= 0:
@@ -368,6 +407,7 @@ class CropController:
 
     def _commit_rect(self, rect):
         seconds = self.app.current_seek_seconds()
+        self.app.push_undo()  # snapshot before the keyframe edit (L3)
         self.track.upsert(CropKeyframe(seconds, *rect), self._eps())
         self._refresh_markers()
         self._invalidate_pipeline()
@@ -387,6 +427,9 @@ class CropController:
 
     def delete_key(self):
         seconds = self.app.current_seek_seconds()
+        if self.track.index_near(seconds, self._eps()) is None:
+            return  # nothing here to delete — don't consume the undo slot
+        self.app.push_undo()  # snapshot before the delete (L3)
         if self.track.remove_near(seconds, self._eps()):
             self._refresh_markers()
             self._invalidate_pipeline()
@@ -401,6 +444,7 @@ class CropController:
         if not dialogs.askyesno("Clear crop keyframes",
                                 "Remove all crop keyframes for this clip?"):
             return
+        self.app.push_undo()  # snapshot before wiping all keyframes (L3)
         self.track.clear()
         self._refresh_markers()
         self._invalidate_pipeline()
@@ -442,6 +486,7 @@ class CropController:
     def on_kf_commit(self, index, value):
         if not (0 <= index < len(self.track.keyframes)):
             return
+        self.app.push_undo()  # snapshot before the retime (L3)
         applied = self.track.retime(index, value, self._eps())
         self._refresh_markers()
         if self.track.enabled:  # inert keyframes don't touch the pipeline
@@ -453,6 +498,7 @@ class CropController:
         times = self.track.times()
         if not (0 <= index < len(times)):
             return
+        self.app.push_undo()  # snapshot before the right-click delete (L3)
         self.track.remove_near(times[index], self._eps())
         self._refresh_markers()
         if self.track.enabled:

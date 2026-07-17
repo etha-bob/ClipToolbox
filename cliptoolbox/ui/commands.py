@@ -119,6 +119,11 @@ def build_command_registry(app) -> list[Command]:
                 keys="Ctrl+Shift+C", enabled=workspace_ready,
                 keywords="clipboard time position"),
 
+        # --- Edit --------------------------------------------------------
+        Command("edit.undo", "Undo / redo last edit", "Edit", app.undo_edit,
+                keys="Ctrl+Z", enabled=workspace_ready,
+                keywords="revert restore trim crop mix redo"),
+
         # --- Trim --------------------------------------------------------
         Command("trim.start", "Set trim start", "Trim", app.set_trim_start,
                 keys="[", enabled=workspace_ready, keywords="in point mark"),

@@ -58,7 +58,29 @@ Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 |----|------|-------|--------|
 | L1 | Silent-video support: audio-optional probe/preview/export (`-an` path, skip amix) | F2 | done 2026-07-16 |
 | L2 | ITaskbarList3 taskbar progress (COM spec in report §roadmap-13; only after M1) | F5 | done 2026-07-17 |
-| L3 | Single-level undo for edit state (supersedes Q5 if done) | F8 | todo |
+| L3 | Single-level undo for edit state (supersedes Q5 if done) | F8 | in-progress |
+
+**L3 stage checklist** (design approved 2026-07-17 in plan mode; `feature/edit-undo`,
+one commit per stage; decisions: single-level undo/redo *toggle* (Ctrl+Z swaps
+current↔one slot, a new edit overwrites the slot); snapshot = `capture_video_session`
+minus position — trim + crop keyframes + track enable/volume; mute/solo/playhead
+excluded (transient); supersedes Q5's trim-clear toast, not the CLEAR RECENTS one;
+`_undo_slot` cleared on clip change):
+
+- [x] S1 Undo core (`_snapshot_edit`/`_restore_edit`/`push_undo`/`undo_edit`;
+      `crop.apply_snapshot` that fully replaces incl. empty/disabled); `push_undo()`
+      before each discrete mutator (trim set/clear, crop add/delete/clear/reset/
+      retime/kf-delete, track-enable toggle via a checkbox ButtonPress bind,
+      RESET-volumes); Ctrl+Z + Ctrl+Y/Ctrl+Shift+Z + palette `edit.undo`; replaced
+      Q5's trim-clear toast with generic push+clear; `_undo_slot` cleared in both
+      load_video and reset_clip_state. Verified: 17-check driver × both skins —
+      discrete undo/redo round-trips (trim set, trim clear supersede-Q5, crop
+      keyframe add, crop clear-all, track toggle), empty-slot no-op, clip-switch
+      clears the slot; gallery both skins
+- [ ] S2 Continuous-drag capture (trim bracket first-drag flag; volume slider
+      ButtonPress + wheel first-notch); `_undo_slot` cleared on clip change; legend
+      hint. Driver × both skins (drag undo restores pre-gesture state, clip-switch
+      clears, mute/solo/position untouched) + gallery; roadmap close-out
 
 **L1 stage checklist** (design approved 2026-07-16 in plan mode;
 `feature/silent-video`, one commit per stage; decisions: "silent" strictly =

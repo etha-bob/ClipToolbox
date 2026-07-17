@@ -147,6 +147,13 @@ class HaloApp:
         self.trim_start_seconds: float | None = None
         self.trim_end_seconds: float | None = None
 
+        # Single-level undo/redo (L3): one slot holds the "other" edit state
+        # (trim + crop + mix). push_undo() snapshots before a mutation; Ctrl+Z
+        # swaps current<->slot. Cleared on clip change so undo never crosses
+        # clips. _trim_drag_undo guards one capture per bracket-drag gesture.
+        self._undo_slot: dict | None = None
+        self._trim_drag_undo = False
+
         self.video_fps: float | None = None
         self.video_dimensions: tuple[int, int] | None = None
         self.loop_enabled_var = tk.BooleanVar(value=False)
@@ -567,6 +574,12 @@ class HaloApp:
         root.bind("<Control-k>", lambda e: self.toggle_command_palette())
         root.bind("<Control-K>", lambda e: self.toggle_command_palette())
         root.bind("<Control-C>", lambda e: self.shortcut(self.copy_timestamp))
+        # Single-level undo/redo toggle (L3). Ctrl+Y / Ctrl+Shift+Z are the
+        # usual redo keys; since undo is a toggle they all call undo_edit.
+        root.bind("<Control-z>", lambda e: self.shortcut(self.undo_edit))
+        root.bind("<Control-Z>", lambda e: self.shortcut(self.undo_edit))
+        root.bind("<Control-y>", lambda e: self.shortcut(self.undo_edit))
+        root.bind("<Control-Y>", lambda e: self.shortcut(self.undo_edit))
         root.bind("<Tab>", lambda e: self.shortcut_focus())
         root.bind("<Escape>", lambda e: self.shortcut_escape())
 
@@ -1332,6 +1345,7 @@ class HaloApp:
         self.watermark_mode_var.set("CONFIGURED")
         self.watermark_custom_text_var.set("")
         self.on_watermark_mode_changed()
+        self._undo_slot = None  # undo never crosses clips (L3)
         if self.crop:
             self.crop.reset()
         self.preview_placeholder_var.set("Preparing file...")
@@ -1507,6 +1521,7 @@ class HaloApp:
         self._probe_done = False
         self.audio_metadata = []
         self.is_silent = False
+        self._undo_slot = None  # undo never crosses clips (L3)
         self.total_duration_seconds = None
         self.video_fps = None
         self.video_dimensions = None
@@ -1578,6 +1593,78 @@ class HaloApp:
         if self.crop:
             state["crop"] = self.crop.export_state()
         return state
+
+    # ========================================================
+    # Single-level undo/redo of the edit state (L3)
+    # ========================================================
+
+    def _snapshot_edit(self) -> dict:
+        """Serializable snapshot of the undoable edit state (trim + crop +
+        track mix). Reuses the session capture, dropping the playhead — a
+        seek is not an edit and undo must not move it."""
+        snap = self.capture_video_session()
+        snap.pop("position", None)
+        return snap
+
+    def _restore_edit(self, snap: dict):
+        """Re-apply a snapshot to the CURRENT clip's controls (distinct from
+        restore_video_session, which is for a fresh load's not-yet-built rows)."""
+        trim = snap.get("trim") or {}
+        self.trim_start_seconds = trim.get("start")
+        self.trim_end_seconds = trim.get("end")
+        self.trim_enabled_var.set(bool(trim.get("enabled")))
+        self.update_trim_controls()
+
+        if self.crop:
+            self.crop.apply_snapshot(snap.get("crop") or {})
+
+        # Track mix: set each row's enable + volume from the snapshot, then push
+        # the whole mix to the engine once. slider.set() is silent (Q8), so the
+        # labels/styles are refreshed explicitly.
+        by_index = {t.get("index"): t for t in snap.get("tracks") or []}
+        for row, (stream_index, var, slider) in enumerate(self.track_controls):
+            saved = by_index.get(stream_index)
+            if saved is None:
+                continue
+            var.set(bool(saved.get("enabled", True)))
+            vol = float(saved.get("volume", 1.0))
+            slider.set(vol)
+            label = self.track_volume_labels.get(row)
+            if label is not None:
+                label.set(f"{int(round(vol * 100))}%")
+        self.apply_all_track_volumes()
+        self.update_track_row_styles()
+        self.update_compression_estimate()
+
+    def push_undo(self):
+        """Snapshot the current edit state into the undo slot BEFORE a
+        mutation. Skips a redundant push when nothing changed since the slot;
+        a fresh edit resets the undo/redo direction so the next Ctrl+Z undoes."""
+        if not self.video_path:
+            return
+        snap = self._snapshot_edit()
+        if snap != self._undo_slot:
+            self._undo_slot = snap
+            self._undo_redo = False
+
+    def undo_edit(self):
+        """Ctrl+Z (and Ctrl+Y / Ctrl+Shift+Z): swap the current edit state with
+        the slot — one level of undo AND redo (pressing again re-applies)."""
+        if self._undo_slot is None:
+            self.set_status("Nothing to undo.")
+            return
+        current = self._snapshot_edit()
+        if current == self._undo_slot:
+            return  # already matches (e.g. push then immediate undo)
+        self._restore_edit(self._undo_slot)
+        self._undo_slot = current
+        self._undo_redo = not getattr(self, "_undo_redo", False)
+        if self._undo_redo:
+            self.set_status("Edit undone — Ctrl+Z again to redo.")
+            self.log("Edit undone.")
+        else:
+            self.set_status("Edit redone.")
+            self.log("Edit redone.")
 
     def persist_video_session(self):
         """Save the current clip's setup so reopening it restores everything."""
@@ -1773,6 +1860,9 @@ class HaloApp:
             font=theme.font_body(13),
         )
         checkbox.pack(side=tk.LEFT, padx=px(6), pady=px(2))
+        # Snapshot before the enable toggle (L3): the checkbox flips on
+        # ButtonRelease, so a press bind captures the pre-toggle mix.
+        checkbox.bind("<ButtonPress-1>", lambda e: self.push_undo(), add="+")
 
         volume_label_var = tk.StringVar(value=f"{int(round(initial_volume * 100))}%")
         self.track_volume_labels[row_number] = volume_label_var
@@ -2286,6 +2376,7 @@ class HaloApp:
         return max(0.0, value)
 
     def set_trim_start(self):
+        self.push_undo()  # snapshot before the trim edit (L3)
         self.trim_start_seconds = self.current_seek_seconds()
 
         if (
@@ -2300,6 +2391,7 @@ class HaloApp:
         self.log(f"Trim start set to {self.format_seconds(self.trim_start_seconds)}.")
 
     def set_trim_end(self):
+        self.push_undo()  # snapshot before the trim edit (L3)
         self.trim_end_seconds = self.current_seek_seconds()
 
         if (
@@ -2327,23 +2419,12 @@ class HaloApp:
             self.log("Trim points cleared.")
 
     def clear_trim_points_action(self):
-        """Trim CLEAR button: wipe the IN/OUT points but offer a one-tap UNDO
-        toast (the workspace holds no grab, so toast buttons are clickable)."""
-        old_start, old_end = self.trim_start_seconds, self.trim_end_seconds
+        """Trim CLEAR button: wipe the IN/OUT points. The general single-level
+        undo (Ctrl+Z, L3) restores them, superseding Q5's bespoke UNDO toast."""
+        if self.trim_start_seconds is None and self.trim_end_seconds is None:
+            return  # nothing was set — nothing to clear or undo
+        self.push_undo()  # snapshot before clearing (L3)
         self.clear_trim_points()
-        if old_start is None and old_end is None:
-            return  # nothing was set — no undo to offer
-
-        def undo(s=old_start, e=old_end):
-            self.trim_start_seconds = s
-            self.trim_end_seconds = e
-            self.update_trim_info()
-            self.update_trim_markers()
-            self.set_status("Trim points restored.")
-            self.log("Trim points restored.")
-
-        dialogs.toast("Trim points cleared", "Removed the IN / OUT points.",
-                      "info", action_label="UNDO", action=undo, duration_ms=6000)
 
     def get_active_trim_points(self) -> tuple[float | None, float | None]:
         if not self.trim_enabled_var.get():
@@ -2614,6 +2695,7 @@ class HaloApp:
     def reset_all_volumes(self):
         if not self.track_controls or self.is_exporting:
             return
+        self.push_undo()  # snapshot before resetting the mix (L3)
         self.preview_muted = False
         self.solo_row = None
         for row, (_, var, slider) in enumerate(self.track_controls):
