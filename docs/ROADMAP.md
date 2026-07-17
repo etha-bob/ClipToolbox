@@ -7,10 +7,11 @@ Single source of truth for planned UX/feature work. Seeded from the 2026-07-12 u
 sets items `in-progress`/`done` as it goes, appends a Session log entry, and commits roadmap updates
 in the same commit as the work. Newly discovered work gets a new row, not silent scope creep.
 
-**Now / Next:** The bold track (B0–B6) and the M6–M13 batch are done; L1 (silent-video) shipped
-2026-07-16 and L2 (taskbar progress) shipped 2026-07-17. Remaining: **L3** (single-level undo for
-trim/crop/mix — the last large item) is the next pick; the downgraded minor **M5** (700px-minsize
-left-column clip) rounds out the list.
+**Now / Next:** The bold track (B0–B6), the M6–M13 batch, and **all three large items** are done —
+L1 (silent-video) + L2 (taskbar progress) + L3 (single-level undo) all shipped 2026-07-17. The only
+remaining `todo` is the downgraded minor **M5** (left column clips ~34px at the 700px-minsize floor;
+fix = collapsible sections or responsive preview height). Every audit finding (F1–F14) is now
+addressed.
 
 Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 
@@ -28,7 +29,7 @@ Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 | Q2 | One accurate error for unreadable files, return to landing (no dialog cascade) | F3 | done 2026-07-15 |
 | Q3 | Settings: Esc cancels, DONE saves (split `close()`) | F9 | done 2026-07-15 |
 | Q4 | Session-restore toast with RESET action; don't count inert crop keyframes; session dot on recent rows | F6, F14 | done 2026-07-15 |
-| Q5 | UNDO-toast for trim CLEAR / CLEAR RECENTS (grab_set caveat: flip button label in-place inside Settings) | F8 | done 2026-07-15 |
+| Q5 | UNDO-toast for trim CLEAR / CLEAR RECENTS (grab_set caveat: flip button label in-place inside Settings) | F8 | done 2026-07-15 (trim-clear toast superseded by L3's general Ctrl+Z 2026-07-17; CLEAR RECENTS toast stays) |
 | Q6 | Reset leaked trim state on clip load | F10 | done 2026-07-15 |
 | Q7 | Supersede stale success toasts when a new export starts | F11 | done 2026-07-15 |
 | Q8 | Roster RESET leaves stale per-track % labels (`HaloSlider.set()` doesn't fire its command; discovered 2026-07-15) | — | done 2026-07-15 |
@@ -58,7 +59,7 @@ Statuses: `todo` · `in-progress` · `done <date, commit>` · `dropped <reason>`
 |----|------|-------|--------|
 | L1 | Silent-video support: audio-optional probe/preview/export (`-an` path, skip amix) | F2 | done 2026-07-16 |
 | L2 | ITaskbarList3 taskbar progress (COM spec in report §roadmap-13; only after M1) | F5 | done 2026-07-17 |
-| L3 | Single-level undo for edit state (supersedes Q5 if done) | F8 | in-progress |
+| L3 | Single-level undo for edit state (supersedes Q5 if done) | F8 | done 2026-07-17 |
 
 **L3 stage checklist** (design approved 2026-07-17 in plan mode; `feature/edit-undo`,
 one commit per stage; decisions: single-level undo/redo *toggle* (Ctrl+Z swaps
@@ -77,10 +78,14 @@ excluded (transient); supersedes Q5's trim-clear toast, not the CLEAR RECENTS on
       discrete undo/redo round-trips (trim set, trim clear supersede-Q5, crop
       keyframe add, crop clear-all, track toggle), empty-slot no-op, clip-switch
       clears the slot; gallery both skins
-- [ ] S2 Continuous-drag capture (trim bracket first-drag flag; volume slider
-      ButtonPress + wheel first-notch); `_undo_slot` cleared on clip change; legend
-      hint. Driver × both skins (drag undo restores pre-gesture state, clip-switch
-      clears, mute/solo/position untouched) + gallery; roadmap close-out
+- [x] S2 Continuous-drag capture: trim bracket (first `on_trim_bracket_drag` of a
+      gesture, flag reset on commit); volume slider via a new `HaloSlider.bind_press`
+      hook (fires BEFORE the jump-to-click, so the pre-press level is captured — a raw
+      ButtonPress bind runs after the widget's own jump); wheel-volume `arm_wheel_undo`
+      (one capture per burst, 600 ms disarm). Legend left as-is (palette + universal
+      Ctrl+Z cover discovery). Verified: 12-check driver × both skins (bracket-drag /
+      volume-drag / wheel-burst undo restore the pre-gesture value, undo leaves mute /
+      solo / playhead untouched) + S1 re-run green + gallery both skins
 
 **L1 stage checklist** (design approved 2026-07-16 in plan mode;
 `feature/silent-video`, one commit per stage; decisions: "silent" strictly =
@@ -277,6 +282,30 @@ Bold sequencing if chosen: B3 → B0 → B1 → B4 → B2 → B5/B6 (B2 pulled f
 XL items get a stage checklist added under their row when work starts (plan-mode design first).
 
 ## Session log (newest first)
+
+- **2026-07-17** — Shipped **L3 single-level undo/redo** on `feature/edit-undo`, 2 stage commits;
+  the last large item, so **all of L1–L3 and every audit finding are now done**. Ctrl+Z undoes the
+  last edit (trim + crop keyframes + track mix) and pressing it again redoes it — one slot swaps
+  with the current edit state (a new edit overwrites it; Ctrl+Y / Ctrl+Shift+Z are the same toggle),
+  plus a palette `edit.undo` in a new Edit category. The snapshot reuses `capture_video_session()`
+  minus the playhead (a seek is not an edit); `_restore_edit` re-applies trim + a new
+  `CropController.apply_snapshot` (which, unlike the load-oriented `restore_state`, FULLY replaces —
+  restoring to empty keyframes / disabled too) + the track mix to the current rows. `push_undo()`
+  snapshots BEFORE each mutation: discrete edits call it directly (trim set/clear, crop
+  add/reset/delete/clear/retime/kf-delete, RESET volumes); continuous gestures capture once at the
+  start — the track-enable checkbox on its ButtonPress (it flips on release), the volume slider via
+  a new `HaloSlider.bind_press` hook (fires BEFORE the widget's jump-to-click, so the pre-press
+  level is captured — a plain ButtonPress bind runs after the jump), the trim bracket on the first
+  drag event of a gesture, and the volume wheel via a 600 ms-disarm arm flag. `_undo_slot` clears
+  on every clip change (load_video AND reset_clip_state) so undo never crosses clips; mute / solo /
+  playhead are deliberately outside the snapshot. Supersedes Q5's bespoke trim-CLEAR undo toast (the
+  general path covers it); the unrelated CLEAR RECENTS toast stays. Verified: S1 17-check + S2
+  12-check drivers × both skins (discrete undo/redo round-trips for trim, crop keyframe add/clear,
+  track toggle; drag captures restoring the pre-gesture value for bracket/slider/wheel; empty-slot
+  no-op; clip-switch clears; mute/solo/playhead untouched) + gallery both skins. Lesson: a widget
+  that jumps-to-click on press (HaloSlider) needs a press hook that fires BEFORE the jump for an
+  "undo captures pre-gesture state" pattern — a raw `<ButtonPress-1>` bound with `add="+"` runs
+  after the widget's own instance binding and captures the post-jump value.
 
 - **2026-07-17** — Shipped **L2 taskbar progress (ITaskbarList3)** on `feature/taskbar-progress`,
   one commit. New `win32.TaskbarProgress` hand-rolls the COM interface over its vtable with pure

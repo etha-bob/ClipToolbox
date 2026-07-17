@@ -153,6 +153,8 @@ class HaloApp:
         # clips. _trim_drag_undo guards one capture per bracket-drag gesture.
         self._undo_slot: dict | None = None
         self._trim_drag_undo = False
+        self._wheel_undo_armed = False
+        self._wheel_undo_after: str | None = None
 
         self.video_fps: float | None = None
         self.video_dimensions: tuple[int, int] | None = None
@@ -1647,6 +1649,21 @@ class HaloApp:
             self._undo_slot = snap
             self._undo_redo = False
 
+    def arm_wheel_undo(self):
+        """Capture one undo snapshot for a burst of wheel-volume notches (L3):
+        push on the first notch, then disarm ~600 ms after the last one so a
+        fresh scroll captures again."""
+        if not self._wheel_undo_armed:
+            self.push_undo()
+            self._wheel_undo_armed = True
+        if self._wheel_undo_after is not None:
+            try:
+                self.root.after_cancel(self._wheel_undo_after)
+            except Exception:
+                pass
+        self._wheel_undo_after = self.root.after(
+            600, lambda: setattr(self, "_wheel_undo_armed", False))
+
     def undo_edit(self):
         """Ctrl+Z (and Ctrl+Y / Ctrl+Shift+Z): swap the current edit state with
         the slot — one level of undo AND redo (pressing again re-applies)."""
@@ -1889,6 +1906,10 @@ class HaloApp:
 
         slider.config(command=on_volume_change)
         slider.grid(row=1, column=0, sticky="ew", pady=(px(2), 0))
+        # Snapshot before a volume drag / double-click-reset (L3): the slider
+        # jumps-to-click on press, so use its bind_press hook (fires BEFORE the
+        # jump) to capture the true pre-press level.
+        slider.bind_press(self.push_undo)
 
         # Double-click the slider snaps it back to 100%.
         def reset_volume(_event=None, row=row_number):
@@ -1915,6 +1936,7 @@ class HaloApp:
             current = float(slider.get())
             value = min(2.0, max(0.0, round(current + steps * step, 2)))
             if value != current:
+                self.arm_wheel_undo()  # capture the pre-burst level (L3)
                 slider.set(value)
                 on_volume_change(value)
 
@@ -2579,6 +2601,11 @@ class HaloApp:
 
     def on_trim_bracket_drag(self, kind: str, value: float):
         """Live update while a bracket is dragged on the seekbar."""
+        # Snapshot once at the start of a drag gesture (L3): the pre-drag
+        # bracket position is what Ctrl+Z should restore, not a mid-drag one.
+        if not self._trim_drag_undo:
+            self.push_undo()
+            self._trim_drag_undo = True
         if kind == "start":
             self.trim_start_seconds = float(value)
         else:
@@ -2590,6 +2617,7 @@ class HaloApp:
             self.schedule_scrub_frame(value)
 
     def on_trim_bracket_commit(self, kind: str):
+        self._trim_drag_undo = False  # end of the drag gesture (L3)
         self.update_trim_controls()
         seconds = self.trim_start_seconds if kind == "start" else self.trim_end_seconds
         if seconds is not None:

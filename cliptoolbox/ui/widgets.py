@@ -307,6 +307,7 @@ class HaloSlider(tk.Canvas):
         self._state = NORMAL
         self._dragging = False
         self._hover = False
+        self._press_callbacks = []
 
         h = px(theme.SLIDER_H)
         super().__init__(parent, width=length, height=h, highlightthickness=0, bd=0, bg=behind)
@@ -399,9 +400,20 @@ class HaloSlider(tk.Canvas):
             if self._command is not None:
                 self._command(f"{value}")
 
+    def bind_press(self, callback):
+        """Fire callback the instant a drag press begins, BEFORE the value
+        jumps to the click position — lets a caller snapshot the pre-press
+        value (e.g. the L3 undo capture)."""
+        self._press_callbacks.append(callback)
+
     def _on_press(self, event):
         if self._state != NORMAL:
             return
+        for cb in self._press_callbacks:
+            try:
+                cb()
+            except Exception:
+                pass
         self._dragging = True
         self._apply_drag(event.x)
 
