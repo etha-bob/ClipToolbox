@@ -2,10 +2,15 @@
 
 ClipToolbox is a small Windows desktop tool for previewing, mixing, trimming, cropping/zooming, watermarking, exporting, and Discord-size-compressing video clips — wearing a Halo 2 (2004) menu interface, with an optional Halo: Reach skin selectable in Settings.
 
-<img width="2897" height="1681" alt="image" src="https://github.com/user-attachments/assets/bade2f2b-b5fb-4ce6-b03d-6e9f62dd826c" />
+#### Halo 2 skin:
+<img width="2895" height="1685" alt="image" src="https://github.com/user-attachments/assets/79505f7a-73f3-4060-bbd8-c5fb16cb22ee" />\
 
-<img width="2896" height="1682" alt="image" src="https://github.com/user-attachments/assets/133bc1e5-8523-4c0f-86b0-b1796e9d9f76" />
+<img width="2899" height="1679" alt="image" src="https://github.com/user-attachments/assets/ccecfd6d-eeab-420a-a8c0-75bbfe6a2440" />
 
+#### Halo Reach skin:
+<img width="2897" height="1679" alt="image" src="https://github.com/user-attachments/assets/2b3dec47-f922-4174-85e2-ecde6d620b34" />
+
+<img width="2900" height="1683" alt="image" src="https://github.com/user-attachments/assets/8889c6e0-ba1f-470d-82d0-f4fa359a92e6" />
 
 ## Features
 
