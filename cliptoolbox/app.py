@@ -239,6 +239,8 @@ class HaloApp:
         self.auto_preview_after_load = bool(self.settings.auto_preview_after_load)
         self.preview_width = px(PREVIEW_WIDTH)
         self.preview_height = px(PREVIEW_HEIGHT)
+        # M5: coalesced reflow of the responsive preview height.
+        self._reflow_after_id: str | None = None
 
         self.recent_clips: list[str] = list(self.settings.recent_clips)
         self.last_open_dir: str | None = self.settings.last_open_dir
@@ -484,12 +486,60 @@ class HaloApp:
         a visible paused still at the new resolution."""
         self.root.update_idletasks()
         self.on_preview_frame_resize()
+        # After a wholesale relayout (e.g. leaving focus mode) the configured
+        # preview height may be stale for the current window — re-evaluate (M5).
+        self._schedule_preview_reflow()
         if (self.playback.state == core_playback.PAUSED
                 and not self.user_is_seeking
                 and self.paused_frame_label is not None
                 and self.paused_frame_label.winfo_ismapped()):
             self.last_scrub_frame_seconds = None  # bypass the dedup window
             self.request_scrub_frame(self.current_seek_seconds())
+
+    def _schedule_preview_reflow(self, event=None):
+        """Coalesce reflow requests (window <Configure> fires a burst, and
+        toolbar toggles want one too) into a single idle-ish pass."""
+        if not hasattr(self, "workspace_left"):
+            return
+        if self._reflow_after_id is not None:
+            try:
+                self.root.after_cancel(self._reflow_after_id)
+            except Exception:
+                pass
+        self._reflow_after_id = self.root.after(30, self._reflow_preview_height)
+
+    def _reflow_preview_height(self):
+        """Responsive preview height (M5): shrink the fixed preview box just
+        enough to stop the crop/frame rows clipping at short window heights,
+        and grow it back toward the ideal 16:9-ish size when there's room.
+
+        The left column packs export_row first (bottom-pinned) so overflow
+        clips the middle rows rather than the export button; at the 700 px
+        minsize floor with the crop toolbar open that middle clip is ~34 px.
+        Rather than clip, we hand that deficit to the preview. Focus mode
+        drives the bezel via pack expand instead, so it's skipped there."""
+        self._reflow_after_id = None
+        if getattr(self, "focus_mode", False):
+            return
+        left = getattr(self, "workspace_left", None)
+        frame = getattr(self, "preview_frame", None)
+        if left is None or frame is None or not left.winfo_ismapped():
+            return
+        avail = left.winfo_height()
+        if avail <= 1:
+            return  # not laid out yet
+        try:
+            cur = int(frame.cget("height"))
+        except Exception:
+            return
+        ideal = px(PREVIEW_HEIGHT)
+        # req includes the current preview height, so (req - avail) is the
+        # column's live overflow (negative when there's slack). Move that
+        # amount out of / back into the preview, clamped to a sane floor.
+        target = cur - (left.winfo_reqheight() - avail)
+        target = max(px(180), min(ideal, target))
+        if abs(target - cur) >= px(2):
+            frame.configure(height=target)
 
     def update_legend(self):
         if not hasattr(self, "legend"):
@@ -2227,6 +2277,7 @@ class HaloApp:
         self.update_trim_info()
         self.update_trim_markers()
         self.update_compression_estimate()
+        self._schedule_preview_reflow()
 
     def on_compression_toggle(self):
         if not hasattr(self, "compression_options_frame"):
